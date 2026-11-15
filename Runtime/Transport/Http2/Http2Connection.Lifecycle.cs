@@ -240,12 +240,6 @@ namespace TurboHTTP.Transport.Http2
             {
                 await SendRstStreamAsync(streamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
-            {
-            }
-            catch (ObjectDisposedException)
-            {
-            }
             catch (Exception ex)
             {
                 FailAllStreams(ex);
@@ -352,12 +346,6 @@ namespace TurboHTTP.Transport.Http2
             {
                 await SendRstStreamAsync(streamId, Http2ErrorCode.Cancel).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
-            {
-            }
-            catch (ObjectDisposedException)
-            {
-            }
             catch (Exception ex)
             {
                 FailAllStreams(ex);
@@ -403,9 +391,6 @@ namespace TurboHTTP.Transport.Http2
                 await SendWindowUpdateAsync(0, increment).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
-            {
-            }
-            catch (ObjectDisposedException)
             {
             }
             finally
