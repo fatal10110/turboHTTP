@@ -9,7 +9,7 @@ namespace TurboHTTP.Tests.Cache
 {
     /// <summary>
     /// Delta-seconds clamping (RFC 9111 section 1.2.2) and overflow-safe stale-while-revalidate arithmetic in
-    /// CacheEntry and the MemoryCacheStorage expiry sweep (#457, #459).
+    /// CacheEntry and MemoryCacheStorage (#457, #459).
     /// </summary>
     public class CacheFreshnessClampTests
     {
@@ -60,7 +60,7 @@ namespace TurboHTTP.Tests.Cache
             var entry = CreateEntry("k", now.AddHours(-1), HugeWindow);
 
             Assert.IsTrue(entry.IsStaleWhileRevalidate(now));
-            Assert.IsFalse(entry.ShouldEvict(now));
+            Assert.IsFalse(entry.IsFresh(now));
         }
 
         [Test]
@@ -73,7 +73,7 @@ namespace TurboHTTP.Tests.Cache
 
             Assert.IsTrue(entry.IsStaleWhileRevalidate(windowEnd.AddSeconds(-1)));
             Assert.IsFalse(entry.IsStaleWhileRevalidate(windowEnd));
-            Assert.IsTrue(entry.ShouldEvict(DateTime.UtcNow));
+            Assert.IsFalse(entry.IsStaleWhileRevalidate(DateTime.UtcNow));
         }
 
         [Test]
@@ -83,11 +83,11 @@ namespace TurboHTTP.Tests.Cache
             var entry = CreateEntry("k", expiredAt, TimeSpan.MaxValue);
 
             Assert.IsTrue(entry.IsStaleWhileRevalidate(expiredAt.AddHours(1)));
-            Assert.IsFalse(entry.ShouldEvict(expiredAt.AddHours(1)));
+            Assert.IsFalse(entry.IsFresh(expiredAt.AddHours(1)));
         }
 
         [Test]
-        public void MemoryCacheStorage_EntryWithHugeStaleWhileRevalidate_IsSweptAndStorageKeepsWorking()
+        public void MemoryCacheStorage_EntryWithHugeStaleWhileRevalidate_StorageKeepsWorking()
         {
             AssertAsync.Run(async () =>
             {
@@ -97,13 +97,13 @@ namespace TurboHTTP.Tests.Cache
                 await storage.SetAsync("bad", malformed);
                 await storage.SetAsync("good", CreateEntry("good", now.AddHours(1), null));
 
-                // GetCountAsync forces the expiry sweep over both entries.
-                Assert.AreEqual(1, await storage.GetCountAsync());
-                Assert.IsNull(await storage.GetAsync("bad"), "The entry whose window closed is evicted.");
+                // Storage never evicts on freshness (#500); the middleware decides what a stale entry is worth.
+                Assert.AreEqual(2, await storage.GetCountAsync());
+                Assert.IsNotNull(await storage.GetAsync("bad"));
                 Assert.IsNotNull(await storage.GetAsync("good"));
 
                 await storage.SetAsync("third", CreateEntry("third", now.AddHours(1), HugeWindow));
-                Assert.AreEqual(2, await storage.GetCountAsync());
+                Assert.AreEqual(3, await storage.GetCountAsync());
             });
         }
 
