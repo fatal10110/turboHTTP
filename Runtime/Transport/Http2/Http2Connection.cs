@@ -91,6 +91,9 @@ namespace TurboHTTP.Transport.Http2
         private volatile bool _streamIdsExhausted;
         private int _drainCloseStarted;
         private int _disposed;
+        // Set once FailAllStreams queued Dispose for a failed connection (#694).
+        private int _disposeScheduled;
+        private static readonly WaitCallback s_disposeAfterFailure = DisposeAfterFailure;
         private int _resourcesDisposed;
         private static readonly TimeSpan SettingsAckTimeout = TimeSpan.FromSeconds(5);
 
@@ -499,6 +502,15 @@ namespace TurboHTTP.Transport.Http2
                     {
                         // Best effort only: the underlying connection may already be failing.
                     }
+
+                    // The upload failed after the response started (RFC 9113 Section 8.1): the reset
+                    // took the stream out of the active map, so no connection-wide failure or scan can
+                    // reach its body source any more. Fail it here with the dispatch's error, so the body
+                    // reader gets a UHttpException instead of waiting forever, and disposing the faulted
+                    // body releases its buffered chunks and the connection's buffered-byte count (#716).
+                    // The reader gets its own instance: the dispatch throws another one below.
+                    if (stream.ResponseStarted && !(ex is HandlerCallbackException))
+                        stream.FaultResponseBody(ClassifyDispatchFailure(ex, stream));
                 }
 
                 if (ex is HandlerCallbackException handlerFault)

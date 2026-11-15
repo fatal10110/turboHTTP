@@ -53,6 +53,10 @@ namespace TurboHTTP.Transport.Http2
         private int _handlerFaulted;
         private int _completionSignaled;
         private int _lifetimeRefCount;
+        // Incremented by every Initialize: a completion signal raised for one rental is dropped when the
+        // object was recycled and rented again meanwhile (#731), a second line of defence behind the
+        // lifetime references.
+        private int _rentalGeneration;
         private int _responseErrorQueued;
         private Exception _pendingResponseError;
         private long _responseBodyLength;
@@ -205,6 +209,10 @@ namespace TurboHTTP.Transport.Http2
             _pendingResponseError = null;
             Interlocked.Exchange(ref _lifetimeRefCount, 1);
             Interlocked.Exchange(ref _responseBodyLength, 0);
+            // A signal that reached the pooled object after PrepareForPool must not complete this
+            // rental's CompletionTask (#731).
+            _completionSource.Reset();
+            Interlocked.Increment(ref _rentalGeneration);
             Volatile.Write(ref _disposed, 0);
         }
 
@@ -280,8 +288,9 @@ namespace TurboHTTP.Transport.Http2
             // The handler chain (decompression, cache, redirect, user handlers) runs synchronously up to
             // its first real await, so it must not run on the read loop: a blocking handler would stall
             // WINDOW_UPDATE, PING and every other stream's frames on this connection (#29). The queued
-            // work item owns one lifetime reference until the handler's synchronous part has returned
-            // (it replaces the read loop's lease), so it never reads a stream that went back to the pool.
+            // work item owns one lifetime reference until the handler's outcome is signalled (it replaces
+            // the read loop's lease), so it never reads or signals a stream that went back to the pool
+            // (#731).
             // Body DATA and trailers only enter the body source, which the handler pulls from, so
             // response start still precedes body delivery for this stream.
             Interlocked.Increment(ref _lifetimeRefCount);
@@ -643,33 +652,31 @@ namespace TurboHTTP.Transport.Http2
 
         private async Task InvokeResponseStartAsync()
         {
-            // Holds the lifetime reference TryStartResponse took for this work item.
-            bool holdsStartReference = true;
+            // Holds the lifetime reference TryStartResponse took for this work item until the outcome is
+            // signalled (#731): the dispatch may already have released its reference (an upload that
+            // failed or was cancelled after response start), and the handler or the abort below may drop
+            // the body source's, so without it the signal could land on a pooled or re-rented stream.
+            int generation = Volatile.Read(ref _rentalGeneration);
             Http2ResponseBodySource bodySource = ResponseBodySource;
             try
             {
-                var pending = _handler.OnResponseStartAsync(
-                    _statusCode,
-                    _headers ?? new HttpHeaders(),
-                    bodySource,
-                    _context);
+                await _handler.OnResponseStartAsync(
+                        _statusCode,
+                        _headers ?? new HttpHeaders(),
+                        bodySource,
+                        _context)
+                    .ConfigureAwait(false);
 
-                if (!pending.IsCompleted)
-                {
-                    // The fields are read; from here on the stream is kept alive by the dispatch and the
-                    // body source, exactly as after the first await of an inline call.
-                    holdsStartReference = false;
-                    ReleaseLifetime();
-                }
-
-                await pending.ConfigureAwait(false);
-
-                TrySetResult();
+                TrySetResult(generation);
             }
             catch (Exception ex)
             {
                 Interlocked.Exchange(ref _handlerFaulted, 1);
                 AbortRequestBody();
+
+                // Signalled before the body source is aborted; the reference held here keeps the stream
+                // out of the pool while both run.
+                TrySetException(new HandlerCallbackException(ex), generation);
                 try
                 {
                     bodySource?.Abort();
@@ -677,13 +684,10 @@ namespace TurboHTTP.Transport.Http2
                 catch
                 {
                 }
-
-                TrySetException(new HandlerCallbackException(ex));
             }
             finally
             {
-                if (holdsStartReference)
-                    ReleaseLifetime();
+                ReleaseLifetime();
             }
         }
 
@@ -768,10 +772,13 @@ namespace TurboHTTP.Transport.Http2
                     exception));
         }
 
-        private void TrySetResult()
+        private void TrySetResult(int generation)
         {
-            if (Interlocked.Exchange(ref _completionSignaled, 1) != 0)
+            if (Volatile.Read(ref _rentalGeneration) != generation ||
+                Interlocked.Exchange(ref _completionSignaled, 1) != 0)
+            {
                 return;
+            }
 
             // IsResponseCompleted just turned true: an uploader blocked on the send window stops now
             // (RFC 9113 Section 8.1: e.g. an early 413 while the request body is still flowing).
@@ -786,10 +793,16 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
-        private void TrySetException(Exception exception)
+        private void TrySetException(Exception exception) =>
+            TrySetException(exception, Volatile.Read(ref _rentalGeneration));
+
+        private void TrySetException(Exception exception, int generation)
         {
-            if (Interlocked.Exchange(ref _completionSignaled, 1) != 0)
+            if (Volatile.Read(ref _rentalGeneration) != generation ||
+                Interlocked.Exchange(ref _completionSignaled, 1) != 0)
+            {
                 return;
+            }
 
             _connection?.WakeSendWindowWaiters();
 
