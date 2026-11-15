@@ -2,7 +2,8 @@
 # Local quality gate. CI runs the same steps (.github/workflows/ci.yml).
 #
 #   Tools~/ci/check.sh            fast: repo invariants, format, shadow build incl. Tests/ (editor variant)
-#   Tools~/ci/check.sh --full     also iOS/Android shadow builds, workflow/shell/python linters
+#   Tools~/ci/check.sh --full     also iOS/Android shadow builds, the compile-only opt-in define variant
+#                                 (#898), the fuzz corpus replay (#880), workflow/shell/python linters
 #   Tools~/ci/check.sh --fix      apply whitespace formatting instead of verifying it
 #   Tools~/ci/check.sh --no-unitask  offline: skip the pinned UniTask fetch (the UniTask adapters are not built)
 #
@@ -40,9 +41,16 @@ if [ "$full" = 1 ]; then variant=all; else variant=editor; fi
 if [ -z "${UNITY_DLLS:-}${UNITY_PATH:-}" ]; then
   "Tools~/ci/fetch-unity-dlls.sh" >/dev/null || fail "fetch Unity DLLs"
 fi
-python3 "Tools~/ci/shadow_build.py" --variant "$variant" ${shadow_args[@]+"${shadow_args[@]}"} || fail "shadow build"
+shadow_ok=1
+python3 "Tools~/ci/shadow_build.py" --variant "$variant" ${shadow_args[@]+"${shadow_args[@]}"} || { shadow_ok=0; fail "shadow build"; }
 
 if [ "$full" = 1 ]; then
+  # The required parser gate (#880): every committed seed of every target replays against the editor DLLs
+  # just built. fuzz.yml's coverage-guided run is path-filtered, so it cannot be a required check; it stays advisory.
+  step "fuzz corpus replay (all targets)"
+  if [ "$shadow_ok" = 1 ]; then
+    "Tools~/fuzz/run.sh" --no-shadow-build || fail "fuzz corpus replay (a seed crashes or hangs a target; Tools~/fuzz/README.md)"
+  else echo "skip: the shadow build failed"; fi
   step "workflow lint (actionlint)"
   if command -v actionlint >/dev/null; then actionlint || fail "actionlint"; else echo "skip: actionlint not installed"; fi
   step "shell lint (shellcheck)"
@@ -55,7 +63,8 @@ if [ "$full" = 1 ]; then
   fi
   python3 "Tools~/ci/test_doc_snippets.py" -q || fail "doc snippet harness tests"
   python3 "Tools~/ci/test_banned_symbols.py" -q || fail "banned-symbol (sync-over-async) gate test"
-  python3 "Tools~/ci/test_shadow_build_tests.py" -q || fail "shadow build of Tests/ (Unity NUnit) gate test"
+  python3 "Tools~/ci/test_shadow_build_tests.py" -q || fail "shadow build of Tests/ (Unity NUnit) and opt-in define gate test"
+  python3 "Tools~/ci/test_check_repo_asmdef.py" -q || fail "asmdef and native plugin invariant test"
   python3 "Tools~/ci/test_il2cpp_filter_check.py" -q || fail "il2cppfilter invariant test"
   python3 "Tools~/ci/test_unity_modules.py" -q || fail "package.json built-in module check test"
   python3 "Tools~/ci/test_unitask_pin.py" -q || fail "UniTask pin gate test"

@@ -1,6 +1,6 @@
 # TurboHTTP API Reference
 
-API documentation for TurboHTTP. Every C# snippet in this documentation is compiled against the current API by the repository's CI (`Tools~/ci/shadow_build.py`).
+API documentation for TurboHTTP. Every C# snippet in this documentation is compiled against the current API by the repository's CI (`Tools~/ci/shadow_build.py`), except the custom serializer example under [JSON serializers](#json-serializers), which needs your own serializer type. `Tools~/ci/doc_snippets.py` lists every block the build skips and why.
 
 Snippets assume the usual Unity script header (`using System; using System.Threading; using System.Threading.Tasks; using UnityEngine; using TurboHTTP.Core;`); module namespaces are shown explicitly. `MyDto` / `MyData` stand for your own data classes.
 
