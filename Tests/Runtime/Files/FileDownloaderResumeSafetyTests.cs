@@ -322,7 +322,6 @@ namespace TurboHTTP.Tests.Files
                     new DownloadOptions
                     {
                         EnableResume = true,
-                        VerifyChecksum = true,
                         ExpectedSha256 = Sha256Hex(Encoding.UTF8.GetBytes("expected"))
                     }));
 
