@@ -61,12 +61,16 @@ Canonical order of the first-party interceptors, outermost first:
 | 7 | `DecompressionInterceptor` (`TurboHTTP.Middleware`) | Decodes each attempt's body. |
 | 8 | `ConcurrencyInterceptor` (RateLimit) | Holds a permit only while a request is on the wire. |
 
-`UHttpClient` rejects two orders when it is constructed (`ArgumentException`), and when a plugin
+`UHttpClient` rejects four orders when it is constructed (`ArgumentException`), and when a plugin
 registers interceptors (`PluginException`):
 
 - **`CacheInterceptor` outside `AuthInterceptor`.** The cache would never see the `Authorization` header,
   so `CachePolicy.AllowCacheForAuthorizedRequests = false` is bypassed and a per-user response would be
   stored under a user-less key and served to the next user.
+- **`CacheInterceptor` outside `RedirectInterceptor`.** The cache would look up the original URL but
+  receive the redirect target's response, a different resource.
+- **`CacheInterceptor` outside `CookieInterceptor`.** The cache would never see the `Cookie` header, so a
+  response that varies on it would be keyed without it.
 - **`ConcurrencyInterceptor` outside `RetryInterceptor`.** A permit would be held through every retry
   backoff delay (up to `RetryPolicy.MaxDelay`), starving other requests.
 
@@ -75,6 +79,18 @@ registers interceptors (`PluginException`):
 headers stay bound to their origin and each hop's cookies are stored for that hop's host.
 `RedirectInterceptor` dispatches each hop only after the previous one has finished, so a
 `ConcurrencyInterceptor` inside it releases the hop's permit before the next hop asks for one.
+
+The check uses roles. A custom interceptor takes part by implementing `TurboHTTP.Core.IInterceptorRole`
+and returning its `InterceptorRole` (`Redirect`, `Cookie`, `Auth`, `Cache`, `Retry`, `Concurrency`); a
+decorator returns the role of the interceptor it wraps. Interceptors without a role are not checked.
+
+**Credential interceptors go outside the cache.** A custom interceptor that adds `Authorization`, a
+cookie, an API-key header or any other per-user header must sit before `CacheInterceptor`, and should
+declare the `Auth` (or `Cookie`) role so the client enforces it. The cache checks the request as it
+leaves the pipeline: it does not store a response when an interceptor inside it added `Authorization`
+(unless `AllowCacheForAuthorizedRequests` or the response is `public`), changed a header the response
+names in `Vary`, or sent the request to another URL. It can only key a response by headers it sees at
+lookup, though, so a credential added inside it never gets a per-user cache entry.
 
 Interceptors added by `UseAdaptiveNetworking` and `UseBackgroundNetworking` go to the front of the
 list (adaptive, then background, then yours).

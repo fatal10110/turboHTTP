@@ -89,7 +89,7 @@ TurboHTTP applies its own policy instead, before it resolves or connects any add
   `wss://` target).
 - **The switch:** `UHttpClientOptions.AllowCleartext` for HTTP and
   `WebSocketConnectionOptions.AllowCleartext` for WebSocket (the `client.WebSocket(...)` extension
-  copies the client's value). It defaults to `CleartextTrafficPolicy.DefaultAllowCleartext`:
+  copies the client's value, and applies the client's proxy, so the leg to an `http://` proxy needs it). It defaults to `CleartextTrafficPolicy.DefaultAllowCleartext`:
   **`false` on iOS and Android players**, `true` in the Editor and on desktop.
 - **Platform policy:** when the switch is `true`, an installed `CleartextTrafficPolicy.PlatformPolicy`
   must also permit the host. On Android players the TurboHTTP Unity module installs one that asks
