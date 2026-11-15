@@ -63,7 +63,8 @@ namespace TurboHTTP.RateLimit
 
         /// <summary>
         /// Acquire a concurrency permit for the given host.
-        /// Blocks asynchronously until both a per-host and global permit are available.
+        /// Blocks asynchronously until both a per-host and global permit are available. The per-host
+        /// permit is taken first, so waiters queued behind a saturated host hold no global permit.
         /// The caller MUST call <see cref="Release"/> when the operation completes.
         /// </summary>
         /// <param name="host">The host key (typically hostname or host:port).</param>

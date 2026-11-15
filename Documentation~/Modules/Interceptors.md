@@ -70,8 +70,11 @@ registers interceptors (`PluginException`):
 - **`ConcurrencyInterceptor` outside `RetryInterceptor`.** A permit would be held through every retry
   backoff delay (up to `RetryPolicy.MaxDelay`), starving other requests.
 
-`RedirectInterceptor` and `AuthInterceptor`, and `RedirectInterceptor` and `CookieInterceptor`, work in
-either order: the token stays bound to its origin and each hop's cookies are stored for that hop's host.
+`RedirectInterceptor` and `AuthInterceptor`, `RedirectInterceptor` and `DefaultHeadersInterceptor`, and
+`RedirectInterceptor` and `CookieInterceptor`, work in either order: the token and the credential default
+headers stay bound to their origin and each hop's cookies are stored for that hop's host.
+`RedirectInterceptor` dispatches each hop only after the previous one has finished, so a
+`ConcurrencyInterceptor` inside it releases the hop's permit before the next hop asks for one.
 
 Interceptors added by `UseAdaptiveNetworking` and `UseBackgroundNetworking` go to the front of the
 list (adaptive, then background, then yours).
@@ -83,8 +86,11 @@ list (adaptive, then background, then yours).
 client writes a one-time warning through the diagnostic sink. Add the interceptor, or set
 `FollowRedirects = false`.
 
-`AuthInterceptor` does not attach its token to a redirect hop for another origin, and `CookieInterceptor`
-sends each hop only the cookies stored for that hop's host (RFC 6265 section 5.4).
+`AuthInterceptor` does not attach its token to a redirect hop for another origin, neither does
+`DefaultHeadersInterceptor` attach its `Authorization`, `Proxy-Authorization` or `Cookie` defaults
+(RFC 9110 section 15.4), and `CookieInterceptor` sends each hop only the cookies stored for that hop's
+host (RFC 6265 section 5.4). Other headers, such as an `X-Api-Key` set by the caller or as a default,
+are forwarded to every hop.
 
 <!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
 ```csharp
@@ -191,7 +197,7 @@ metrics.Reset();
 
 ## ConcurrencyInterceptor
 
-Limits how many requests are on the wire at once, queueing the rest until a permit frees up. It is a concurrency limiter, not a requests-per-minute rate limiter.
+Limits how many requests are on the wire at once, queueing the rest until a permit frees up. It is a concurrency limiter, not a requests-per-minute rate limiter. A request first waits for a permit of its host, then for one of the global limit, so requests queued behind a busy host do not hold global permits and requests to other hosts still go out.
 
 <!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
 ```csharp
@@ -204,7 +210,7 @@ options.Interceptors.Add(new ConcurrencyInterceptor(maxConnectionsPerHost: 6, ma
 
 *   **`CookieInterceptor`** keeps a `CookieJar` (RFC 6265): `options.Interceptors.Add(new CookieInterceptor());` The jar is exposed as `Jar`.
 *   **`DecompressionInterceptor`** decodes `gzip` and `deflate` bodies with a bound on the decompressed size (default 32 MB), which also caps the compressed input. The codings of every `Content-Encoding` field line are combined in order; a response naming any other coding (such as `br`) is passed through undecoded. At most 3 stacked codings are decoded (`identity` does not count): a longer chain fails with a `UHttpException` before decoding starts, and the inner layers of a stacked chain may produce at most 3 times the size bound in total.
-*   **`DefaultHeadersInterceptor`** adds headers to every request, optionally overriding the ones already set.
+*   **`DefaultHeadersInterceptor`** adds headers to every request, optionally overriding the ones already set. `Authorization`, `Proxy-Authorization` and `Cookie` defaults are added only for the origin of the request's first hop, never to a redirect hop for another origin.
 
 ## Adaptive and background networking
 
