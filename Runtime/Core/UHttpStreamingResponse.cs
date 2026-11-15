@@ -74,16 +74,60 @@ namespace TurboHTTP.Core
             return _bodySource.GetTrailersAsync(ct);
         }
 
+        /// <summary>
+        /// Backstop for a response dropped without <see cref="Dispose"/> or <see cref="DisposeAsync"/>
+        /// (both suppress finalization): its body source is aborted so the transport releases what the
+        /// body holds (#583), for example the HTTP/1.1 connection lease and its per-host permit.
+        /// </summary>
+        /// <remarks>
+        /// <see cref="IResponseBodySource.Abort"/> is not called here: a finalizer never runs transport or
+        /// pool callbacks (deadlock risk on the finalizer thread). It queues a static thread-pool work item
+        /// that captures only the body source. The dispose callbacks (request hold, request context) are
+        /// not run; what they release is left to the garbage collector, as for a dropped
+        /// <see cref="UHttpResponse"/>.
+        /// </remarks>
         ~UHttpStreamingResponse()
         {
+            if (Volatile.Read(ref _disposed) != 0)
+                return;
+
 #if DEBUG || UNITY_EDITOR || DEVELOPMENT_BUILD
-            if (Volatile.Read(ref _disposed) == 0)
-            {
-                Interlocked.Increment(ref s_undisposedFinalizedCount);
-                TurboDiagnostics.Log(
-                    "[TurboHTTP] UHttpStreamingResponse was not disposed. Response bodies must be disposed to release transport resources.");
-            }
+            Interlocked.Increment(ref s_undisposedFinalizedCount);
+            TurboDiagnostics.Log(
+                "[TurboHTTP] UHttpStreamingResponse was not disposed. Response bodies must be disposed to release transport resources.");
 #endif
+
+            QueueDroppedBodyAbort(_bodySource);
+        }
+
+        private static readonly WaitCallback s_abortDroppedBody = AbortDroppedBody;
+
+        private static void QueueDroppedBodyAbort(IResponseBodySource bodySource)
+        {
+            // During domain unload or process exit the transport is going away with everything else.
+            if (bodySource == null || Environment.HasShutdownStarted)
+                return;
+
+            try
+            {
+                ThreadPool.UnsafeQueueUserWorkItem(s_abortDroppedBody, bodySource);
+            }
+            catch (Exception)
+            {
+                // A finalizer must not throw; with no thread pool left the process is shutting down.
+            }
+        }
+
+        private static void AbortDroppedBody(object state)
+        {
+            try
+            {
+                ((IResponseBodySource)state).Abort();
+            }
+            catch (Exception ex)
+            {
+                TurboDiagnostics.Log("[TurboHTTP] Aborting the body of an undisposed UHttpStreamingResponse threw.", ex);
+            }
         }
 
         public void Dispose()

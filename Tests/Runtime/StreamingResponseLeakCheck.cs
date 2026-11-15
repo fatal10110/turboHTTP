@@ -6,7 +6,7 @@ namespace TurboHTTP.Tests
 {
     /// <summary>
     /// Attributes a dropped <see cref="UHttpStreamingResponse"/> to the test that dropped it (#366).
-    /// The response finalizer only logs a warning, under whichever later test is running when the GC
+    /// The response finalizer only logs a warning (and aborts the body, #583), under whichever later test is running when the GC
     /// collects it; a fixture calls <see cref="Begin"/> from <c>[SetUp]</c> and
     /// <see cref="AssertNoLeakSince"/> from <c>[TearDown]</c> so the leaking test fails instead.
     /// Each call forces a full collection, so only fixtures that create streaming responses use it.
