@@ -14,9 +14,10 @@ using TurboHTTP.Transport.Tcp;
 namespace TurboHTTP.Tests.Transport.Http1
 {
     /// <summary>
-    /// #364/#384 stopgap: the retry after a first-byte timeout on a reused connection runs on a fresh
-    /// connection that is armed with the first-byte watchdog too, so a receive lost on the retry
-    /// fails at the first-byte bound instead of waiting for the whole request timeout.
+    /// The retry after a first-byte timeout on a reused connection runs on a newly connected socket
+    /// that is not armed with the first-byte watchdog (#821): like any other fresh connection it waits
+    /// for the request timeout, and it is not retried again. The #364/#384 stopgap that armed it is
+    /// gone now that the abandoned read holds its descriptor (#384).
     /// </summary>
     [TestFixture]
     public class RetryLeaseFirstByteWatchdogTests
@@ -24,7 +25,7 @@ namespace TurboHTTP.Tests.Transport.Http1
         private static readonly TimeSpan ShortFirstByte = TimeSpan.FromMilliseconds(200);
 
         [Test]
-        public void SilentRetryConnection_IdempotentGet_FailsAtTheFirstByteBoundNotTheRequestTimeout()
+        public void SilentRetryConnection_IdempotentGet_WaitsForTheRequestTimeoutNotTheFirstByteBound()
         {
             AssertAsync.Run(async () =>
             {
@@ -40,12 +41,11 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                 var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                     await client.Get($"http://127.0.0.1:{server.Port}/")
-                        .WithTimeout(TimeSpan.FromSeconds(30))
+                        .WithTimeout(TimeSpan.FromMilliseconds(1500))
                         .SendBufferedAsync());
 
-                Assert.AreNotEqual(UHttpErrorType.Timeout, ex.HttpError.Type,
-                    "the silent retry must fail at its first-byte bound, not at the request timeout");
-                StringAssert.Contains("Retry connection sent no response byte", ex.ToString());
+                Assert.AreEqual(UHttpErrorType.Timeout, ex.HttpError.Type,
+                    "the silent retry connection waits for the request timeout, not the first-byte bound: " + ex);
                 Assert.AreEqual(2, server.AcceptCount, "one injected connection, one retry, no third attempt");
             }, TimeSpan.FromSeconds(20));
         }

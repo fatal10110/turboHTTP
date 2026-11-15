@@ -148,15 +148,27 @@ namespace TurboHTTP.Core
         /// was sent before it is treated as dead. Defaults to 10 seconds.
         /// </summary>
         /// <remarks>
+        /// <para>
         /// A pooled connection can be half-dead (the peer or a NAT dropped it without a FIN or RST).
-        /// When no response byte arrives within this time, the connection is closed and the request
-        /// is sent once more on a fresh connection, like a connection the server closed while idle
-        /// (RFC 9112 section 9.3.1). It applies only to idempotent methods with a replayable body
-        /// (RFC 9110 section 9.2.2) on a reused connection. The fresh connection of that one retry is
-        /// bounded by the same time; when it stays silent too, the request fails with no further
-        /// attempt. A POST, any other fresh connection and HTTP/2 keep waiting until the request
-        /// timeout. The request timeout still bounds the whole request. <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> disables it. Values must
-        /// be positive and at most <see cref="int.MaxValue"/> milliseconds.
+        /// This is a time-to-first-byte bound: when no response byte arrives within this time, the
+        /// connection is closed and the request is sent once more on a newly connected socket (never
+        /// the next idle one), like a connection the server closed while idle (RFC 9112 section 9.3.1).
+        /// It applies only to idempotent methods with a replayable body (RFC 9110 section 9.2.2) on a
+        /// reused connection, directly and through an HTTP proxy or CONNECT tunnel alike. The retry
+        /// connection is not bounded by it: like any other fresh connection it waits for the response
+        /// until the request timeout, and it is not retried again. A POST, any other fresh connection
+        /// and HTTP/2 keep waiting until the request timeout.
+        /// </para>
+        /// <para>
+        /// A server that takes longer than this to send the first byte of a response is treated as
+        /// silent when the request went out on a reused connection: the request is aborted there and
+        /// sent again on a new connection, so the server receives it twice and the response arrives
+        /// after this time plus the server's time to first byte. Keep the value above the slowest
+        /// expected time to first byte of idempotent requests, or the request timeout above the sum.
+        /// The request timeout still bounds the whole request.
+        /// <see cref="System.Threading.Timeout.InfiniteTimeSpan"/> disables the bound and the retry it
+        /// triggers. Values must be positive and at most <see cref="int.MaxValue"/> milliseconds.
+        /// </para>
         /// </remarks>
         public TimeSpan ReusedConnectionFirstByteTimeout
         {
