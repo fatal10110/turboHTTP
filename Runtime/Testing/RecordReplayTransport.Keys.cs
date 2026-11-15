@@ -12,9 +12,13 @@ namespace TurboHTTP.Testing
         private string BuildRequestKey(UHttpRequest request)
         {
             var normalizedUrl = NormalizeUriForKey(request.Uri);
-            var bodyHash = request.Content.TryGetBufferedData(out var bufferedBody)
-                ? ComputeBodyHash(bufferedBody, _keySalt)
-                : "sha256:empty";
+            string bodyHash;
+            if (!request.Content.TryGetBufferedData(out var bufferedBody))
+                bodyHash = "sha256:empty";
+            else if (_rawBodyRequestKeys)
+                bodyHash = ComputeBodyHash(bufferedBody, _keySalt);
+            else
+                bodyHash = ComputeBodyHash(RedactBodyIfNeeded(bufferedBody, request.Headers), _keySalt); // #1079
             return BuildRequestKey(request.Method.ToUpperString(), normalizedUrl, request.Headers, bodyHash);
         }
 
