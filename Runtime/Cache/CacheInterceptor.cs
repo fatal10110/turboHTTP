@@ -107,10 +107,12 @@ namespace TurboHTTP.Cache
         // This index is intentionally not persisted across process restarts in v1.
         // Storage evicts silently, so the index is also bounded LRU-style by
         // _variantIndexCapacity (#60); _variantLru orders the buckets (head = least recent).
-        // All three are guarded by _indexLock.
+        // Each bucket holds at most _maxVariantsPerBaseKey Vary variants (#469).
+        // All of them are guarded by _indexLock.
         private readonly Dictionary<string, VariantBucket> _variantIndex = new Dictionary<string, VariantBucket>(StringComparer.Ordinal);
         private readonly LinkedList<string> _variantLru = new LinkedList<string>();
         private int _variantIndexCapacity;
+        private int _maxVariantsPerBaseKey = DefaultMaxVariantsPerBaseKey;
         private readonly object _pendingMutationLock = new object();
         private readonly Dictionary<string, Task> _pendingMutations = new Dictionary<string, Task>(StringComparer.Ordinal);
         private readonly CancellationTokenSource _backgroundWorkCancellation = new CancellationTokenSource();
@@ -125,7 +127,14 @@ namespace TurboHTTP.Cache
         private sealed class VariantBucket
         {
             public readonly HashSet<string> Signatures = new HashSet<string>(StringComparer.Ordinal);
-            public readonly HashSet<string> StorageKeys = new HashSet<string>(StringComparer.Ordinal);
+            // Every registered storage key; a Vary key maps to its node in VariedKeyOrder, the
+            // unvaried key maps to null (it is reachable without the index and never evicted here).
+            public readonly Dictionary<string, LinkedListNode<string>> StorageKeys =
+                new Dictionary<string, LinkedListNode<string>>(StringComparer.Ordinal);
+            // Vary storage keys, head = least recently stored; bounded by _maxVariantsPerBaseKey (#469).
+            public readonly LinkedList<string> VariedKeyOrder = new LinkedList<string>();
+            // Variants this bucket evicted to stay under the bound; at the bound, new variants are refused.
+            public int VariantEvictions;
             public readonly Dictionary<string, string> SignatureByStorageKey = new Dictionary<string, string>(StringComparer.Ordinal);
             public readonly Dictionary<string, int> SignatureRefCounts = new Dictionary<string, int>(StringComparer.Ordinal);
             public LinkedListNode<string> LruNode;
@@ -990,10 +999,15 @@ namespace TurboHTTP.Cache
         {
             try
             {
+                if (!ShouldStoreVariant(baseKey, prepared.Signature, prepared.Entry.Key))
+                    return;
+
                 await _policy.Storage
                     .SetAsync(prepared.Entry.Key, prepared.Entry, cancellationToken)
                     .ConfigureAwait(false);
-                RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
+                var evictedVariant = RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
+                if (evictedVariant != null)
+                    await _policy.Storage.RemoveAsync(evictedVariant, cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -1059,10 +1073,15 @@ namespace TurboHTTP.Cache
             PreparedCacheEntry prepared,
             CancellationToken cancellationToken)
         {
+            if (!ShouldStoreVariant(baseKey, prepared.Signature, prepared.Entry.Key))
+                return;
+
             await _policy.Storage
                 .SetAsync(prepared.Entry.Key, prepared.Entry, cancellationToken)
                 .ConfigureAwait(false);
-            RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
+            var evictedVariant = RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
+            if (evictedVariant != null)
+                await _policy.Storage.RemoveAsync(evictedVariant, cancellationToken).ConfigureAwait(false);
         }
 
         private async Task ReplaceStoredEntryCoreAsync(
