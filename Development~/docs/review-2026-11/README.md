@@ -3,6 +3,10 @@
 Static review of the whole package at commit `0e0f1bc`. No builds, no Unity test runs and no device
 runs were part of it, so device-only behaviour is at most "plausible" here, never verified.
 
+Every finding was filed as a GitHub issue labelled `source:review-2026-11` (seed files
+`.github/issue-seed/issues/80-review-2026-11-*.json`, key `R11-<finding id>`); a finding that an
+open issue already tracked was added to that issue as a comment instead.
+
 ## Method
 
 The codebase was split into 13 slices (table below). Each of the ten code slices was read in full by
@@ -30,8 +34,9 @@ Limits of this review, so the numbers are read correctly:
   stamps, but a zero refutation rate means some false positives probably remain. Seven findings (the
   critical one and six high ones) were additionally checked by hand against the code and hold.
   Verify a finding in the code before acting on it, as `CLAUDE.md` section 7 requires.
-- Duplicates between lenses and slices were merged for critical, high and medium findings. Low
-  findings were not de-duplicated, so the low count overstates the number of distinct defects.
+- Duplicates between lenses and slices were merged: by hand for critical, high and medium findings,
+  and by a second pass over every finding inside four clusters of related slices. The same defect
+  reported from two unrelated slices can still appear twice among the low findings.
 - The HTTP/2 reviewers each skipped one file in full, the packaging reviewer six and the test
   reviewer worked by sweeps; each slice file lists what was not read.
 - Severity scale: **critical** = security hole, corruption or cross-request leak, or a crash/hang in
@@ -44,22 +49,22 @@ Limits of this review, so the numbers are read correctly:
 
 | Slice | Scope | Critical | High | Medium | Low | Details |
 | --- | --- | --- | --- | --- | --- | --- |
-| Transport core | RawSocketTransport, connection pool, socket I/O modes, proxy/CONNECT, Happy Eyeballs, NAT64 |  |  | 15 | 45 | [net.md](net.md) |
-| TLS | provider selection, SslStream provider, BouncyCastle glue, managed and native certificate verifiers |  |  | 8 | 35 | [tls.md](tls.md) |
-| HTTP/1.1 | request serializer, response parser, body sources, chunked coding, Expect: 100-continue |  | 2 | 9 | 46 | [http1.md](http1.md) |
-| HTTP/2 | connection, read loop, send path, streams, flow control, HPACK, connection manager | 1 | 3 | 17 | 51 | [http2.md](http2.md) |
-| Core | client API, request/response model, headers, interceptor pipeline, dispatch bridges, pooling internals |  | 2 | 9 | 62 | [core.md](core.md) |
-| Middleware and Auth | cookies, redirects, decompression, default headers, Auth |  | 5 | 17 | 54 | [mw.md](mw.md) |
-| Cache, Retry, RateLimit | HTTP cache, retry policy, rate limiting |  | 1 | 15 | 53 | [cache.md](cache.md) |
-| Utility modules | JSON, Files, Observability, Testing, Editor |  | 1 | 12 | 71 | [util.md](util.md) |
-| WebSocket | protocol core, permessage-deflate, client and resilient client, raw-socket WebSocket transport |  | 4 | 22 | 53 | [ws.md](ws.md) |
-| Unity integration | main-thread dispatch, asset handlers and decoders, mobile bridges, Unity WebSocket, UniTask, bootstrap, native plugins |  | 1 | 27 | 54 | [unity.md](unity.md) |
+| Transport core | RawSocketTransport, connection pool, socket I/O modes, proxy/CONNECT, Happy Eyeballs, NAT64 |  |  | 15 | 39 | [net.md](net.md) |
+| TLS | provider selection, SslStream provider, BouncyCastle glue, managed and native certificate verifiers |  |  | 8 | 29 | [tls.md](tls.md) |
+| HTTP/1.1 | request serializer, response parser, body sources, chunked coding, Expect: 100-continue |  | 2 | 9 | 44 | [http1.md](http1.md) |
+| HTTP/2 | connection, read loop, send path, streams, flow control, HPACK, connection manager | 1 | 3 | 17 | 43 | [http2.md](http2.md) |
+| Core | client API, request/response model, headers, interceptor pipeline, dispatch bridges, pooling internals |  | 2 | 9 | 57 | [core.md](core.md) |
+| Middleware and Auth | cookies, redirects, decompression, default headers, Auth |  | 5 | 17 | 49 | [mw.md](mw.md) |
+| Cache, Retry, RateLimit | HTTP cache, retry policy, rate limiting |  | 1 | 15 | 46 | [cache.md](cache.md) |
+| Utility modules | JSON, Files, Observability, Testing, Editor |  | 1 | 12 | 66 | [util.md](util.md) |
+| WebSocket | protocol core, permessage-deflate, client and resilient client, raw-socket WebSocket transport |  | 4 | 22 | 46 | [ws.md](ws.md) |
+| Unity integration | main-thread dispatch, asset handlers and decoders, mobile bridges, Unity WebSocket, UniTask, bootstrap, native plugins |  | 1 | 27 | 45 | [unity.md](unity.md) |
 | Packaging and build size | asmdef graph, link.xml, bootstrap, package.json, build processors |  |  | 7 | 10 | [pkg.md](pkg.md) |
 | Documentation and samples | README, Documentation~, Samples~ against the real API and defaults |  |  | 5 | 32 | [docs.md](docs.md) |
 | Test suite | determinism, wrong-behaviour assertions, coverage gaps, what CI runs |  |  | 8 | 17 | [tests.md](tests.md) |
-| **Total** | | **1** | **19** | **171** | **583** | |
+| **Total** | | **1** | **19** | **171** | **523** | |
 
-Raw findings: 828. Removed as duplicates of another finding: 54. Refuted by a verifier: 0. Of the 774 findings counted above, 46 are already tracked by an open issue (the issue number is on the finding).
+Raw findings: 828. Removed as duplicates of another finding: 114. Refuted by a verifier: 0. Of the 714 findings counted above, 45 are already tracked by an open issue (the issue number is on the finding).
 
 ## Critical and high findings
 

@@ -62,6 +62,7 @@ LABELS = {
     "priority:P2": ("fbca04", "Medium"),
     "priority:P3": ("0e8a16", "Low"),
     "source:review-2026-10": ("ededed", "Finding from the 2026-10 full review"),
+    "source:review-2026-11": ("ededed", "Finding from the 2026-11 full review"),
     "source:roadmap": ("ededed", "Existing plan phase"),
     "platform:il2cpp": ("f9d0c4", "IL2CPP / AOT specific"),
     "needs-device-validation": ("f9d0c4", "Must be confirmed on a physical iOS/Android device"),
