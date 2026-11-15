@@ -18,7 +18,9 @@ namespace TurboHTTP.Core
         /// <summary>
         /// <see cref="bool"/>: whether the transport may send this request in cleartext (an
         /// <c>http://</c> target or an <c>http://</c> proxy leg). <see cref="UHttpClient"/> sets
-        /// it from <see cref="UHttpClientOptions.AllowCleartext"/>; when absent the transport uses
+        /// it from <see cref="UHttpClientOptions.AllowCleartext"/> on every request it sends that does
+        /// not set it itself, including requests built with the public <see cref="UHttpRequest"/>
+        /// constructor; when absent (a transport used without a client) the transport uses
         /// <see cref="CleartextTrafficPolicy.DefaultAllowCleartext"/>.
         /// </summary>
         public const string AllowCleartext = "turbohttp.transport.allow_cleartext";

@@ -18,6 +18,10 @@ namespace TurboHTTP.Core
     public sealed class UHttpClient : IDisposable, IAsyncDisposable
     {
         private readonly UHttpClientOptions _options;
+
+        // BaseUrl parsed once, on the first relative URL (#563). _options is an immutable snapshot, so racing
+        // first calls parse the same value; the reference is published through Volatile (ARM64).
+        private Uri _baseUri;
         private readonly IHttpTransport _transport;
         private readonly bool _ownsTransport;
         // Snapshot of UHttpClientOptions.DisposeInterceptors (#63): configured interceptors are
@@ -165,7 +169,18 @@ namespace TurboHTTP.Core
         /// The request is single-use: dispose it, or send it with <see cref="UHttpRequest.SendBufferedAsync"/> /
         /// <see cref="UHttpRequest.SendStreamingAsync"/> (which dispose it), to end its lease. A request is never
         /// reused after its lease ends, so a stale reference throws <see cref="ObjectDisposedException"/>.
+        /// <para>
+        /// A <paramref name="url"/> with a scheme is used as given and must be <c>http</c> or <c>https</c>.
+        /// Any other string is a relative reference appended to <see cref="UHttpClientOptions.BaseUrl"/>,
+        /// including its path: with <c>BaseUrl = "https://h/api"</c>, both <c>"users"</c> and <c>"/users"</c>
+        /// resolve to <c>https://h/api/users</c>.
+        /// </para>
         /// </summary>
+        /// <exception cref="UHttpException">
+        /// <see cref="UHttpErrorType.InvalidRequest"/>: the URL (or the BaseUrl it resolves against) has a
+        /// scheme other than <c>http</c>/<c>https</c>, or is not a valid absolute URI.
+        /// </exception>
+        /// <exception cref="InvalidOperationException">A relative URL with no BaseUrl configured.</exception>
         public UHttpRequest CreateRequest(HttpMethod method, string url)
         {
             if (url == null)
@@ -180,7 +195,7 @@ namespace TurboHTTP.Core
             try
             {
                 request.ApplyDefaultHeaders(_options.DefaultHeaders);
-                ApplyDefaultMetadata(request, uri);
+                ApplyDefaultMetadata(request);
                 return request;
             }
             catch
@@ -373,6 +388,11 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Send an HTTP request and collect the full buffered response.
+        /// A request this client did not create (built with the public <see cref="UHttpRequest"/>
+        /// constructor) is sent as a copy carrying this client's policy for everything the request does
+        /// not set itself: <see cref="UHttpClientOptions.DefaultHeaders"/> it lacks, the cleartext, proxy
+        /// and redirect metadata, and <see cref="UHttpClientOptions.DefaultTimeout"/> unless the request was
+        /// given a timeout. The passed request is not modified.
         /// </summary>
         public async Task<UHttpResponse> SendBufferedAsync(
             UHttpRequest request,
@@ -390,9 +410,10 @@ namespace TurboHTTP.Core
                     "Use the client that created this request, or create a new request from this client.");
             }
 
+            var sendRequest = PrepareForSend(request);
             request.BeginSend();
 
-            var context = new RequestContext(request);
+            var context = new RequestContext(sendRequest);
             context.RecordEvent("RequestStart");
             UHttpResponse response = null;
 
@@ -402,7 +423,7 @@ namespace TurboHTTP.Core
                 response = await BufferedDispatchBridge
                     .CollectResponseAsync(
                         pipelineSnapshot,
-                        request,
+                        sendRequest,
                         context,
                         cancellationToken,
                         _options.MaxBufferedResponseBodySize)
@@ -442,6 +463,8 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Send an HTTP request and return a streaming response wrapper.
+        /// A request this client did not create gets this client's policy the same way as in
+        /// <see cref="SendBufferedAsync"/>; the passed request is not modified.
         /// </summary>
         public async Task<UHttpStreamingResponse> SendStreamingAsync(
             UHttpRequest request,
@@ -459,9 +482,10 @@ namespace TurboHTTP.Core
                     "Use the client that created this request, or create a new request from this client.");
             }
 
+            var sendRequest = PrepareForSend(request);
             request.BeginSend();
 
-            var context = new RequestContext(request);
+            var context = new RequestContext(sendRequest);
             context.RecordEvent("RequestStart");
             UHttpStreamingResponse response = null;
             var contextHandedToResponse = false;
@@ -470,7 +494,7 @@ namespace TurboHTTP.Core
             {
                 var pipelineSnapshot = _pipeline ?? _transport.DispatchAsync;
                 response = await StreamingDispatchBridge
-                    .CollectResponseAsync(pipelineSnapshot, request, context, cancellationToken)
+                    .CollectResponseAsync(pipelineSnapshot, sendRequest, context, cancellationToken)
                     .ConfigureAwait(false);
 
                 context.RecordEvent("RequestComplete");
@@ -728,10 +752,27 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary>
+        /// #563: a string with an RFC 3986 scheme is an absolute URI and must be http/https. Anything
+        /// else is a relative reference: it is parsed as <see cref="UriKind.Relative"/> (Mono and .NET
+        /// on Unix otherwise read "/path" as the implicit file URI file:///path) and appended to the
+        /// BaseUrl path (leading slashes stripped, so "/data" does not drop a BaseUrl path such as /api).
+        /// </summary>
         private Uri ResolveUri(string url)
         {
-            if (Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
-                return absoluteUri;
+            url = url.Trim();
+            if (HasUriScheme(url))
+            {
+                if (!Uri.TryCreate(url, UriKind.Absolute, out var absoluteUri))
+                {
+                    // The URL is not echoed: it can carry credentials or query secrets.
+                    throw new UHttpException(new UHttpError(
+                        UHttpErrorType.InvalidRequest,
+                        "The request URL is not a valid absolute URI."));
+                }
+
+                return RequireHttpScheme(absoluteUri);
+            }
 
             var baseUrl = _options.BaseUrl;
             if (string.IsNullOrEmpty(baseUrl))
@@ -740,20 +781,99 @@ namespace TurboHTTP.Core
                     $"Cannot resolve relative URL '{url}' without a BaseUrl configured in UHttpClientOptions.");
             }
 
-            var baseUri = new Uri(baseUrl.EndsWith("/") ? baseUrl : baseUrl + "/");
-            return new Uri(baseUri, url);
+            var baseUri = Volatile.Read(ref _baseUri);
+            if (baseUri == null)
+            {
+                if (!Uri.TryCreate(
+                        baseUrl.EndsWith("/", StringComparison.Ordinal) ? baseUrl : baseUrl + "/",
+                        UriKind.Absolute,
+                        out baseUri)
+                    || !HasUriScheme(baseUrl)
+                    || baseUri.Host.Length == 0)
+                {
+                    // The value is not echoed: a BaseUrl may carry user info or tokens.
+                    throw new UHttpException(new UHttpError(
+                        UHttpErrorType.InvalidRequest,
+                        "The configured BaseUrl is not a valid absolute URI."));
+                }
+
+                Volatile.Write(ref _baseUri, baseUri);
+            }
+
+            var relative = new Uri(url.TrimStart('/'), UriKind.Relative);
+            return RequireHttpScheme(new Uri(baseUri, relative));
         }
 
-        private void ApplyDefaultMetadata(UHttpRequest request, Uri uri)
+        /// <summary>RFC 3986 section 3.1: scheme = ALPHA *( ALPHA / DIGIT / "+" / "-" / "." ) ":".</summary>
+        private static bool HasUriScheme(string url)
         {
-            request.WithMetadata(RequestMetadataKeys.FollowRedirects, _options.FollowRedirects);
-            request.WithMetadata(RequestMetadataKeys.MaxRedirects, _options.MaxRedirects);
-            request.WithMetadata(RequestMetadataKeys.AllowCleartext, _options.AllowCleartext);
+            if (url.Length == 0 || !IsAsciiLetter(url[0]))
+                return false;
 
-            if (!request.Metadata.ContainsKey(RequestMetadataKeys.ProxyDisabled) &&
-                !request.Metadata.ContainsKey(RequestMetadataKeys.ProxySettings))
+            for (int i = 1; i < url.Length; i++)
             {
-                var resolvedProxy = ProxyEnvironmentResolver.Resolve(uri, _options.Proxy);
+                char c = url[i];
+                if (c == ':')
+                    return true;
+                if (!IsAsciiLetter(c) && (c < '0' || c > '9') && c != '+' && c != '-' && c != '.')
+                    return false;
+            }
+
+            return false;
+        }
+
+        private static bool IsAsciiLetter(char c)
+        {
+            return (c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z');
+        }
+
+        private static Uri RequireHttpScheme(Uri uri)
+        {
+            if (string.Equals(uri.Scheme, Uri.UriSchemeHttp, StringComparison.OrdinalIgnoreCase) ||
+                string.Equals(uri.Scheme, Uri.UriSchemeHttps, StringComparison.OrdinalIgnoreCase))
+            {
+                return uri;
+            }
+
+            throw new UHttpException(new UHttpError(
+                UHttpErrorType.InvalidRequest,
+                $"Unsupported URI scheme: {uri.Scheme}. Only http and https are supported."));
+        }
+
+        /// <summary>
+        /// #564: the request the pipeline sees. A request this client created already carries the client
+        /// policy (CreateRequest, and WithMetadata(dictionary) restores it). Any other request is sent as
+        /// a copy with the policy merged in, so the caller's request is never mutated and stays free of a
+        /// previous client's policy when sent through another client.
+        /// </summary>
+        private UHttpRequest PrepareForSend(UHttpRequest request)
+        {
+            if (request.IsClientOwned)
+                return request;
+
+            var copy = request.CreateClientPolicyCopy(_options.DefaultTimeout, _options.DefaultHeaders);
+            ApplyDefaultMetadata(copy);
+            return copy;
+        }
+
+        /// <summary>
+        /// Adds the client's redirect, cleartext and proxy policy for every key the request does not set
+        /// itself; values the request already carries are per-request overrides and win.
+        /// </summary>
+        internal void ApplyDefaultMetadata(UHttpRequest request)
+        {
+            var metadata = request.Metadata;
+            if (!metadata.ContainsKey(RequestMetadataKeys.FollowRedirects))
+                request.WithMetadata(RequestMetadataKeys.FollowRedirects, _options.FollowRedirects);
+            if (!metadata.ContainsKey(RequestMetadataKeys.MaxRedirects))
+                request.WithMetadata(RequestMetadataKeys.MaxRedirects, _options.MaxRedirects);
+            if (!metadata.ContainsKey(RequestMetadataKeys.AllowCleartext))
+                request.WithMetadata(RequestMetadataKeys.AllowCleartext, _options.AllowCleartext);
+
+            if (!metadata.ContainsKey(RequestMetadataKeys.ProxyDisabled) &&
+                !metadata.ContainsKey(RequestMetadataKeys.ProxySettings))
+            {
+                var resolvedProxy = ProxyEnvironmentResolver.Resolve(request.Uri, _options.Proxy);
                 if (resolvedProxy != null)
                     request.WithMetadata(RequestMetadataKeys.ProxySettings, resolvedProxy);
             }

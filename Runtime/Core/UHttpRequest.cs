@@ -39,6 +39,11 @@ namespace TurboHTTP.Core
         private int _disposed;
         private int _hasManagedTrailerHeader;
 
+        // True when the caller chose Timeout (the public constructor's timeout argument or WithTimeout).
+        // A standalone request without one takes the sending client's DefaultTimeout (#564). Written
+        // by the caller's constructor/mutators before the send, read by the send that copies the request.
+        private bool _timeoutExplicit;
+
         /// <summary> Gets the HTTP method for this request. </summary>
         public HttpMethod Method { get; private set; }
         /// <summary> Gets the target URI for this request. </summary>
@@ -128,6 +133,7 @@ namespace TurboHTTP.Core
                 timeout,
                 metadata)
         {
+            _timeoutExplicit = timeout.HasValue;
         }
 
         private UHttpRequest(
@@ -166,7 +172,10 @@ namespace TurboHTTP.Core
                 Content.CloneDetached(),
                 ownsContent: true,
                 Timeout,
-                new Dictionary<string, object>(_metadata));
+                new Dictionary<string, object>(_metadata))
+            {
+                _timeoutExplicit = _timeoutExplicit
+            };
         }
 
         /// <summary>
@@ -331,6 +340,7 @@ namespace TurboHTTP.Core
         {
             ThrowIfDisposed();
             Timeout = timeout;
+            _timeoutExplicit = true;
             _metadata[RequestMetadataKeys.ExplicitTimeout] = true;
             return this;
         }
@@ -350,6 +360,11 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Replaces all metadata on this request with the provided dictionary. Note: Mutates the request in-place.
+        /// For a request created by a <see cref="UHttpClient"/>, the client's policy keys
+        /// (<see cref="RequestMetadataKeys.FollowRedirects"/>, <see cref="RequestMetadataKeys.MaxRedirects"/>,
+        /// <see cref="RequestMetadataKeys.AllowCleartext"/> and the resolved proxy) that
+        /// <paramref name="metadata"/> does not set are restored from the client options afterwards, so
+        /// replacing the metadata never drops the client policy. Values in <paramref name="metadata"/> win.
         /// </summary>
         public UHttpRequest WithMetadata(IReadOnlyDictionary<string, object> metadata)
         {
@@ -358,11 +373,15 @@ namespace TurboHTTP.Core
                 return this;
 
             _metadata.Clear();
-            if (metadata == null)
-                return this;
+            if (metadata != null)
+            {
+                foreach (var pair in metadata)
+                    _metadata[pair.Key] = pair.Value;
+            }
 
-            foreach (var pair in metadata)
-                _metadata[pair.Key] = pair.Value;
+            // #564: the clear above would otherwise send the request with no cleartext, proxy or
+            // redirect policy (the transport's own defaults).
+            _leaseOwner?.ApplyDefaultMetadata(this);
             return this;
         }
 
@@ -434,6 +453,50 @@ namespace TurboHTTP.Core
         internal void ApplyDefaultHeaders(HttpHeaders defaultHeaders)
         {
             CopyHeaders(defaultHeaders, _headers);
+        }
+
+        /// <summary>
+        /// #564: the copy a <see cref="UHttpClient"/> sends for a request it did not create. It shares
+        /// the content (not owned, so the caller's request keeps owning and disposing it) and copies
+        /// headers and metadata, so the client policy merged into it never mutates the caller's
+        /// request: the same request sent through another client gets that client's policy. Default
+        /// headers are added only for names the request does not set; the timeout is
+        /// <paramref name="defaultTimeout"/> unless the caller chose one.
+        /// </summary>
+        internal UHttpRequest CreateClientPolicyCopy(TimeSpan defaultTimeout, HttpHeaders defaultHeaders)
+        {
+            ThrowIfDisposed();
+
+            var copy = new UHttpRequest(
+                Method,
+                Uri,
+                _headers,
+                Content,
+                ownsContent: false,
+                _timeoutExplicit ? Timeout : defaultTimeout,
+                _metadata)
+            {
+                _timeoutExplicit = _timeoutExplicit
+            };
+
+            if (defaultHeaders != null)
+            {
+                foreach (var name in defaultHeaders.Names)
+                {
+                    if (copy._headers.Contains(name))
+                        continue;
+
+                    var values = defaultHeaders.GetValues(name);
+                    if (values == null || values.Count == 0)
+                        continue;
+
+                    copy._headers.Set(name, values[0]);
+                    for (int i = 1; i < values.Count; i++)
+                        copy._headers.Add(name, values[i]);
+                }
+            }
+
+            return copy;
         }
 
         internal void BeginSend()
@@ -522,7 +585,10 @@ namespace TurboHTTP.Core
                 Content,
                 ownsContent: false,
                 Timeout,
-                new Dictionary<string, object>(_metadata));
+                new Dictionary<string, object>(_metadata))
+            {
+                _timeoutExplicit = _timeoutExplicit
+            };
         }
 
         internal static UHttpRequest CreateDerived(
