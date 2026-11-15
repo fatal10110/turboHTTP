@@ -51,6 +51,50 @@ namespace TurboHTTP.Cache
             return true;
         }
 
+        /// <summary>
+        /// True when the lookup-time and the effective request carry the same values for every header the response
+        /// nominates in Vary (RFC 9111 section 4.1; #495). <paramref name="varyHeaders"/> are lower-case names.
+        /// </summary>
+        /// <remarks>
+        /// One normalization (RFC 9111 section 4.1 allows semantics-preserving ones): when the lookup request has no
+        /// Accept-Encoding, any content coding is acceptable to it (RFC 9110 section 12.5.3), so an identity response
+        /// (no Content-Encoding, e.g. decoded by a DecompressionInterceptor inside the cache that added
+        /// Accept-Encoding) satisfies it whatever Accept-Encoding the effective request carried.
+        /// </remarks>
+        private static bool VaryNominatedHeadersMatch(
+            HttpHeaders lookupHeaders,
+            HttpHeaders effectiveHeaders,
+            IReadOnlyList<string> varyHeaders,
+            HttpHeaders responseHeaders)
+        {
+            if (varyHeaders == null || varyHeaders.Count == 0)
+                return true;
+
+            for (int i = 0; i < varyHeaders.Count; i++)
+            {
+                var name = varyHeaders[i];
+                if (string.Equals(name, "accept-encoding", StringComparison.Ordinal) &&
+                    !lookupHeaders.Contains("Accept-Encoding") &&
+                    !responseHeaders.Contains("Content-Encoding"))
+                {
+                    continue;
+                }
+
+                var lookupValues = lookupHeaders.GetValues(name);
+                var effectiveValues = effectiveHeaders.GetValues(name);
+                if (lookupValues.Count != effectiveValues.Count)
+                    return false;
+
+                for (int j = 0; j < lookupValues.Count; j++)
+                {
+                    if (!string.Equals(lookupValues[j], effectiveValues[j], StringComparison.Ordinal))
+                        return false;
+                }
+            }
+
+            return true;
+        }
+
         private static string BuildVaryKey(HttpHeaders requestHeaders, IReadOnlyList<string> varyHeaders)
         {
             if (varyHeaders == null || varyHeaders.Count == 0)

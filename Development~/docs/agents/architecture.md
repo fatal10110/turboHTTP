@@ -46,10 +46,13 @@ recorded in the PR and in this table.
   `OnResponseEnd`/`OnResponseError`). `SendBufferedAsync` collects the body
   (`BufferedDispatchBridge`); `SendStreamingAsync` returns at headers with an `IResponseBodySource`
   (`StreamingDispatchBridge`). Handlers that replace the body own disposal of the one they replaced.
-- Ordering matters and is not enforced yet (#55). Known hazards: Cache outside Auth bypasses the
-  authorized-request guard; Concurrency outside Retry holds permits during backoff. Auth binds its
-  token to the first request's origin and Cookie stores Set-Cookie per redirect hop in either order
-  (#56, #58), but Cookie outside Redirect attaches the Cookie header for the first hop only.
+- Ordering is enforced by role (`InterceptorOrdering`, #55/#536): `UHttpClient` rejects Cache outside
+  Auth, Redirect or Cookie, and Concurrency outside Retry (`ArgumentException`; `PluginException` for
+  plugin contributions). Roles come from the public `IInterceptorRole` (third-party interceptors and
+  decorators declare theirs; none means unchecked). Auth and Cookie work in either order relative to
+  Redirect (#56, #58). The cache additionally guards on the request as it leaves the pipeline: no store
+  when the method or target URI changed, an inner interceptor added `Authorization`, or a Vary-nominated
+  header differs from the lookup-time request (#494, #495).
 - Module conveniences are extension methods in the owning module (`WithJsonBody` in JSON,
   `WithBearerToken` in Auth); Core's request API keeps raw HTTP primitives.
 - `UHttpClient.Dispose()` disposes `IDisposable` interceptors (ownership issue #63). Disposal is
