@@ -86,6 +86,8 @@ namespace TurboHTTP.Transport.Http2
         /// Search static + dynamic tables for a matching header.
         /// Returns FullMatch if both name and value match, NameMatch if only name matches.
         /// Prefers static table FullMatch over dynamic table NameMatch.
+        /// The dynamic scan is linear; the encoder's table is capped (HpackEncoder.DefaultLocalTableSizeCap,
+        /// 4096 octets, at most 128 entries of 32+ octets), which bounds it whatever the peer advertises.
         /// </summary>
         public (int Index, HpackMatchType Match) FindMatch(string name, string value)
         {
