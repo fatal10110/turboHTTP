@@ -10,12 +10,16 @@ namespace TurboHTTP.WebSocket
     {
         private readonly Func<WebSocketCloseCode, bool> _reconnectOnCloseCode;
 
+        /// <summary>No reconnection.</summary>
         public static readonly WebSocketReconnectPolicy None = new WebSocketReconnectPolicy(maxRetries: 0);
 
+        /// <summary>Up to 5 retries, 1 s initial delay doubling up to 30 s, 10% jitter.</summary>
         public static readonly WebSocketReconnectPolicy Default = new WebSocketReconnectPolicy();
 
+        /// <summary>Unlimited retries with the default backoff.</summary>
         public static readonly WebSocketReconnectPolicy Infinite = new WebSocketReconnectPolicy(maxRetries: -1);
 
+        /// <summary>Creates a policy. <paramref name="maxRetries"/> -1 retries forever and 0 disables reconnection; the delays default to 1 s and 30 s; <paramref name="reconnectOnCloseCode"/> decides which close codes reconnect (default: 1001, 1006 and 1011).</summary>
         public WebSocketReconnectPolicy(
             int maxRetries = 5,
             TimeSpan? initialDelay = null,
@@ -71,6 +75,7 @@ namespace TurboHTTP.WebSocket
         /// <summary> True if retries are enabled. </summary>
         public bool Enabled => MaxRetries != 0;
 
+        /// <summary>Delay before the 1-based <paramref name="attempt"/>: <see cref="InitialDelay"/> times <see cref="BackoffMultiplier"/> to the power attempt - 1, capped at <see cref="MaxDelay"/>, with up to <see cref="JitterFactor"/> random jitter either way.</summary>
         public TimeSpan ComputeDelay(int attempt)
         {
             if (attempt < 1)
@@ -109,6 +114,7 @@ namespace TurboHTTP.WebSocket
             return TimeSpan.FromMilliseconds(rawDelayMs);
         }
 
+        /// <summary>Whether the 1-based <paramref name="attempt"/> may run after a close with <paramref name="closeCode"/> (null when no close code applies).</summary>
         public bool ShouldReconnect(int attempt, WebSocketCloseCode? closeCode)
         {
             if (!Enabled)

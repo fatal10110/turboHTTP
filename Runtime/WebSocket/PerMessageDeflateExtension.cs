@@ -35,6 +35,7 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         internal bool ForceSyncFlushDeflater { get; set; }
 
+        /// <summary>Creates the RFC 7692 permessage-deflate extension (experimental). <paramref name="maxMessageSize"/> bounds each decompressed inbound message.</summary>
         public PerMessageDeflateExtension(
             PerMessageDeflateOptions options = null,
             int maxMessageSize = WebSocketConstants.DefaultMaxMessageSize)
@@ -51,10 +52,13 @@ namespace TurboHTTP.WebSocket
             _maxMessageSize = maxMessageSize;
         }
 
+        /// <inheritdoc />
         public string Name => "permessage-deflate";
 
+        /// <inheritdoc />
         public byte RsvBitMask => 0x40;
 
+        /// <inheritdoc />
         public IReadOnlyList<WebSocketExtensionOffer> BuildOffers()
         {
             ThrowIfDisposed();
@@ -76,6 +80,7 @@ namespace TurboHTTP.WebSocket
             return new[] { new WebSocketExtensionOffer(Name, parameters) };
         }
 
+        /// <inheritdoc />
         public bool AcceptNegotiation(WebSocketExtensionParameters serverParams)
         {
             ThrowIfDisposed();
@@ -137,6 +142,7 @@ namespace TurboHTTP.WebSocket
             return true;
         }
 
+        /// <inheritdoc />
         public IMemoryOwner<byte> TransformOutbound(
             ReadOnlyMemory<byte> payload,
             WebSocketOpcode opcode,
@@ -189,6 +195,7 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public IMemoryOwner<byte> TransformInbound(
             ReadOnlyMemory<byte> payload,
             WebSocketOpcode opcode,
@@ -236,12 +243,14 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public void Reset()
         {
             // No state is retained between messages: each outbound message gets a fresh encoder (its
             // matches never reach into earlier messages) and each inbound message a fresh inflater.
         }
 
+        /// <inheritdoc />
         public void Dispose()
         {
             _disposed = true;

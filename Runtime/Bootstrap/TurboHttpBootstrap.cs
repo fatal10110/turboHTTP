@@ -2,6 +2,7 @@ using System;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
 using TurboHTTP.Transport;
+using TurboHTTP.Unity.Mobile.Android;
 using TurboHTTP.WebSocket.Transport;
 using UnityEngine;
 using UnityEngine.Scripting;
@@ -25,8 +26,9 @@ namespace TurboHTTP
     /// assembly references it, and <see cref="PreserveAttribute"/> then keeps this type and method
     /// under every managed stripping level. A transport registered later (for example from
     /// <c>BeforeSceneLoad</c>) replaces this default; projects that strip or exclude this assembly
-    /// call <c>RawSocketTransport.EnsureRegistered()</c> and
-    /// <c>RawSocketWebSocketTransport.EnsureRegistered()</c> at startup instead.
+    /// call <c>RawSocketTransport.EnsureRegistered()</c>,
+    /// <c>RawSocketWebSocketTransport.EnsureRegistered()</c> and (on Android)
+    /// <c>AndroidCleartextTrafficPolicy.EnsureRegistered()</c> at startup instead.
     /// </remarks>
     [Preserve]
     internal static class TurboHttpBootstrap
@@ -88,6 +90,22 @@ namespace TurboHTTP
         {
             JsonModuleRegistration.EnsureRegistered();
             JsonUtilitySerializer.RegisterAsDefaultIfBuiltIn();
+        }
+
+        /// <summary>
+        /// Installs the Android cleartext platform policy through
+        /// <see cref="AndroidCleartextTrafficPolicy.EnsureRegistered"/> (a no-op off Android players).
+        /// This call is the policy's stripping root: the startup hook inside TurboHTTP.Unity only
+        /// runs while something else keeps that assembly in the player, and without the policy
+        /// <c>AllowCleartext = true</c> would permit cleartext to every host (#875). Projects that
+        /// exclude this assembly call <see cref="AndroidCleartextTrafficPolicy.EnsureRegistered"/>
+        /// at startup instead.
+        /// </summary>
+        [Preserve]
+        [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
+        internal static void RegisterPlatformPolicies()
+        {
+            AndroidCleartextTrafficPolicy.EnsureRegistered();
         }
     }
 }

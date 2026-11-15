@@ -4,19 +4,24 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
+    /// <summary>User name and password for proxy Basic authentication.</summary>
     public readonly struct ProxyCredentials
     {
+        /// <summary>Creates credentials; null values become empty strings.</summary>
         public ProxyCredentials(string username, string password)
         {
             Username = username ?? string.Empty;
             Password = password ?? string.Empty;
         }
 
+        /// <summary>Proxy user name.</summary>
         public string Username { get; }
 
+        /// <summary>Proxy password.</summary>
         public string Password { get; }
     }
 
+    /// <summary>HTTP CONNECT proxy settings for a WebSocket connection.</summary>
     public sealed class WebSocketProxySettings
     {
         private static readonly IReadOnlyList<string> EmptyBypassList = Array.Empty<string>();
@@ -25,8 +30,10 @@ namespace TurboHTTP.WebSocket
         // A-label form; null for a blank rule. Computed once: the settings are immutable.
         private readonly string[] _matchRules = Array.Empty<string>();
 
+        /// <summary>No proxy: connect directly.</summary>
         public static readonly WebSocketProxySettings None = new WebSocketProxySettings();
 
+        /// <summary>Creates settings with no proxy (same as <see cref="None"/>).</summary>
         public WebSocketProxySettings()
         {
             ProxyUri = null;
@@ -34,6 +41,7 @@ namespace TurboHTTP.WebSocket
             BypassList = EmptyBypassList;
         }
 
+        /// <summary>Creates settings for an <c>http://</c> proxy. Throws when <paramref name="proxyUri"/> is null, relative, not <c>http</c> or has no host.</summary>
         public WebSocketProxySettings(
             Uri proxyUri,
             ProxyCredentials? credentials = null,
@@ -63,12 +71,16 @@ namespace TurboHTTP.WebSocket
                 _matchRules[i] = ToMatchRule(BypassList[i]);
         }
 
+        /// <summary>Absolute <c>http://</c> proxy URI, or null when no proxy is configured.</summary>
         public Uri ProxyUri { get; }
 
+        /// <summary>Credentials sent as Basic <c>Proxy-Authorization</c> on the CONNECT request, or null.</summary>
         public ProxyCredentials? Credentials { get; }
 
+        /// <summary>Hosts that connect directly; see <see cref="ShouldBypass"/>.</summary>
         public IReadOnlyList<string> BypassList { get; }
 
+        /// <summary>Whether <see cref="ProxyUri"/> is set.</summary>
         public bool IsConfigured => ProxyUri != null;
 
         /// <summary>

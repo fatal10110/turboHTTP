@@ -11,8 +11,11 @@
     This file lives in the BouncyCastle folder (owned by the glue asmdef, not in Lib/, which the
     upstream re-vendor sync replaces wholesale) so that TurboHttpLinkerProcessor passes it to
     UnityLinker only when the TurboHTTP.Transport.BouncyCastle assembly is part of the build.
+    ignoreIfMissing="1": with the package copied under Assets/, Unity hands this file to UnityLinker
+    itself (the processor does not filter it), and without TURBOHTTP_BOUNCYCASTLE (or on WebGL) the
+    assembly does not exist, which UnityLinker otherwise reports as an unresolved assembly (#871).
   -->
-  <assembly fullname="TurboHTTP.Transport.BouncyCastle">
+  <assembly fullname="TurboHTTP.Transport.BouncyCastle" ignoreIfMissing="1">
     <type fullname="TurboHTTP.Transport.BouncyCastle.BouncyCastleModuleRegistration" preserve="all"/>
     <type fullname="TurboHTTP.Transport.BouncyCastle.BouncyCastleTlsProvider" preserve="all"/>
   </assembly>

@@ -10,18 +10,25 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public interface IWebSocketExtension : IDisposable
     {
+        /// <summary>Extension name, matching the token it negotiates (for example <c>permessage-deflate</c>).</summary>
         string Name { get; }
 
+        /// <summary>RSV bits this extension may set (0x40 RSV1, 0x20 RSV2, 0x10 RSV3). Negotiation fails for bits outside 0x70 or bits another negotiated extension already claims.</summary>
         byte RsvBitMask { get; }
 
+        /// <summary>Offers to send in the <c>Sec-WebSocket-Extensions</c> request header, in preference order; null or empty offers nothing.</summary>
         IReadOnlyList<WebSocketExtensionOffer> BuildOffers();
 
+        /// <summary>Called with the parameters the server accepted for this extension; return <see langword="false"/> to reject them, which fails the negotiation.</summary>
         bool AcceptNegotiation(WebSocketExtensionParameters serverParams);
 
+        /// <summary>Transforms an outbound message payload before framing. Return <see langword="null"/> to send <paramref name="payload"/> unchanged, or a buffer the connection then owns and disposes. Set <paramref name="rsvBits"/> to the RSV bits for the message, within <see cref="RsvBitMask"/>.</summary>
         IMemoryOwner<byte> TransformOutbound(ReadOnlyMemory<byte> payload, WebSocketOpcode opcode, out byte rsvBits);
 
+        /// <summary>Transforms an inbound assembled message whose RSV bits include this extension's mask. Return <see langword="null"/> to keep <paramref name="payload"/>, or a buffer the connection then owns and disposes.</summary>
         IMemoryOwner<byte> TransformInbound(ReadOnlyMemory<byte> payload, WebSocketOpcode opcode, byte rsvBits);
 
+        /// <summary>Clears any state the extension keeps between messages.</summary>
         void Reset();
     }
 
@@ -32,6 +39,7 @@ namespace TurboHTTP.WebSocket
     {
         private readonly IReadOnlyDictionary<string, string> _parameters;
 
+        /// <summary>Creates an offer for <paramref name="extensionToken"/> with optional parameters (a null value sends the parameter name alone). Throws <see cref="ArgumentException"/> when the token is not a valid HTTP token.</summary>
         public WebSocketExtensionOffer(string extensionToken, IReadOnlyDictionary<string, string> parameters = null)
         {
             if (!IsValidToken(extensionToken))
@@ -45,10 +53,13 @@ namespace TurboHTTP.WebSocket
             _parameters = parameters ?? new Dictionary<string, string>(0, StringComparer.OrdinalIgnoreCase);
         }
 
+        /// <summary>The extension token.</summary>
         public string ExtensionToken { get; }
 
+        /// <summary>Extension parameters; a null value is a parameter without a value.</summary>
         public IReadOnlyDictionary<string, string> Parameters => _parameters;
 
+        /// <summary>Formats the offer as one <c>Sec-WebSocket-Extensions</c> element: the token followed by <c>; name[=value]</c> parameters, quoting values that are not tokens.</summary>
         public string ToHeaderValue()
         {
             var builder = new StringBuilder(64);
@@ -74,6 +85,7 @@ namespace TurboHTTP.WebSocket
             return builder.ToString();
         }
 
+        /// <summary>Returns <see cref="ToHeaderValue"/>.</summary>
         public override string ToString()
         {
             return ToHeaderValue();
@@ -168,6 +180,7 @@ namespace TurboHTTP.WebSocket
     {
         private readonly IReadOnlyDictionary<string, string> _parameters;
 
+        /// <summary>Creates the parameters a server accepted for <paramref name="extensionToken"/>.</summary>
         public WebSocketExtensionParameters(string extensionToken, IReadOnlyDictionary<string, string> parameters)
         {
             if (!WebSocketExtensionOffer.IsValidToken(extensionToken))
@@ -181,10 +194,13 @@ namespace TurboHTTP.WebSocket
             _parameters = parameters ?? new Dictionary<string, string>(0, StringComparer.OrdinalIgnoreCase);
         }
 
+        /// <summary>The extension token.</summary>
         public string ExtensionToken { get; }
 
+        /// <summary>Extension parameters; a null value is a parameter without a value.</summary>
         public IReadOnlyDictionary<string, string> Parameters => _parameters;
 
+        /// <summary>Parses one <c>Sec-WebSocket-Extensions</c> element. Throws <see cref="FormatException"/> for malformed input.</summary>
         public static WebSocketExtensionParameters Parse(string headerValue)
         {
             if (string.IsNullOrWhiteSpace(headerValue))

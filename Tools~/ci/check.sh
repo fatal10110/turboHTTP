@@ -27,6 +27,7 @@ fail() { echo "FAIL: $*"; status=1; }
 
 step "repo invariants"
 python3 "Tools~/ci/check_repo.py" || fail "repo invariants"
+python3 "Tools~/ci/check_unity_modules.py" || fail "package.json built-in module dependencies (#878)"
 
 step "format (dotnet format whitespace)"
 fmt=(dotnet format whitespace --folder --exclude Runtime/Transport/BouncyCastle/Lib --exclude .build --exclude .tools -v q)
@@ -56,6 +57,7 @@ if [ "$full" = 1 ]; then
   python3 "Tools~/ci/test_banned_symbols.py" -q || fail "banned-symbol (sync-over-async) gate test"
   python3 "Tools~/ci/test_shadow_build_tests.py" -q || fail "shadow build of Tests/ (Unity NUnit) gate test"
   python3 "Tools~/ci/test_il2cpp_filter_check.py" -q || fail "il2cppfilter invariant test"
+  python3 "Tools~/ci/test_unity_modules.py" -q || fail "package.json built-in module check test"
   python3 "Tools~/ci/test_unitask_pin.py" -q || fail "UniTask pin gate test"
   python3 "Tools~/unity/test_platform_matrix.py" -q || fail "Unity platform matrix tool test"
   python3 .github/issue-seed/create_issues.py --dry-run >/dev/null || fail "issue seed validation"

@@ -55,6 +55,19 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
+        /// Installs <paramref name="policy"/> as <see cref="PlatformPolicy"/> only when no policy is
+        /// installed, atomically, so a policy the app installed (even concurrently) is never
+        /// replaced. Returns whether <paramref name="policy"/> was installed.
+        /// </summary>
+        internal static bool InstallPlatformPolicyIfUnset(Func<string, bool> policy)
+        {
+            if (policy == null)
+                throw new ArgumentNullException(nameof(policy));
+
+            return Interlocked.CompareExchange(ref s_platformPolicy, policy, null) == null;
+        }
+
+        /// <summary>
         /// Returns whether cleartext traffic to <paramref name="host"/> is permitted, given the
         /// caller's <c>AllowCleartext</c> option and the installed <see cref="PlatformPolicy"/>.
         /// </summary>

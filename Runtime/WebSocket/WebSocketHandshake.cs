@@ -12,7 +12,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// Represents a serialized WebSocket upgrade request and validation context.
     /// </summary>
-    public sealed class WebSocketHandshakeRequest
+    internal sealed class WebSocketHandshakeRequest
     {
         internal WebSocketHandshakeRequest(
             Uri uri,
@@ -50,7 +50,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// Builds and sends RFC 6455 HTTP upgrade requests.
     /// </summary>
-    public static class WebSocketHandshake
+    internal static class WebSocketHandshake
     {
         private static readonly HashSet<string> ReservedHeaderNames = new HashSet<string>(
             StringComparer.OrdinalIgnoreCase)

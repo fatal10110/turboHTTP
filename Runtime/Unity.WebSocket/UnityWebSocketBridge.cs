@@ -51,6 +51,7 @@ namespace TurboHTTP.Unity.WebSocket
         private int _pendingState;
         private Action<WebSocketMessage> _onMessage;
 
+        /// <inheritdoc />
         public event Action OnConnected;
 
         /// <summary>
@@ -93,11 +94,17 @@ namespace TurboHTTP.Unity.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public event Action<WebSocketException> OnError;
+        /// <inheritdoc />
         public event Action<WebSocketCloseCode, string> OnClosed;
+        /// <inheritdoc />
         public event Action<WebSocketMetrics> OnMetricsUpdated;
+        /// <inheritdoc />
         public event Action<ConnectionQuality> OnConnectionQualityChanged;
+        /// <summary>Raised on the main thread when a wrapped <see cref="ResilientWebSocketClient"/> schedules a reconnect: the 1-based attempt number and the delay before it. Never raised for other clients.</summary>
         public event Action<int, TimeSpan> OnReconnecting;
+        /// <summary>Raised on the main thread when a wrapped <see cref="ResilientWebSocketClient"/> has reconnected. Never raised for other clients.</summary>
         public event Action OnReconnected;
 
         /// <summary>
@@ -109,6 +116,7 @@ namespace TurboHTTP.Unity.WebSocket
         /// </summary>
         public event Action OnMessageDropped;
 
+        /// <summary>Wraps <paramref name="client"/> and raises its events on the Unity main thread. The bridge owns the client: disposing the bridge disposes it.</summary>
         public UnityWebSocketBridge(IWebSocketClient client)
             : this(client, bufferMessagesUntilSubscribed: false)
         {
@@ -142,44 +150,54 @@ namespace TurboHTTP.Unity.WebSocket
             }
         }
 
+        /// <inheritdoc />
         public WebSocketState State => _client.State;
 
+        /// <inheritdoc />
         public string SubProtocol => _client.SubProtocol;
 
+        /// <inheritdoc />
         public WebSocketMetrics Metrics => _client.Metrics;
 
+        /// <inheritdoc />
         public WebSocketHealthSnapshot Health => _client.Health;
 
+        /// <inheritdoc />
         public Task ConnectAsync(Uri uri, CancellationToken ct = default)
         {
             ThrowIfDisposed();
             return _client.ConnectAsync(uri, ct);
         }
 
+        /// <inheritdoc />
         public Task ConnectAsync(Uri uri, WebSocketConnectionOptions options, CancellationToken ct = default)
         {
             ThrowIfDisposed();
             return _client.ConnectAsync(uri, options, ct);
         }
 
+        /// <inheritdoc />
         public Task SendAsync(string message, CancellationToken ct = default)
         {
             ThrowIfDisposed();
             return _client.SendAsync(message, ct);
         }
 
+        /// <inheritdoc />
         public Task SendAsync(ReadOnlyMemory<byte> data, CancellationToken ct = default)
         {
             ThrowIfDisposed();
             return _client.SendAsync(data, ct);
         }
 
+        /// <inheritdoc />
         public Task SendAsync(byte[] data, CancellationToken ct = default)
         {
             ThrowIfDisposed();
             return _client.SendAsync(data, ct);
         }
 
+        /// <inheritdoc />
         public ValueTask<WebSocketMessage> ReceiveAsync(CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -187,6 +205,7 @@ namespace TurboHTTP.Unity.WebSocket
             return _client.ReceiveAsync(ct);
         }
 
+        /// <inheritdoc />
         public IAsyncEnumerable<WebSocketMessage> ReceiveAllAsync(CancellationToken ct = default)
         {
             ThrowIfDisposed();
@@ -194,6 +213,7 @@ namespace TurboHTTP.Unity.WebSocket
             return _client.ReceiveAllAsync(ct);
         }
 
+        /// <inheritdoc />
         public Task CloseAsync(
             WebSocketCloseCode code = WebSocketCloseCode.NormalClosure,
             string reason = null,
@@ -203,6 +223,7 @@ namespace TurboHTTP.Unity.WebSocket
             return _client.CloseAsync(code, reason, ct);
         }
 
+        /// <inheritdoc />
         public void Abort()
         {
             if (Volatile.Read(ref _disposed) != 0)
@@ -247,6 +268,7 @@ namespace TurboHTTP.Unity.WebSocket
                 cancelOnOwnerInactive);
         }
 
+        /// <inheritdoc />
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
@@ -257,6 +279,7 @@ namespace TurboHTTP.Unity.WebSocket
             _client.Dispose();
         }
 
+        /// <inheritdoc />
         public async ValueTask DisposeAsync()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

@@ -9,16 +9,19 @@ namespace TurboHTTP.WebSocket
     /// </summary>
     public class WebSocketException : UHttpException
     {
+        /// <summary>Creates a <see cref="WebSocketError.ConnectionClosed"/> exception.</summary>
         public WebSocketException(string message)
             : this(WebSocketError.ConnectionClosed, message)
         {
         }
 
+        /// <summary>Creates a <see cref="WebSocketError.ConnectionClosed"/> exception with an inner exception.</summary>
         public WebSocketException(string message, Exception innerException)
             : this(WebSocketError.ConnectionClosed, message, innerException)
         {
         }
 
+        /// <summary>Creates a <see cref="WebSocketError.ConnectionClosed"/> exception for a close with <paramref name="closeCode"/> and <paramref name="closeReason"/>.</summary>
         public WebSocketException(WebSocketCloseCode closeCode, string closeReason)
             : this(
                 WebSocketError.ConnectionClosed,
@@ -29,6 +32,7 @@ namespace TurboHTTP.WebSocket
         {
         }
 
+        /// <summary>Creates an exception for <paramref name="error"/> with an optional inner exception and close status.</summary>
         public WebSocketException(
             WebSocketError error,
             string message,
