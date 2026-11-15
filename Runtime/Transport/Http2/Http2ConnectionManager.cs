@@ -513,11 +513,13 @@ namespace TurboHTTP.Transport.Http2
                 return;
             }
 
-            // Prune drained or failed connections, so the set only holds connections still draining.
+            // Prune drained or failed connections, so the set only holds connections still draining. A
+            // pruned connection is disposed (idempotent): it may have failed without closing its
+            // transport stream yet (#694).
             foreach (var kvp in _draining)
             {
-                if (!kvp.Key.IsAlive)
-                    _draining.TryRemove(kvp.Key, out _);
+                if (!kvp.Key.IsAlive && _draining.TryRemove(kvp.Key, out _))
+                    kvp.Key.Dispose();
             }
 
             _draining[connection] = 0;

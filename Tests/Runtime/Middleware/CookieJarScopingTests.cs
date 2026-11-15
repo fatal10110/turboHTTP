@@ -30,6 +30,66 @@ namespace TurboHTTP.Tests.Middleware
             Assert.AreEqual(0, jar.Count);
         }
 
+        // #771: Uri.Host keeps a trailing dot, so "com." split into ["com", ""] escaped the
+        // single-label and two-label public-suffix checks and then domain-matched every "*.com." host.
+        [TestCase("https://evil.com./", "com.", "https://victim.com./")]
+        [TestCase("https://evil.com./", ".com.", "https://victim.com./")]
+        [TestCase("https://evil.co.uk./", "co.uk.", "https://victim.co.uk./")]
+        [TestCase("https://evil.co.uk./", "CO.UK.", "https://victim.co.uk./")]
+        public void DomainAttributeWithTrailingDotOnPublicSuffix_IsRejected(string origin, string domain, string victim)
+        {
+            var jar = new CookieJar();
+            Store(jar, origin, "sid=1; Path=/; Domain=" + domain);
+
+            Assert.AreEqual(0, jar.Count);
+            Assert.IsNull(Header(jar, victim));
+            Assert.IsNull(Header(jar, origin));
+        }
+
+        [TestCase("https://www.example.com./", "example.com.")]
+        [TestCase("https://www.example.com./", "www.example.com.")]
+        [TestCase("https://www.example.com/", "..example.com")]
+        [TestCase("https://www.example.com/", "example..com")]
+        [TestCase("https://www.example.com/", ".")]
+        public void DomainAttributeWithEmptyLabel_IgnoresCookie(string origin, string domain)
+        {
+            // Decision for #771: a Domain attribute with a trailing dot or any other empty label is
+            // rejected (RFC 6265 5.2.3 strips only one leading dot), never canonicalized.
+            var jar = new CookieJar();
+            Store(jar, origin, "sid=1; Path=/; Domain=" + domain);
+
+            Assert.AreEqual(0, jar.Count);
+        }
+
+        [Test]
+        public void TrailingDotHost_HostOnlyCookieStaysOnThatExactHost()
+        {
+            var jar = new CookieJar();
+            Store(jar, "https://evil.com./", "sid=1; Path=/");
+
+            Assert.AreEqual("sid=1", Header(jar, "https://evil.com./"));
+            Assert.IsNull(Header(jar, "https://evil.com/"));
+            Assert.IsNull(Header(jar, "https://victim.com./"));
+            Assert.IsNull(Header(jar, "https://www.evil.com./"));
+        }
+
+        [Test]
+        public void PublicSuffixPredicate_NeverSeesATrailingDot()
+        {
+            string seen = null;
+            var jar = new CookieJar(isPublicSuffix: d =>
+            {
+                if (d.EndsWith(".", StringComparison.Ordinal))
+                    seen = d;
+                return false;
+            });
+
+            Store(jar, "https://www.example.test./", "sid=1; Path=/; Domain=example.test.");
+
+            Assert.IsNull(seen);
+            Assert.AreEqual(0, jar.Count);
+        }
+
         [Test]
         public void DomainAttributeEqualToPublicSuffixHost_BecomesHostOnly()
         {

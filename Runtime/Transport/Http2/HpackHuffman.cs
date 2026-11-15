@@ -135,7 +135,7 @@ namespace TurboHTTP.Transport.Http2
             (0x79,        7), // (120) 'x'
             (0x7a,        7), // (121) 'y'
             (0x7b,        7), // (122) 'z'
-            (0x7fffe,    19), // (123) '{'
+            (0x7ffe,     15), // (123) '{'
             (0x7fc,      11), // (124) '|'
             (0x3ffd,     14), // (125) '}'
             (0x1ffd,     13), // (126) '~'
@@ -284,6 +284,17 @@ namespace TurboHTTP.Transport.Http2
 
         private static readonly HuffmanNode s_root;
 
+        /// <summary>
+        /// The Appendix B code of <paramref name="symbol"/> (0-255, or 256 for EOS). For table
+        /// conformance tests.
+        /// </summary>
+        internal static (uint Code, byte BitLength) GetCode(int symbol)
+        {
+            if (symbol == EosSymbol)
+                return (EosCode, EosBitLength);
+            return s_encodeTable[symbol];
+        }
+
         static HpackHuffman()
         {
             s_root = new HuffmanNode();
@@ -400,8 +411,8 @@ namespace TurboHTTP.Transport.Http2
                         int bitVal = (b >> bit) & 1;
                         var next = bitVal == 0 ? node.Zero : node.One;
 
-                        // The HPACK code is complete, so this is unreachable for a well-formed tree;
-                        // kept as a guard against walking off it.
+                        // The Appendix B code is complete, so every bit sequence walks the tree; this
+                        // is a guard against walking off it should the table ever be wrong.
                         if (next == null)
                             throw new HpackDecodingException("Invalid Huffman code sequence");
 

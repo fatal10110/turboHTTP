@@ -1717,7 +1717,8 @@ namespace TurboHTTP.Transport
         /// Consumes a forward-proxy 407 body so the connection can carry the authenticated retry.
         /// Returns <c>false</c> when the connection must be closed instead: not keep-alive, a body
         /// that is chunked, runs to close or exceeds <see cref="MaxProxyChallengeDrainBytes"/>, or
-        /// a read failure (cancellation included; the caller checks the token). A pending read
+        /// a read failure (cancellation included; the caller checks the token), or bytes left in the
+        /// reader after the body (RFC 9112 Section 9.3, #643). A pending read
         /// ends as soon as <paramref name="ct"/> fires even when the platform never ends it (#345):
         /// the reader races it into reader-owned memory, so <c>buffer</c> is never a read target
         /// that outlives this call.
@@ -1727,13 +1728,13 @@ namespace TurboHTTP.Transport
             if (!head.KeepAlive)
                 return false;
             if (head.BodyKind == Http11ResponseBodyKind.Empty)
-                return true;
+                return !head.Reader.HasBufferedData;
             if (head.BodyKind != Http11ResponseBodyKind.ContentLength)
                 return false;
 
             var remaining = head.ContentLength.GetValueOrDefault();
             if (remaining == 0)
-                return true;
+                return !head.Reader.HasBufferedData;
             if (remaining < 0 || remaining > MaxProxyChallengeDrainBytes)
                 return false;
 
@@ -1750,7 +1751,8 @@ namespace TurboHTTP.Transport
                     remaining -= read;
                 }
 
-                return true;
+                // Bytes past the 407 body: the connection state is unknown, so it is not reused.
+                return !head.Reader.HasBufferedData;
             }
             catch (Exception)
             {
@@ -1796,6 +1798,11 @@ namespace TurboHTTP.Transport
             }
 
             using var head = parsedHead;
+
+            // RFC 9112 Section 9.6: a client that sent "close" sends no further request on this
+            // connection, whatever the response says, so it never reaches the pool (#672).
+            if (RequestAsksToCloseConnection(request))
+                head.KeepAlive = false;
 
             if (ShouldRetryWithoutExpectation(head, request, requestWriteState))
             {
@@ -1920,6 +1927,7 @@ namespace TurboHTTP.Transport
                     .ConfigureAwait(false);
             }
 
+            Exception sendException = null;
             try
             {
                 await Http11RequestSerializer.SerializeAsync(
@@ -1930,12 +1938,29 @@ namespace TurboHTTP.Transport
                         _streamingOptions)
                     .ConfigureAwait(false);
             }
+            catch (Exception ex) when (!ct.IsCancellationRequested
+                && !(requestWriteState?.BodySourceFailed ?? false)
+                && IsConnectionWriteFailure(ex))
+            {
+                sendException = ex;
+            }
             finally
             {
                 RecordRequestBodyBytesSent(context, requestWriteState);
             }
 
             context.RecordEvent("TransportReceiving");
+            if (sendException != null)
+            {
+                return await ReadFinalHeadAfterSendFailureAsync(
+                        lease.Connection.Stream,
+                        request,
+                        context,
+                        sendException,
+                        ct)
+                    .ConfigureAwait(false);
+            }
+
             if (firstByteTimeout <= TimeSpan.Zero || firstByteTimeout == Timeout.InfiniteTimeSpan)
             {
                 return await Http11ResponseParser.ParseHeadAsync(
@@ -2220,6 +2245,68 @@ namespace TurboHTTP.Transport
                 bodyComplete: bodySendException == null,
                 bodySendException,
                 context);
+        }
+
+        /// <summary>
+        /// The one-shot path's answer to a failed request write (RFC 9112 Section 9.5, #837): a
+        /// server that rejects an upload early (413, 401, ...) and closes has usually sent its final
+        /// response before the reset, so the transport tries to read it (bounded by the request
+        /// token) before it surfaces the send failure. The rule for the head is the expect-continue
+        /// one: a non-2xx head is returned with KeepAlive=false, a 1xx/2xx head or no head at all
+        /// rethrows the original send failure, which keeps the stale-connection replay decision of
+        /// DispatchAttemptAsync unchanged.
+        /// </summary>
+        private static async Task<ParsedResponseHead> ReadFinalHeadAfterSendFailureAsync(
+            Stream stream,
+            UHttpRequest request,
+            RequestContext context,
+            Exception sendException,
+            CancellationToken ct)
+        {
+            ParsedResponseHead finalHead;
+            try
+            {
+                finalHead = await Http11ResponseParser.ParseHeadAsync(stream, request.Method, ct, context)
+                    .ConfigureAwait(false);
+            }
+            catch (Exception responseReadException)
+            {
+                ThrowCapturedBodySendException(sendException, context, responseReadException);
+                throw;
+            }
+
+            return CompleteExpectContinueHead(finalHead, bodyComplete: false, sendException, context);
+        }
+
+        /// <summary>
+        /// True when <paramref name="ex"/> looks like a failed write to the connection (a reset or
+        /// broken pipe carries a <see cref="SocketException"/> somewhere in its chain). The caller
+        /// also requires <see cref="Http11RequestWriteState.BodySourceFailed"/> to be unset: a body
+        /// source backed by another socket fails with the same exception shape, and a source
+        /// failure leaves the server waiting for the rest of the body, so reading a response would
+        /// only wait for the request timeout.
+        /// </summary>
+        private static bool IsConnectionWriteFailure(Exception ex)
+        {
+            for (var current = ex; current != null; current = current.InnerException)
+            {
+                if (current is SocketException)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool RequestAsksToCloseConnection(UHttpRequest request)
+        {
+            var values = request.Headers.GetValues("Connection");
+            for (int i = 0; i < values.Count; i++)
+            {
+                if (ExpectContinueHelper.HeaderValueContainsToken(values[i], "close"))
+                    return true;
+            }
+
+            return false;
         }
 
         /// <summary>

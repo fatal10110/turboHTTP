@@ -578,6 +578,37 @@ namespace TurboHTTP.Transport.Http2
             // A connection that dies before the SETTINGS ACK (an invalid server preface, a closed stream)
             // fails InitializeAsync now with that error instead of at the ACK timeout.
             TryCompleteSettingsAck(MapException(ex));
+
+            // A failed connection is never reused, so it closes now instead of when a later request
+            // evicts it (RFC 9113 Section 5.4.1: the TCP connection is closed after a connection error).
+            ScheduleDisposeAfterFailure();
+        }
+
+        /// <summary>
+        /// Queues <see cref="Dispose"/> once for a connection that <see cref="FailAllStreams"/> failed
+        /// (read-loop error or peer EOF, frame-write failure, PING timeout, send stall). It runs on the
+        /// thread pool, never inline: the callers are the read loop and frame writers, and Dispose writes
+        /// the GOAWAY synchronously and closes the transport stream (#694). Dispose itself calls
+        /// FailAllStreams after setting <c>_disposed</c>, so it never queues itself.
+        /// </summary>
+        private void ScheduleDisposeAfterFailure()
+        {
+            if (Volatile.Read(ref _disposed) != 0 || Interlocked.Exchange(ref _disposeScheduled, 1) != 0)
+                return;
+
+            ThreadPool.QueueUserWorkItem(s_disposeAfterFailure, this);
+        }
+
+        private static void DisposeAfterFailure(object state)
+        {
+            try
+            {
+                ((Http2Connection)state).Dispose();
+            }
+            catch
+            {
+                // Best effort: an exception must never escape a thread-pool work item.
+            }
         }
 
         public void Dispose()

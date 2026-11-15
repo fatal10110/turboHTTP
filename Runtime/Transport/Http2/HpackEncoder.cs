@@ -26,7 +26,19 @@ namespace TurboHTTP.Transport.Http2
         private int _sizeUpdateSignal;
         private int _pendingMinSize;
         private int _pendingFinalSize;
-        private int _appliedMaxSize;
+        private int _peerMaxSize;
+
+        /// <summary>
+        /// Default upper bound on this encoder's own dynamic table, whatever the peer's
+        /// SETTINGS_HEADER_TABLE_SIZE allows (RFC 7541 Section 4.2: the encoder may use any size up
+        /// to the peer's limit). Equal to the HTTP/2 initial value: a peer that raises its limit gets an
+        /// update carrying 4096, and the table never grows past it.
+        /// </summary>
+        internal const int DefaultLocalTableSizeCap = 4096;
+
+        // Upper bound on the table size this encoder uses; every peer value is clamped to it so the
+        // memory the table holds and the per-header FindMatch scan stay bounded (RFC 7541 Section 7.3).
+        private readonly int _localTableSizeCap;
 
         /// <summary>
         /// Reusable output buffer. Allocated once per encoder instance and reset
@@ -35,11 +47,36 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         private readonly PooledArrayBufferWriter _outputBuffer = new PooledArrayBufferWriter(256);
 
-        public HpackEncoder(int maxDynamicTableSize = 4096)
+        /// <param name="maxDynamicTableSize">The peer's table size limit at connection start (the HTTP/2
+        /// initial SETTINGS_HEADER_TABLE_SIZE, 4096).</param>
+        /// <param name="localTableSizeCap">Upper bound on the table size this encoder uses. When it is
+        /// below <paramref name="maxDynamicTableSize"/> the first block signals the smaller size.</param>
+        public HpackEncoder(int maxDynamicTableSize = 4096, int localTableSizeCap = DefaultLocalTableSizeCap)
         {
+            if (maxDynamicTableSize < 0)
+                throw new ArgumentOutOfRangeException(nameof(maxDynamicTableSize), maxDynamicTableSize, "Table size must be non-negative.");
+            if (localTableSizeCap < 0)
+                throw new ArgumentOutOfRangeException(nameof(localTableSizeCap), localTableSizeCap, "Table size cap must be non-negative.");
+
+            _localTableSizeCap = localTableSizeCap;
             _dynamicTable = new HpackDynamicTable(maxDynamicTableSize);
-            _appliedMaxSize = maxDynamicTableSize;
+            _peerMaxSize = maxDynamicTableSize;
+
+            // The peer's decoder starts at maxDynamicTableSize; using less must be signalled in the
+            // first block (RFC 7541 Section 4.2).
+            if (localTableSizeCap < maxDynamicTableSize)
+            {
+                _pendingMinSize = localTableSizeCap;
+                _pendingFinalSize = localTableSizeCap;
+                _sizeUpdateSignal = 1;
+            }
         }
+
+        /// <summary>Current size of this encoder's dynamic table in RFC 7541 Section 4.1 octets.</summary>
+        internal int DynamicTableSize => _dynamicTable.CurrentSize;
+
+        /// <summary>Maximum size of this encoder's dynamic table as last applied by <see cref="Encode"/>.</summary>
+        internal int DynamicTableMaxSize => _dynamicTable.MaxSize;
 
         public void Dispose() => _outputBuffer.Dispose();
 
@@ -102,28 +139,35 @@ namespace TurboHTTP.Transport.Http2
         /// Thread-safe: may be called from the read loop while another thread runs <see cref="Encode"/>.
         /// The table is resized, and the size update instructions emitted, at the start of the next
         /// <see cref="Encode"/> call: the smallest size recorded since the last block first, then the
-        /// final size (RFC 7541 Section 4.2).
+        /// final size (RFC 7541 Section 4.2). The size used is the peer's value clamped to the local
+        /// cap, so a peer advertising up to 2^31-1 cannot grow the table past it. A changed peer value
+        /// is always answered with an update carrying the clamped size, even when that equals the
+        /// size in use (legal, and accepted by decoders that expect an update after every change); a
+        /// repeated peer value emits nothing.
         /// </summary>
         public void SetMaxDynamicTableSize(int newSize)
         {
             if (newSize < 0)
                 throw new ArgumentOutOfRangeException(nameof(newSize), newSize, "Table size must be non-negative.");
 
+            int cappedSize = Math.Min(newSize, _localTableSizeCap);
+
             lock (_sizeUpdateLock)
             {
                 if (Volatile.Read(ref _sizeUpdateSignal) == 0)
                 {
-                    if (newSize == _appliedMaxSize)
+                    if (newSize == _peerMaxSize)
                         return;
 
-                    _pendingMinSize = newSize;
+                    _pendingMinSize = cappedSize;
                 }
-                else if (newSize < _pendingMinSize)
+                else if (cappedSize < _pendingMinSize)
                 {
-                    _pendingMinSize = newSize;
+                    _pendingMinSize = cappedSize;
                 }
 
-                _pendingFinalSize = newSize;
+                _peerMaxSize = newSize;
+                _pendingFinalSize = cappedSize;
                 Volatile.Write(ref _sizeUpdateSignal, 1);
             }
         }
@@ -139,7 +183,6 @@ namespace TurboHTTP.Transport.Http2
 
                 minSize = _pendingMinSize;
                 finalSize = _pendingFinalSize;
-                _appliedMaxSize = finalSize;
                 Volatile.Write(ref _sizeUpdateSignal, 0);
             }
 

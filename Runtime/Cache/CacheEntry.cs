@@ -157,20 +157,14 @@ namespace TurboHTTP.Cache
                 return false;
 
             var now = EnsureUtc(utcNow);
-            return now >= ExpiresAtUtc.Value
-                   && now < ExpiresAtUtc.Value + StaleWhileRevalidate.Value;
-        }
-
-        internal bool ShouldEvict(DateTime utcNow)
-        {
-            if (!ExpiresAtUtc.HasValue)
-                return false;
-
-            var now = EnsureUtc(utcNow);
             if (now < ExpiresAtUtc.Value)
                 return false;
 
-            return !IsStaleWhileRevalidate(now);
+            // The window is peer-controlled delta-seconds (RFC 5861 section 3) and the constructor accepts any TimeSpan
+            // (custom ICacheStorage implementations build entries too): clamp it to [0, 2^31 s] (RFC 9111 section
+            // 1.2.2) and add without overflowing DateTime, so this check never throws.
+            var window = CacheDeltaSeconds.ClampLifetime(StaleWhileRevalidate.Value);
+            return now < CacheDeltaSeconds.AddClamped(ExpiresAtUtc.Value, window);
         }
 
         public CacheEntry Clone()

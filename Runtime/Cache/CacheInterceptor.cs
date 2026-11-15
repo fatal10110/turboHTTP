@@ -107,10 +107,12 @@ namespace TurboHTTP.Cache
         // This index is intentionally not persisted across process restarts in v1.
         // Storage evicts silently, so the index is also bounded LRU-style by
         // _variantIndexCapacity (#60); _variantLru orders the buckets (head = least recent).
-        // All three are guarded by _indexLock.
+        // Each bucket holds at most _maxVariantsPerBaseKey Vary variants (#469).
+        // All of them are guarded by _indexLock.
         private readonly Dictionary<string, VariantBucket> _variantIndex = new Dictionary<string, VariantBucket>(StringComparer.Ordinal);
         private readonly LinkedList<string> _variantLru = new LinkedList<string>();
         private int _variantIndexCapacity;
+        private int _maxVariantsPerBaseKey = DefaultMaxVariantsPerBaseKey;
         private readonly object _pendingMutationLock = new object();
         private readonly Dictionary<string, Task> _pendingMutations = new Dictionary<string, Task>(StringComparer.Ordinal);
         private readonly CancellationTokenSource _backgroundWorkCancellation = new CancellationTokenSource();
@@ -125,7 +127,14 @@ namespace TurboHTTP.Cache
         private sealed class VariantBucket
         {
             public readonly HashSet<string> Signatures = new HashSet<string>(StringComparer.Ordinal);
-            public readonly HashSet<string> StorageKeys = new HashSet<string>(StringComparer.Ordinal);
+            // Every registered storage key; a Vary key maps to its node in VariedKeyOrder, the
+            // unvaried key maps to null (it is reachable without the index and never evicted here).
+            public readonly Dictionary<string, LinkedListNode<string>> StorageKeys =
+                new Dictionary<string, LinkedListNode<string>>(StringComparer.Ordinal);
+            // Vary storage keys, head = least recently stored; bounded by _maxVariantsPerBaseKey (#469).
+            public readonly LinkedList<string> VariedKeyOrder = new LinkedList<string>();
+            // Variants this bucket evicted to stay under the bound; at the bound, new variants are refused.
+            public int VariantEvictions;
             public readonly Dictionary<string, string> SignatureByStorageKey = new Dictionary<string, string>(StringComparer.Ordinal);
             public readonly Dictionary<string, int> SignatureRefCounts = new Dictionary<string, int>(StringComparer.Ordinal);
             public LinkedListNode<string> LruNode;
@@ -628,20 +637,10 @@ namespace TurboHTTP.Cache
             var pragmaNoCache = HasPragmaNoCache(responseHeadersForStorage);
             var mustRevalidate = responseCacheControl.NoCache || responseCacheControl.MustRevalidate || pragmaNoCache;
 
-            if (!expiresAtUtc.HasValue)
+            if (!expiresAtUtc.HasValue
+                && !TryResolveMissingFreshness(nowUtc, mustRevalidate, eTag, lastModified, out expiresAtUtc))
             {
-                if (mustRevalidate && (!string.IsNullOrEmpty(eTag) || !string.IsNullOrEmpty(lastModified)))
-                {
-                    // `no-cache` style entries can be stored without freshness metadata
-                    // as long as validators are present; middleware will revalidate on read.
-                }
-                else if (_policy.DoNotCacheWithoutFreshness)
-                {
-                    return default;
-                }
-
-                if (!expiresAtUtc.HasValue && _policy.EnableHeuristicFreshness)
-                    expiresAtUtc = nowUtc.Add(_policy.HeuristicFreshnessLifetime);
+                return default;
             }
 
             var varyKey = BuildVaryKey(requestHeaders, varyHeaders);
@@ -665,6 +664,43 @@ namespace TurboHTTP.Cache
                 trailers: trailers);
 
             return new PreparedCacheEntry(entry, signature);
+        }
+
+        // A response without explicit freshness (no max-age/s-maxage/Expires). Returns false when it must not be stored.
+        // - no-cache/must-revalidate with a validator: stored without an expiry; MustRevalidate makes every use revalidate.
+        // - DoNotCacheWithoutFreshness: not stored.
+        // - heuristic freshness on: the configured lifetime (RFC 9111 section 4.2.2).
+        // - otherwise the freshness lifetime is zero (RFC 9111 section 4.2: no explicit or heuristic lifetime means stale),
+        //   exactly like max-age=0: stored only with a validator and revalidated before every reuse. A null expiry would
+        //   mean "never expires" (CacheEntry.IsExpired) and serve the response as a HIT forever.
+        private bool TryResolveMissingFreshness(
+            DateTime nowUtc,
+            bool mustRevalidate,
+            string eTag,
+            string lastModified,
+            out DateTime? expiresAtUtc)
+        {
+            expiresAtUtc = null;
+            var hasValidator = !string.IsNullOrEmpty(eTag) || !string.IsNullOrEmpty(lastModified);
+            var revalidateOnEveryUse = mustRevalidate && hasValidator;
+            if (!revalidateOnEveryUse && _policy.DoNotCacheWithoutFreshness)
+                return false;
+
+            if (_policy.EnableHeuristicFreshness)
+            {
+                expiresAtUtc = AddClamped(nowUtc, _policy.HeuristicFreshnessLifetime);
+                return true;
+            }
+
+            if (revalidateOnEveryUse)
+                return true;
+
+            // A stale entry without a validator can never be reused (it is removed on lookup), so it is not stored.
+            if (!hasValidator)
+                return false;
+
+            expiresAtUtc = nowUtc;
+            return true;
         }
 
         private PreparedCacheEntry MergeNotModifiedEntry(
@@ -725,19 +761,10 @@ namespace TurboHTTP.Cache
             var lastModified = mergedHeaders.Get("Last-Modified");
             var mustRevalidate = cacheControl.NoCache || cacheControl.MustRevalidate || HasPragmaNoCache(mergedHeaders);
 
-            if (!expiresAtUtc.HasValue)
+            if (!expiresAtUtc.HasValue
+                && !TryResolveMissingFreshness(nowUtc, mustRevalidate, eTag, lastModified, out expiresAtUtc))
             {
-                if (mustRevalidate && (!string.IsNullOrEmpty(eTag) || !string.IsNullOrEmpty(lastModified)))
-                {
-                    // Validator-backed entries may remain freshness-less and revalidate on access.
-                }
-                else if (_policy.DoNotCacheWithoutFreshness)
-                {
-                    return default;
-                }
-
-                if (!expiresAtUtc.HasValue && _policy.EnableHeuristicFreshness)
-                    expiresAtUtc = nowUtc.Add(_policy.HeuristicFreshnessLifetime);
+                return default;
             }
 
             var varyKey = BuildVaryKey(request.Headers, varyHeaders);
@@ -972,12 +999,18 @@ namespace TurboHTTP.Cache
         {
             try
             {
+                if (!ShouldStoreVariant(baseKey, prepared.Signature, prepared.Entry.Key))
+                    return;
+
                 await _policy.Storage
                     .SetAsync(prepared.Entry.Key, prepared.Entry, cancellationToken)
                     .ConfigureAwait(false);
-                RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
+                var evictedVariant = RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
+                if (evictedVariant != null)
+                    await RemoveEvictedVariantAsync(evictedVariant).ConfigureAwait(false);
             }
-            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (
+                cancellationToken.IsCancellationRequested || _backgroundWorkToken.IsCancellationRequested)
             {
             }
             catch (Exception ex)
@@ -1041,10 +1074,24 @@ namespace TurboHTTP.Cache
             PreparedCacheEntry prepared,
             CancellationToken cancellationToken)
         {
+            if (!ShouldStoreVariant(baseKey, prepared.Signature, prepared.Entry.Key))
+                return;
+
             await _policy.Storage
                 .SetAsync(prepared.Entry.Key, prepared.Entry, cancellationToken)
                 .ConfigureAwait(false);
-            RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
+            var evictedVariant = RegisterStoredVariant(baseKey, prepared.Signature, prepared.Entry.Key);
+            if (evictedVariant != null)
+                await RemoveEvictedVariantAsync(evictedVariant).ConfigureAwait(false);
+        }
+
+        // The evicted variant has already left the index. A skipped storage removal would leave it
+        // reachable by its signature but invisible to unsafe-method invalidation (RFC 9111 section 4.4),
+        // so the caller's token (the request token on the 304 merge path) must not cancel it after
+        // SetAsync. Only interceptor disposal does.
+        private Task RemoveEvictedVariantAsync(string evictedVariant)
+        {
+            return _policy.Storage.RemoveAsync(evictedVariant, _backgroundWorkToken);
         }
 
         private async Task ReplaceStoredEntryCoreAsync(

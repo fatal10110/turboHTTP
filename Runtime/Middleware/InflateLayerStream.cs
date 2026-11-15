@@ -75,6 +75,8 @@ namespace TurboHTTP.Middleware
         private readonly bool _gzip;
         private readonly byte[] _in = new byte[InputBufferBytes];
         private readonly InflaterInput _inflaterInput;
+        private readonly DecompressionBudget _budget;
+        private readonly bool _sourceIsWire;
 
         // _in holds [0, _inEnd); bytes before _inPos were consumed (header) or handed to the inflater.
         private int _inPos;
@@ -134,11 +136,26 @@ namespace TurboHTTP.Middleware
         /// <param name="source">The layer input (wire bytes or the decoder below).</param>
         /// <param name="leaveOpen">True when the caller owns <paramref name="source"/>.</param>
         /// <param name="gzip">True for the <c>gzip</c> coding, false for <c>deflate</c>.</param>
-        internal InflateLayerStream(Stream source, bool leaveOpen, bool gzip)
+        /// <param name="budget">
+        /// Work bounds and cancellation of the decode chain (#774); every source read is charged to it. Null for
+        /// an unbounded standalone layer.
+        /// </param>
+        /// <param name="sourceIsWire">
+        /// True when <paramref name="source"/> carries the compressed wire bytes (charged as compressed input),
+        /// false when it is the layer below (charged as intermediate output).
+        /// </param>
+        internal InflateLayerStream(
+            Stream source,
+            bool leaveOpen,
+            bool gzip,
+            DecompressionBudget budget = null,
+            bool sourceIsWire = false)
         {
             _source = source ?? throw new ArgumentNullException(nameof(source));
             _leaveOpen = leaveOpen;
             _gzip = gzip;
+            _budget = budget;
+            _sourceIsWire = sourceIsWire;
             _inflaterInput = new InflaterInput(this);
             _phase = gzip ? Phase.GzipHeader : Phase.DeflateHeader;
             _format = gzip ? Format.Gzip : Format.RawDeflate;
@@ -191,6 +208,7 @@ namespace TurboHTTP.Middleware
 
                     if (!TryAdvance())
                     {
+                        BeforeSourceRead(CancellationToken.None);
                         var start = PrepareFill();
                         FillFromSource(_source.Read(_in, start, _in.Length - start));
                     }
@@ -241,6 +259,7 @@ namespace TurboHTTP.Middleware
 
                     if (!TryAdvance())
                     {
+                        BeforeSourceRead(cancellationToken);
                         var start = PrepareFill();
                         FillFromSource(
                             await _source.ReadAsync(_in.AsMemory(start, _in.Length - start), cancellationToken)
@@ -270,6 +289,19 @@ namespace TurboHTTP.Middleware
         {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(nameof(InflateLayerStream));
+        }
+
+        /// <summary>
+        /// Checkpoint before every source read (#774). A body that decodes to nothing (empty stored blocks, empty
+        /// gzip members, an inner layer's zero output) loops through source reads inside the platform inflater
+        /// without returning to the caller, so disposal and cancellation are observed here, including on the
+        /// synchronous path, which takes the token of the read in progress from the budget.
+        /// </summary>
+        private void BeforeSourceRead(CancellationToken cancellationToken)
+        {
+            ThrowIfDisposed();
+            cancellationToken.ThrowIfCancellationRequested();
+            _budget?.ThrowIfCancellationRequested();
         }
 
         private DeflateStream CurrentInflater()
@@ -581,6 +613,7 @@ namespace TurboHTTP.Middleware
                 return;
             }
 
+            _budget?.Charge(read, _sourceIsWire);
             _inEnd += read;
         }
 
@@ -624,6 +657,7 @@ namespace TurboHTTP.Middleware
             {
                 if (!_sourceEnded)
                 {
+                    BeforeSourceRead(CancellationToken.None);
                     var start = PrepareInflaterFill();
                     FillFromSource(_source.Read(_in, start, _in.Length - start));
                 }
@@ -653,6 +687,7 @@ namespace TurboHTTP.Middleware
         {
             if (!_sourceEnded)
             {
+                BeforeSourceRead(cancellationToken);
                 var start = PrepareInflaterFill();
                 FillFromSource(
                     await _source.ReadAsync(_in.AsMemory(start, _in.Length - start), cancellationToken)

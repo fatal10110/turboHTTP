@@ -183,11 +183,23 @@ namespace TurboHTTP.Observability
 
         private void InvokeDisposeCallback()
         {
-            _onDispose?.Invoke(new ObservedResponseBodyCompletion(
-                Interlocked.Read(ref _totalBytesObserved),
-                Volatile.Read(ref _completedNaturally) != 0,
-                Volatile.Read(ref _aborted) != 0,
-                Volatile.Read(ref _error)));
+            var onDispose = _onDispose;
+            if (onDispose == null)
+                return;
+
+            try
+            {
+                onDispose(new ObservedResponseBodyCompletion(
+                    Interlocked.Read(ref _totalBytesObserved),
+                    Volatile.Read(ref _completedNaturally) != 0,
+                    Volatile.Read(ref _aborted) != 0,
+                    Volatile.Read(ref _error)));
+            }
+            catch (Exception)
+            {
+                // An observer must never change the dispose outcome the caller sees (#1053): the body is
+                // already released, and Metrics/Monitor record their own failures.
+            }
         }
 
         private void ThrowIfDisposed()

@@ -209,6 +209,56 @@ namespace TurboHTTP.Middleware
             }
         }
 
+        /// <summary>
+        /// Removes the stored cookie identified by <paramref name="name"/>, <paramref name="domain"/>
+        /// and <paramref name="path"/>, the same triple that identifies a cookie when a Set-Cookie
+        /// header replaces it (RFC 6265 section 5.3 step 11).
+        /// </summary>
+        /// <param name="name">Cookie name, compared case-sensitively.</param>
+        /// <param name="domain">
+        /// Cookie domain: the request host for a host-only cookie, otherwise the <c>Domain</c>
+        /// attribute value. Compared case-insensitively; a leading dot is ignored.
+        /// </param>
+        /// <param name="path">Cookie path; <c>null</c>, empty or a value not starting with <c>/</c> means <c>/</c>.</param>
+        /// <returns><c>true</c> if a cookie was removed; otherwise <c>false</c>.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="name"/> or <paramref name="domain"/> is <c>null</c>.</exception>
+        /// <exception cref="ObjectDisposedException">The jar has been disposed.</exception>
+        public bool Remove(string name, string domain, string path = "/")
+        {
+            ThrowIfDisposed();
+            if (name == null)
+                throw new ArgumentNullException(nameof(name));
+            if (domain == null)
+                throw new ArgumentNullException(nameof(domain));
+
+            var key = BuildCookieKey(name, NormalizeDomain(domain), NormalizePath(path));
+            _lock.EnterWriteLock();
+            try
+            {
+                return _cookies.Remove(key);
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
+        /// <summary>Removes every cookie from the jar.</summary>
+        /// <exception cref="ObjectDisposedException">The jar has been disposed.</exception>
+        public void Clear()
+        {
+            ThrowIfDisposed();
+            _lock.EnterWriteLock();
+            try
+            {
+                _cookies.Clear();
+            }
+            finally
+            {
+                _lock.ExitWriteLock();
+            }
+        }
+
         public void StoreFromSetCookieHeaders(
             Uri requestUri,
             IReadOnlyList<string> setCookieHeaders,
@@ -253,7 +303,7 @@ namespace TurboHTTP.Middleware
                     _cookies[key] = cookie;
                 }
 
-                EnforceLimitsUnsafe();
+                EnforceLimitsUnsafe(nowUtc);
             }
             finally
             {
@@ -370,6 +420,11 @@ namespace TurboHTTP.Middleware
             cookie = null;
             shouldDelete = false;
 
+            // RFC 6265bis 5.6 step 1: a set-cookie-string containing a CTL character other than
+            // HTAB is ignored entirely, so no stored name, value or attribute can carry one.
+            if (ContainsForbiddenControlCharacter(line))
+                return false;
+
             var segments = line.Split(';');
             if (segments.Length == 0)
                 return false;
@@ -385,6 +440,11 @@ namespace TurboHTTP.Middleware
                 return false;
 
             if (name.Length + value.Length > MaxNameValueLength)
+                return false;
+
+            // The jar only stores what the Cookie request header can carry: the field serializer
+            // rejects characters above U+00FF (HttpFieldValidator).
+            if (ContainsNonLatin1Character(name) || ContainsNonLatin1Character(value))
                 return false;
 
             var host = NormalizeDomain(requestUri.Host);
@@ -425,7 +485,14 @@ namespace TurboHTTP.Middleware
                     if (string.IsNullOrWhiteSpace(attrValue))
                         return false;
 
-                    var normalizedDomain = NormalizeDomain(attrValue.TrimStart('.'));
+                    // RFC 6265 5.2.3: drop a single leading dot, then lower-case.
+                    var normalizedDomain = (attrValue[0] == '.' ? attrValue.Substring(1) : attrValue)
+                        .ToLowerInvariant();
+
+                    // A trailing dot or an empty label ("com.", "a..com") would slip past the
+                    // public-suffix and single-label checks below; ignore the cookie.
+                    if (HasEmptyLabel(normalizedDomain))
+                        return false;
 
                     if (isIpHost)
                     {
@@ -473,14 +540,9 @@ namespace TurboHTTP.Middleware
 
                 if (string.Equals(attrName, "Expires", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (DateTime.TryParse(
-                        attrValue,
-                        CultureInfo.InvariantCulture,
-                        DateTimeStyles.AdjustToUniversal | DateTimeStyles.AssumeUniversal,
-                        out var parsedExpires))
-                    {
+                    // RFC 6265 5.2.1: a value that is not a cookie-date leaves the attribute ignored.
+                    if (TryParseCookieDate(attrValue, out var parsedExpires))
                         expiresUtc = parsedExpires;
-                    }
 
                     continue;
                 }
@@ -559,9 +621,10 @@ namespace TurboHTTP.Middleware
             return true;
         }
 
-        private void EnforceLimitsUnsafe()
+        private void EnforceLimitsUnsafe(DateTime nowUtc)
         {
-            RemoveExpiredUnsafe(DateTime.UtcNow);
+            // Same clock as the rest of the store (utcNowOverride), never the wall clock.
+            RemoveExpiredUnsafe(nowUtc);
 
             var domainCounts = BuildDomainCountsUnsafe();
 
@@ -821,7 +884,7 @@ namespace TurboHTTP.Middleware
 
         private static bool IsRejectedPublicSuffix(string normalizedDomain)
         {
-            if (string.IsNullOrEmpty(normalizedDomain))
+            if (HasEmptyLabel(normalizedDomain))
                 return true;
 
             var labels = normalizedDomain.Split('.');
@@ -839,6 +902,211 @@ namespace TurboHTTP.Middleware
             }
 
             return false;
+        }
+
+        /// <summary>
+        /// True for an empty domain or one with an empty label: a leading or trailing dot, or two
+        /// consecutive dots.
+        /// </summary>
+        private static bool HasEmptyLabel(string domain)
+        {
+            if (string.IsNullOrEmpty(domain))
+                return true;
+
+            if (domain[0] == '.' || domain[domain.Length - 1] == '.')
+                return true;
+
+            return domain.IndexOf("..", StringComparison.Ordinal) >= 0;
+        }
+
+        private static bool ContainsForbiddenControlCharacter(string value)
+        {
+            for (int i = 0; i < value.Length; i++)
+            {
+                char c = value[i];
+                if ((c < 0x20 && c != '\t') || c == 0x7F)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private static bool ContainsNonLatin1Character(string value)
+        {
+            for (int i = 0; i < value.Length; i++)
+            {
+                if (value[i] > 0xFF)
+                    return true;
+            }
+
+            return false;
+        }
+
+        private const string CookieDateMonths = "janfebmaraprmayjunjulaugsepoctnovdec";
+
+        /// <summary>
+        /// Parses a cookie-date with the RFC 6265 section 5.1.1 algorithm: the first time, day-of-month,
+        /// month and year tokens are taken in any order and every other token (weekday, zone) is
+        /// ignored. Culture-independent and allocation-free. The result is UTC.
+        /// </summary>
+        internal static bool TryParseCookieDate(string value, out DateTime utc)
+        {
+            utc = default;
+            if (string.IsNullOrEmpty(value))
+                return false;
+
+            bool foundTime = false, foundDayOfMonth = false, foundMonth = false, foundYear = false;
+            int hour = 0, minute = 0, second = 0, dayOfMonth = 0, month = 0, year = 0;
+
+            int i = 0;
+            int length = value.Length;
+            while (i < length)
+            {
+                while (i < length && IsCookieDateDelimiter(value[i]))
+                    i++;
+
+                int start = i;
+                while (i < length && !IsCookieDateDelimiter(value[i]))
+                    i++;
+
+                int end = i;
+                if (end == start)
+                    break;
+
+                if (!foundTime && TryMatchCookieTime(value, start, end, out hour, out minute, out second))
+                {
+                    foundTime = true;
+                    continue;
+                }
+
+                if (!foundDayOfMonth && TryMatchCookieDigits(value, start, end, 1, 2, out dayOfMonth))
+                {
+                    foundDayOfMonth = true;
+                    continue;
+                }
+
+                if (!foundMonth && TryMatchCookieMonth(value, start, end, out month))
+                {
+                    foundMonth = true;
+                    continue;
+                }
+
+                if (!foundYear && TryMatchCookieDigits(value, start, end, 2, 4, out year))
+                    foundYear = true;
+            }
+
+            if (!foundTime || !foundDayOfMonth || !foundMonth || !foundYear)
+                return false;
+
+            if (year >= 70 && year <= 99)
+                year += 1900;
+            else if (year >= 0 && year <= 69)
+                year += 2000;
+
+            if (dayOfMonth < 1 || dayOfMonth > 31 || year < 1601 || hour > 23 || minute > 59 || second > 59)
+                return false;
+
+            if (dayOfMonth > DateTime.DaysInMonth(year, month))
+                return false;
+
+            utc = new DateTime(year, month, dayOfMonth, hour, minute, second, DateTimeKind.Utc);
+            return true;
+        }
+
+        // delimiter = %x09 / %x20-2F / %x3B-40 / %x5B-60 / %x7B-7E
+        private static bool IsCookieDateDelimiter(char c)
+        {
+            return c == '\t'
+                   || (c >= 0x20 && c <= 0x2F)
+                   || (c >= 0x3B && c <= 0x40)
+                   || (c >= 0x5B && c <= 0x60)
+                   || (c >= 0x7B && c <= 0x7E);
+        }
+
+        private static bool IsAsciiDigit(char c)
+        {
+            return c >= '0' && c <= '9';
+        }
+
+        // n*mDIGIT ( non-digit *OCTET )
+        private static bool TryMatchCookieDigits(string s, int start, int end, int minDigits, int maxDigits, out int number)
+        {
+            number = 0;
+            int i = start;
+            while (i < end && i - start < maxDigits && IsAsciiDigit(s[i]))
+            {
+                number = (number * 10) + (s[i] - '0');
+                i++;
+            }
+
+            if (i - start < minDigits)
+                return false;
+
+            return i == end || !IsAsciiDigit(s[i]);
+        }
+
+        // time = hms-time ( non-digit *OCTET ); hms-time = time-field ":" time-field ":" time-field
+        private static bool TryMatchCookieTime(string s, int start, int end, out int hour, out int minute, out int second)
+        {
+            minute = 0;
+            second = 0;
+            int i = start;
+            if (!TryReadCookieTimeField(s, ref i, end, out hour) || i >= end || s[i] != ':')
+                return false;
+
+            i++;
+            if (!TryReadCookieTimeField(s, ref i, end, out minute) || i >= end || s[i] != ':')
+                return false;
+
+            i++;
+            if (!TryReadCookieTimeField(s, ref i, end, out second))
+                return false;
+
+            return i == end || !IsAsciiDigit(s[i]);
+        }
+
+        // time-field = 1*2DIGIT
+        private static bool TryReadCookieTimeField(string s, ref int i, int end, out int field)
+        {
+            field = 0;
+            int start = i;
+            while (i < end && i - start < 2 && IsAsciiDigit(s[i]))
+            {
+                field = (field * 10) + (s[i] - '0');
+                i++;
+            }
+
+            return i > start;
+        }
+
+        // month = ( "jan" / "feb" / ... / "dec" ) *OCTET, case-insensitive
+        private static bool TryMatchCookieMonth(string s, int start, int end, out int month)
+        {
+            month = 0;
+            if (end - start < 3)
+                return false;
+
+            char c0 = ToAsciiLower(s[start]);
+            char c1 = ToAsciiLower(s[start + 1]);
+            char c2 = ToAsciiLower(s[start + 2]);
+            for (int m = 0; m < 12; m++)
+            {
+                int offset = m * 3;
+                if (CookieDateMonths[offset] == c0
+                    && CookieDateMonths[offset + 1] == c1
+                    && CookieDateMonths[offset + 2] == c2)
+                {
+                    month = m + 1;
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        private static char ToAsciiLower(char c)
+        {
+            return c >= 'A' && c <= 'Z' ? (char)(c + 32) : c;
         }
 
         private static DateTime AddSecondsClamped(DateTime utcNow, long seconds)

@@ -144,13 +144,13 @@ options.Interceptors.Add(new CacheInterceptor(new CachePolicy
 
 *   **`EnableCache`**: master switch. Default `true`.
 *   **`EnableRevalidation`**: revalidate expired entries with `If-None-Match` or `If-Modified-Since`. Default `true`.
-*   **`DoNotCacheWithoutFreshness`**: responses without explicit freshness information are not stored. Default `true`.
+*   **`DoNotCacheWithoutFreshness`**: responses without explicit freshness information (`max-age`, `s-maxage` or `Expires`) are not stored. Default `true`. When `false` and heuristic freshness is off, such a response has a freshness lifetime of zero, as with `max-age=0`: it is stored only if it carries a validator (`ETag` or `Last-Modified`) and is revalidated before every reuse, never served as a `HIT`.
 *   **`EnableHeuristicFreshness`** / **`HeuristicFreshnessLifetime`**: opt in to a heuristic lifetime for responses without explicit freshness (default off, one minute).
 *   **`AllowCacheForAuthorizedRequests`**, **`AllowSetCookieResponses`**, **`AllowVaryCookie`**, **`AllowVaryAuthorization`**: all default `false`; per-user responses are not stored unless you opt in.
 *   **`InvalidateOnUnsafeMethods`**: a successful POST, PUT, PATCH or DELETE invalidates the cached entry for its URL. Default `true`.
 *   **`Storage`**: an `ICacheStorage`; defaults to an in-memory `MemoryCacheStorage` (100 entries, 10 MB).
 
-There is no default TTL: an entry lives exactly as long as the response's own freshness allows.
+There is no default TTL: an entry lives exactly as long as the response's own freshness allows. Lifetimes (`max-age`, `s-maxage`, `stale-while-revalidate`, `Age`) larger than 2147483648 seconds (about 68 years) are treated as 2147483648 seconds (RFC 9111 section 1.2.2).
 
 ## Auth, logging and metrics
 
@@ -203,7 +203,7 @@ options.Interceptors.Add(new ConcurrencyInterceptor(maxConnectionsPerHost: 6, ma
 ## Redirect-adjacent interceptors
 
 *   **`CookieInterceptor`** keeps a `CookieJar` (RFC 6265): `options.Interceptors.Add(new CookieInterceptor());` The jar is exposed as `Jar`.
-*   **`DecompressionInterceptor`** decodes `gzip` and `deflate` bodies with a bound on the decompressed size.
+*   **`DecompressionInterceptor`** decodes `gzip` and `deflate` bodies with a bound on the decompressed size (default 32 MB), which also caps the compressed input. The codings of every `Content-Encoding` field line are combined in order; a response naming any other coding (such as `br`) is passed through undecoded. At most 3 stacked codings are decoded (`identity` does not count): a longer chain fails with a `UHttpException` before decoding starts, and the inner layers of a stacked chain may produce at most 3 times the size bound in total.
 *   **`DefaultHeadersInterceptor`** adds headers to every request, optionally overriding the ones already set.
 
 ## Adaptive and background networking
