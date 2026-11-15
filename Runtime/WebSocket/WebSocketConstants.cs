@@ -35,6 +35,13 @@ namespace TurboHTTP.WebSocket
         public static readonly TimeSpan DefaultPingInterval = TimeSpan.FromSeconds(25);
         public static readonly TimeSpan DefaultPongTimeout = TimeSpan.FromSeconds(10);
 
+        /// <summary>
+        /// Upper bound of the grace period the keep-alive waits after a pong timeout, re-checking for a Pong,
+        /// inbound bytes or an application resume before declaring the peer dead (#1132). The grace period is the
+        /// smaller of this and <see cref="WebSocketConnectionOptions.PongTimeout"/>.
+        /// </summary>
+        internal static readonly TimeSpan KeepAliveTimeoutGracePeriod = TimeSpan.FromSeconds(1);
+
         public const int MaxControlFramePayloadLength = 125;
         public const int MaxCloseReasonUtf8Bytes = 123;
 

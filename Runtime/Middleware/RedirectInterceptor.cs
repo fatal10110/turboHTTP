@@ -64,6 +64,11 @@ namespace TurboHTTP.Middleware
                 try
                 {
                     await next(request, redirectHandler, context, cancellationToken).ConfigureAwait(false);
+
+                    // Each hop is dispatched only after the previous hop's dispatch returned, so the
+                    // interceptors inside this one release per-hop resources (e.g. concurrency
+                    // permits) before the next hop acquires them (#797).
+                    await redirectHandler.RunPendingHopsAsync().ConfigureAwait(false);
                     await redirectHandler.Completion.ConfigureAwait(false);
                 }
                 finally

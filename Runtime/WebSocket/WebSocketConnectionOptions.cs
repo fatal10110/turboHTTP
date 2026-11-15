@@ -50,7 +50,15 @@ namespace TurboHTTP.WebSocket
         /// <summary> Interval for sending automated keep-alive pings. </summary>
         public TimeSpan PingInterval { get; set; } = WebSocketConstants.DefaultPingInterval;
 
-        /// <summary> Timeout waiting for a pong reply after a ping is sent. </summary>
+        /// <summary>
+        /// Keep-alive deadline (default 10 s; zero disables pong checking). It bounds two waits:
+        /// writing the keep-alive Ping (a Ping that cannot reach the wire within it, because a data write stalled
+        /// on TCP backpressure holds the frame lock or the Ping write itself stalls, means the peer is not reading:
+        /// the connection is aborted with <see cref="WebSocketError.PongTimeout"/> and the stalled send fails),
+        /// and the reply after it is sent. Any bytes received from the peer during a window extend the wait by
+        /// another window, since a Pong cannot overtake a frame in transit; a silent window gets a short grace
+        /// re-check (at most one second, never longer than this timeout) before the peer is declared dead.
+        /// </summary>
         public TimeSpan PongTimeout { get; set; } = WebSocketConstants.DefaultPongTimeout;
 
         /// <summary>

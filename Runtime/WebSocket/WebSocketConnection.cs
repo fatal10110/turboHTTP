@@ -91,6 +91,16 @@ namespace TurboHTTP.WebSocket
         // Keep-alive iterations that skipped a ping or forgave a pong timeout because of local backpressure.
         // Interlocked owned; diagnostics and tests only.
         private long _keepAliveBackpressureSkips;
+
+        // Keep-alive liveness (#1131, #1132), Interlocked owned; diagnostics and tests only: pong windows
+        // extended because bytes arrived (or the application resumed) during them, and pong timeouts that
+        // entered the grace re-check.
+        private long _keepAliveLivenessExtensions;
+        private long _keepAlivePongGraceWaits;
+
+        // Stopwatch timestamp of the last application resume the platform layer reported (#1132). Process
+        // wide: a suspension freezes every connection. Interlocked written and read (64-bit, 32-bit IL2CPP).
+        private static long s_applicationResumedTimestamp;
         private TaskCompletionSource<long> _pongWaiter;
         private WebSocketMetricsCollector _metrics;
         private WebSocketHealthMonitor _healthMonitor;
@@ -131,6 +141,33 @@ namespace TurboHTTP.WebSocket
         /// loop was parked on the full receive queue (#78).
         /// </summary>
         internal long KeepAliveBackpressureSkips => Interlocked.Read(ref _keepAliveBackpressureSkips);
+
+        /// <summary>Pong windows the keep-alive extended because the peer sent bytes or the app resumed (#1131).</summary>
+        internal long KeepAliveLivenessExtensions => Interlocked.Read(ref _keepAliveLivenessExtensions);
+
+        /// <summary>Pong timeouts that entered the grace re-check before declaring the peer dead (#1132).</summary>
+        internal long KeepAlivePongGraceWaits => Interlocked.Read(ref _keepAlivePongGraceWaits);
+
+        /// <summary>
+        /// Tests only: replaces the keep-alive grace period (default: the smaller of PongTimeout and
+        /// <see cref="WebSocketConstants.KeepAliveTimeoutGracePeriod"/>). Set before connecting.
+        /// </summary>
+        internal TimeSpan? KeepAliveGracePeriodOverride { get; set; }
+
+        /// <summary>
+        /// Reports that the application resumed from a suspension (iOS/Android backgrounding, #1132). A keep-alive
+        /// deadline that was running during the suspension restarts instead of closing a live connection with
+        /// PongTimeout: timers that expired while the process was frozen can fire before the read completion
+        /// carrying the Pong. Called by the Unity layer on OnApplicationPause(false) (an always-on hidden listener in
+        /// TurboHTTP.Unity.WebSocket, so plain WebSocketClient users get it too); safe from any thread.
+        /// </summary>
+        internal static void NotifyApplicationResumed()
+        {
+            Interlocked.Exchange(ref s_applicationResumedTimestamp, System.Diagnostics.Stopwatch.GetTimestamp());
+        }
+
+        /// <summary>Stopwatch timestamp of the last <see cref="NotifyApplicationResumed"/> (zero if none).</summary>
+        internal static long ApplicationResumedTimestamp => Interlocked.Read(ref s_applicationResumedTimestamp);
 
         // Diagnostics and tests only (#80): receive-loop parking and the delivery queue's byte budget.
         internal bool IsReceiveLoopParked => Volatile.Read(ref _receiveParked) != 0;

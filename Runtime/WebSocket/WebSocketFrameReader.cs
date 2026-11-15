@@ -19,6 +19,10 @@ namespace TurboHTTP.WebSocket
         private readonly byte _allowedRsvMask;
         private readonly bool _rejectMaskedServerFrames;
 
+        // Stopwatch timestamp of the last socket read that returned bytes (#1131): keep-alive liveness.
+        // Written by the single reading loop with Interlocked, read by the keep-alive loop with Volatile.
+        private long _lastBytesReceivedTimestamp;
+
         /// <summary>
         /// Creates a frame reader.
         /// </summary>
@@ -286,7 +290,13 @@ namespace TurboHTTP.WebSocket
             }
         }
 
-        private static async Task<bool> ReadExactAsync(
+        /// <summary>
+        /// Stopwatch timestamp of the last read that returned bytes, partial frames included (#1131); zero
+        /// before the first read.
+        /// </summary>
+        internal long LastBytesReceivedTimestamp => Interlocked.Read(ref _lastBytesReceivedTimestamp);
+
+        private async Task<bool> ReadExactAsync(
             Stream stream,
             byte[] buffer,
             int offset,
@@ -310,6 +320,7 @@ namespace TurboHTTP.WebSocket
                     throw new IOException("Unexpected end of stream while reading WebSocket frame.");
                 }
 
+                Interlocked.Exchange(ref _lastBytesReceivedTimestamp, System.Diagnostics.Stopwatch.GetTimestamp());
                 totalRead += read;
             }
 

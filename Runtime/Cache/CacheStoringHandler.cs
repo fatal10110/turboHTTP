@@ -181,8 +181,17 @@ namespace TurboHTTP.Cache
         private readonly DateTime _responseTimeUtc;
         private readonly DateTime _requestTimeUtc;
         private readonly long _maxCacheableResponseBodyBytes;
+        // Body length the inner source announced (Content-Length), or null when unknown or when the response has
+        // no content by definition. A naturally ended body of another length is not stored (#496).
+        private readonly long? _expectedBodyLength;
 
+        // Single owner (#497): the field holds the accumulator only while no Write is in flight. Accumulate takes it
+        // out of the field for the Write and publishes it back afterwards; Abort, DisposeAsync and the store detach
+        // set _accumulatorDetached and dispose only what they take out of the field. Whoever takes it out disposes
+        // (or detaches) it exactly once, so pooled segments are never returned while a Write copies into them.
         private IStreamingCacheAccumulator _accumulator;
+        private int _accumulatorDetached;
+        // Written by the reader only (Accumulate); Volatile for the 64-bit field on 32-bit IL2CPP.
         private long _accumulatedBytes;
         private HttpHeaders _trailers;
         // Copy for the store, taken before the consumer receives _trailers (#61/#155); null when there are none.
@@ -219,6 +228,11 @@ namespace TurboHTTP.Cache
                 throw new ArgumentOutOfRangeException(nameof(maxCacheableResponseBodyBytes));
 
             _maxCacheableResponseBodyBytes = maxCacheableResponseBodyBytes;
+            // RFC 9110 sections 9.3.2, 15.3.5, 15.4.5: HEAD, 204 and 304 responses have no content whatever
+            // Content-Length says.
+            _expectedBodyLength = requestMethod == HttpMethod.HEAD || statusCode == 204 || statusCode == 304
+                ? null
+                : inner.Length;
             _accumulator = owner.CreateStreamingAccumulator();
         }
 
@@ -245,7 +259,10 @@ namespace TurboHTTP.Cache
                 var read = await _inner.ReadAsync(destination, ct).ConfigureAwait(false);
                 if (read == 0)
                 {
-                    Volatile.Write(ref _completedNaturally, 1);
+                    // A read into an empty destination returns 0 without reaching the end of the body (#496).
+                    if (!destination.IsEmpty)
+                        Volatile.Write(ref _completedNaturally, 1);
+
                     return 0;
                 }
 
@@ -294,6 +311,16 @@ namespace TurboHTTP.Cache
             if (Volatile.Read(ref _trailersLoaded) != 0)
                 return _trailers ?? HttpHeaders.Empty;
 
+            // Before the end of the body the inner source drains the unread rest itself, past this tee, so the
+            // accumulated bytes would be a prefix of the body. RFC 9111 section 3.3: an incomplete response is not
+            // stored as a complete one, so the accumulator is dropped (#496). A body already read to its announced
+            // length has nothing left to drain and stays cacheable.
+            if (Volatile.Read(ref _completedNaturally) == 0 &&
+                !(_expectedBodyLength.HasValue && Volatile.Read(ref _accumulatedBytes) == _expectedBodyLength.Value))
+            {
+                DetachAccumulator();
+            }
+
             try
             {
                 SetLoadedTrailers(await _inner.GetTrailersAsync(ct).ConfigureAwait(false));
@@ -316,6 +343,7 @@ namespace TurboHTTP.Cache
                 if (Volatile.Read(ref _aborted) == 0 &&
                     Volatile.Read(ref _completedNaturally) != 0 &&
                     Volatile.Read(ref _accumulator) != null &&
+                    BodyMatchesAnnouncedLength() &&
                     await EnsureTrailersLoadedForStoreAsync().ConfigureAwait(false))
                 {
                     var bodyToStore = DetachAccumulatorForStore();
@@ -349,32 +377,64 @@ namespace TurboHTTP.Cache
             }
             finally
             {
-                Interlocked.Exchange(ref _accumulator, null)?.Dispose();
+                DetachAccumulator();
                 await _inner.DisposeAsync().ConfigureAwait(false);
             }
         }
 
         private void Accumulate(ReadOnlySpan<byte> chunk)
         {
-            if (_accumulator == null || chunk.IsEmpty)
+            if (chunk.IsEmpty)
                 return;
 
-            if (_accumulatedBytes > _maxCacheableResponseBodyBytes - chunk.Length)
+            // Take the accumulator out of the field for the Write: a concurrent Abort/DisposeAsync then finds the
+            // field empty and leaves the dispose to this thread (#497).
+            var accumulator = Interlocked.Exchange(ref _accumulator, null);
+            if (accumulator == null)
+                return;
+
+            var accumulatedBytes = _accumulatedBytes;
+            if (accumulatedBytes > _maxCacheableResponseBodyBytes - chunk.Length)
             {
-                DetachAccumulator();
+                Interlocked.Exchange(ref _accumulatorDetached, 1);
+                accumulator.Dispose();
                 return;
             }
 
+            Exception writeError = null;
             try
             {
-                _accumulator.Write(chunk);
-                _accumulatedBytes += chunk.Length;
+                accumulator.Write(chunk);
             }
             catch (Exception ex)
             {
-                TurboDiagnostics.Log("[TurboHTTP][Cache] Tee accumulator detached after write failure", ex);
-                DetachAccumulator();
+                writeError = ex;
             }
+
+            if (writeError != null)
+            {
+                TurboDiagnostics.Log("[TurboHTTP][Cache] Tee accumulator detached after write failure", writeError);
+                Interlocked.Exchange(ref _accumulatorDetached, 1);
+                accumulator.Dispose();
+                return;
+            }
+
+            Volatile.Write(ref _accumulatedBytes, accumulatedBytes + chunk.Length);
+
+            // Publish it back, then re-check: a detach that ran during the Write found the field empty. Both sides
+            // use full fences (Interlocked), so at least one of them sees the other and exactly one disposes.
+            Interlocked.Exchange(ref _accumulator, accumulator);
+            if (Volatile.Read(ref _accumulatorDetached) != 0)
+                Interlocked.Exchange(ref _accumulator, null)?.Dispose();
+        }
+
+        private bool BodyMatchesAnnouncedLength()
+        {
+            if (!_expectedBodyLength.HasValue || Volatile.Read(ref _accumulatedBytes) == _expectedBodyLength.Value)
+                return true;
+
+            TurboDiagnostics.Log("[TurboHTTP][Cache] Response not stored: body length differs from Content-Length");
+            return false;
         }
 
         private async ValueTask<bool> EnsureTrailersLoadedForStoreAsync()
@@ -409,11 +469,14 @@ namespace TurboHTTP.Cache
 
         private void DetachAccumulator()
         {
+            // The flag first: a Write in flight holds the accumulator and disposes it when it sees the flag.
+            Interlocked.Exchange(ref _accumulatorDetached, 1);
             Interlocked.Exchange(ref _accumulator, null)?.Dispose();
         }
 
         private SegmentedBuffer DetachAccumulatorForStore()
         {
+            Interlocked.Exchange(ref _accumulatorDetached, 1);
             var accumulator = Interlocked.Exchange(ref _accumulator, null);
             if (accumulator == null)
                 return null;
