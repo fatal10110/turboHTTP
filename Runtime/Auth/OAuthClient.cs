@@ -434,10 +434,9 @@ namespace TurboHTTP.Auth
 
         private static Dictionary<string, object> DeserializeToDictionary(string json)
         {
-            var result = ProjectJsonBridge.Deserialize(
-                json,
-                typeof(Dictionary<string, object>),
-                requiredBy: "OAuth token parsing");
+            // The document model is always LiteJson, so a custom JsonSerializer.Default cannot turn the
+            // token response into a tree this code does not read (#1034).
+            var result = ProjectJsonBridge.DeserializeDom(json, requiredBy: "OAuth token parsing");
             return result as Dictionary<string, object> ?? new Dictionary<string, object>(StringComparer.Ordinal);
         }
 

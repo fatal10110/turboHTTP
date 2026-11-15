@@ -74,4 +74,11 @@ using var response = await client.Get("https://api.example.com/user/1").SendBuff
 transport.SaveRecordings(); // in Record mode; also done on Dispose (AutoFlushOnDispose)
 ```
 
+What a recording holds:
+
+- **Compressed bodies.** Below `DecompressionInterceptor` the recorder sees the encoded bytes. A JSON or form body sent with `Content-Encoding: gzip`, `x-gzip` or `deflate` is decoded (bounded by `MaxRecordBytes`), redacted and stored without `Content-Encoding`, with `Content-Length` set to the stored length. A JSON or form body with any other coding (`br`, `zstd`, ...) cannot be redacted, so the recording fails and `SaveRecordings` throws: drop that coding from `Accept-Encoding` while recording. Other bodies are stored as received, coding included. `Content-Length` is rewritten whenever redaction changes a body.
+- **Request matching.** The request-body part of the match key is an HMAC of the *redacted* body, so requests that differ only in redacted fields (a password, a token) match the same recording. The HMAC key is stored in the file so Replay can recompute keys; it hides nothing from someone holding the file. For the same reason, an `Authorization` or `Cookie` header opted into `MatchHeaderNames` is stored as an HMAC that a guess can be tested against: opt in only high-entropy values. Recordings written before this change (schema version 1, raw-body keys) still replay.
+- **Size.** `MaxRecordBytes` (default 16 MB) limits each response; a larger one fails the request and the recording. The file has no total limit, and Replay loads any file Record wrote, including one above the 16 MiB limit that `LiteJsonSerializer` applies to network JSON.
+- **JSON.** Recording files are written and read with the built-in `LiteJsonSerializer`, whatever `JsonSerializer.SetDefault` installed.
+
 Use these tools in an NUnit test assembly (`TurboHTTP.Testing` referenced); the recording path is relative to the project.

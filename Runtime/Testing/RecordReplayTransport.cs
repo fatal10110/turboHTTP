@@ -189,13 +189,23 @@ namespace TurboHTTP.Testing
         public RecordReplayRedactionPolicy RedactionPolicy { get; set; } = RecordReplayRedactionPolicy.CreateDefault();
         public bool AutoFlushOnDispose { get; set; } = true;
         public Action<string> Logger { get; set; }
+        /// <summary>
+        /// Request headers that enter the replay match key (default: Accept, Accept-Encoding, Content-Type,
+        /// Content-Encoding). Naming a header that is excluded by default (Authorization, Cookie, ...) opts it
+        /// in; a header the redaction policy covers is then stored only as an HMAC-SHA256 under the
+        /// recording's key salt. That salt is stored in the recording file so Replay can recompute the key,
+        /// so the HMAC does not protect a low-entropy value: anyone with the file can test guesses against it.
+        /// Opt in only high-entropy values (random bearer tokens), never passwords or short codes.
+        /// </summary>
         public IEnumerable<string> MatchHeaderNames { get; set; }
         public IEnumerable<string> ExcludedMatchHeaderNames { get; set; }
 
         /// <summary>
         /// Largest response body recorded, in bytes (default 16 MB). A larger response fails the request
         /// with a clear <see cref="UHttpException"/> instead of being truncated, and the recording is then
-        /// incomplete: <see cref="RecordReplayTransport.SaveRecordings"/> throws and writes no file.
+        /// incomplete: <see cref="RecordReplayTransport.SaveRecordings"/> throws and writes no file. The limit
+        /// also bounds a <c>gzip</c>/<c>deflate</c> body decoded for redaction. It is per response: the
+        /// recording file has no total limit, and Replay loads a file of any size Record wrote.
         /// </summary>
         public long MaxRecordBytes { get; set; } = RecordReplayTransport.DefaultMaxRecordBytes;
     }
@@ -206,7 +216,10 @@ namespace TurboHTTP.Testing
     /// </summary>
     public sealed partial class RecordReplayTransport : IHttpTransport
     {
-        private const int RecordingSchemaVersion = 1;
+        // Version 2 (#1079): RequestBodyHash and the body part of RequestKey are computed over the redacted
+        // request body. Version 1 files hashed the raw body; Replay still loads them and matches raw bodies.
+        private const int RecordingSchemaVersion = 2;
+        private const int RawBodyHashSchemaVersion = 1;
         private const int KeySaltBytes = 32;
         private const int DrainChunkBytes = 16 * 1024;
 
@@ -255,6 +268,8 @@ namespace TurboHTTP.Testing
         // Per-recording salt for the HMAC of sensitive match-key header values and request body hashes.
         // Generated in Record mode, read from the file in Replay mode (null for older files: raw keys).
         private byte[] _keySalt;
+        // Replay of a version-1 file: request keys hash the raw body. Set once by the constructor.
+        private bool _rawBodyRequestKeys;
         private string _recordingFailure;
         private readonly ConcurrentQueue<RecordingEntryDto> _recordedEntries = new ConcurrentQueue<RecordingEntryDto>();
         private readonly ConcurrentDictionary<string, ConcurrentQueue<ReplayNode>> _replayByRequestKey =
@@ -443,7 +458,7 @@ namespace TurboHTTP.Testing
                 };
 
                 var serialized = ToSerializableDictionary(recordingFile);
-                var json = SerializeJson(serialized, typeof(Dictionary<string, object>));
+                var json = SerializeJson(serialized);
                 var directory = Path.GetDirectoryName(_recordingPath);
                 if (!string.IsNullOrEmpty(directory))
                 {
@@ -589,18 +604,25 @@ namespace TurboHTTP.Testing
                     _recordingPath);
             }
 
+            // The file is the bound: the parser cap is raised to its size so a recording above the 16 MiB
+            // default for network JSON still loads (#1084). Record limits each response (MaxRecordBytes),
+            // not the file, so a cap sized from MaxRecordBytes would still reject recordings Record wrote.
+            var fileBytes = new FileInfo(_recordingPath).Length;
             var json = File.ReadAllText(_recordingPath, Utf8);
-            var rawObject = DeserializeJson(json, typeof(Dictionary<string, object>));
+            var rawObject = DeserializeJson(json, (int)Math.Min(fileBytes, int.MaxValue));
             var recordingFile = FromSerializableObject(rawObject);
             if (recordingFile == null)
                 throw new InvalidOperationException("Recording file deserialized to null.");
 
-            if (recordingFile.Version != RecordingSchemaVersion)
+            if (recordingFile.Version != RecordingSchemaVersion &&
+                recordingFile.Version != RawBodyHashSchemaVersion)
             {
                 throw new InvalidOperationException(
                     $"Unsupported recording schema version {recordingFile.Version}. " +
-                    $"Expected {RecordingSchemaVersion}.");
+                    $"Expected {RawBodyHashSchemaVersion} or {RecordingSchemaVersion}.");
             }
+
+            _rawBodyRequestKeys = recordingFile.Version == RawBodyHashSchemaVersion;
 
             _keySalt = string.IsNullOrEmpty(recordingFile.KeySalt)
                 ? null
@@ -643,7 +665,11 @@ namespace TurboHTTP.Testing
             var requestBody = request.Content.TryGetBufferedData(out var bufferedRequestBody)
                 ? bufferedRequestBody
                 : ReadOnlyMemory<byte>.Empty;
-            var requestHash = ComputeBodyHash(requestBody, _keySalt);
+            // The HMAC key (KeySalt) is stored in the file, so the digest is taken over the redacted body:
+            // a redacted value never enters it and cannot be guessed from it (#1079). Replay redacts the
+            // incoming request the same way before hashing (BuildRequestKey).
+            var redactedRequestBody = RedactBodyIfNeeded(requestBody, request.Headers);
+            var requestHash = ComputeBodyHash(redactedRequestBody, _keySalt);
             var requestKey = BuildRequestKey(
                 request.Method.ToUpperString(),
                 NormalizeUriForKey(request.Uri),
@@ -651,14 +677,27 @@ namespace TurboHTTP.Testing
                 requestHash);
 
             var requestHeaders = ToDictionary(request.Headers, redact: true);
-            var redactedRequestBody = RedactBodyIfNeeded(requestBody, request.Headers);
 
             var recordedResponseHeaders = responseHeaders != null
                 ? ToDictionary(responseHeaders, redact: true)
                 : new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-            var recordedResponseBody = !responseBody.IsEmpty
-                ? RedactBodyIfNeeded(responseBody, responseHeaders)
-                : null;
+            byte[] recordedResponseBody = null;
+            if (!responseBody.IsEmpty &&
+                !TryPrepareResponseBody(
+                    responseBody,
+                    responseHeaders,
+                    recordedResponseHeaders,
+                    out recordedResponseBody,
+                    out var bodyFailure))
+            {
+                MarkRecordingFailed(string.Format(
+                    CultureInfo.InvariantCulture,
+                    "Response body of {0} {1} could not be recorded: {2}",
+                    request.Method.ToUpperString(),
+                    normalizedUrl,
+                    bodyFailure));
+                return;
+            }
 
             var entry = new RecordingEntryDto
             {
