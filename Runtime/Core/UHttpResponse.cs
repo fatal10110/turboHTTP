@@ -32,7 +32,9 @@ namespace TurboHTTP.Core
         /// pooled buffers to <see cref="System.Buffers.ArrayPool{T}.Shared"/>. Any segment
         /// references held past <see cref="Dispose"/> point to memory that may be reused for
         /// unrelated purposes — this is use-after-pool-return and will cause data corruption.
-        /// Always consume the body before or within a <c>using</c> block.
+        /// Always consume the body before or within a <c>using</c> block. A response that is never
+        /// disposed does not return its buffers: its finalizer leaves them to the garbage collector,
+        /// so a sequence still held after the response itself became unreachable stays intact.
         /// </remarks>
         public ReadOnlySequence<byte> Body
         {
@@ -156,11 +158,20 @@ namespace TurboHTTP.Core
             if (body.IsEmpty)
                 return null;
 
+            string text;
             if (body.IsSingleSegment)
-                return Encoding.UTF8.GetString(body.FirstSpan);
+            {
+                text = Encoding.UTF8.GetString(body.FirstSpan);
+            }
+            else
+            {
+                var bytes = body.ToArray();
+                text = Encoding.UTF8.GetString(bytes, 0, bytes.Length);
+            }
 
-            var bytes = body.ToArray();
-            return Encoding.UTF8.GetString(bytes, 0, bytes.Length);
+            // Keeps this response, and so its pooled body buffers, alive until decoding is done (#582).
+            GC.KeepAlive(this);
+            return text;
         }
 
         /// <summary>
@@ -175,11 +186,20 @@ namespace TurboHTTP.Core
             if (body.IsEmpty)
                 return null;
 
+            string text;
             if (body.IsSingleSegment)
-                return encoding.GetString(body.FirstSpan);
+            {
+                text = encoding.GetString(body.FirstSpan);
+            }
+            else
+            {
+                var bytes = body.ToArray();
+                text = encoding.GetString(bytes, 0, bytes.Length);
+            }
 
-            var bytes = body.ToArray();
-            return encoding.GetString(bytes, 0, bytes.Length);
+            // Keeps this response, and so its pooled body buffers, alive until decoding is done (#582).
+            GC.KeepAlive(this);
+            return text;
         }
 
         /// <summary>
@@ -293,14 +313,27 @@ namespace TurboHTTP.Core
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
                 return;
 
-            // Return the pooled byte[] through the counting ByteArrayPool (#292). ArrayPool.Return
-            // and the Interlocked counter are thread-safe and safe to call from the finalizer thread.
+            if (!disposing)
+            {
+                // Finalizer path (#582): nothing is returned to the pool. Body is a ReadOnlySequence
+                // that does not keep this response alive, so a caller may still read these buffers;
+                // returning them would let another rent overwrite the bytes under it. Pooled arrays
+                // are counted with ByteArrayPool.Abandon so the #292 leak counter stays exact, then
+                // left to the GC. An owner that cannot abandon is dropped, never disposed here.
+                if (_bodyBufferRented && _pooledBodyBuffer != null)
+                    ByteArrayPool.Abandon(_pooledBodyBuffer);
+
+                var abandoned = Interlocked.Exchange(ref _segmentedBodyOwner, null);
+                (abandoned as IAbandonableBufferOwner)?.AbandonToGc();
+                return;
+            }
+
+            // Explicit Dispose: return the pooled byte[] through the counting ByteArrayPool (#292).
             if (_bodyBufferRented && _pooledBodyBuffer != null)
                 ByteArrayPool.Return(_pooledBodyBuffer);
 
             // Release the detached body owner (for example SegmentedBuffer or an
-            // ArrayPool-backed response-body owner). ArrayPool-backed disposal is
-            // safe on the finalizer thread.
+            // ArrayPool-backed response-body owner).
             var owner = Interlocked.Exchange(ref _segmentedBodyOwner, null);
             owner?.Dispose();
             _body = ReadOnlySequence<byte>.Empty;
@@ -312,17 +345,15 @@ namespace TurboHTTP.Core
             // (finalizer blocked on a lock held by a GC-waiting thread) and accessing
             // partially-finalized objects. If the user forgets Dispose(), the request's
             // lease never completes and its owned body content is not disposed eagerly.
-            if (disposing)
+            // (The finalizer path returned above.)
+            Action callback;
+            lock (_disposeCallbackGate)
             {
-                Action callback;
-                lock (_disposeCallbackGate)
-                {
-                    callback = _onDispose;
-                    _onDispose = null;
-                }
-
-                callback?.Invoke();
+                callback = _onDispose;
+                _onDispose = null;
             }
+
+            callback?.Invoke();
         }
 
         private void ThrowIfDisposed()
