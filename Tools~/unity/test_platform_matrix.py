@@ -162,6 +162,48 @@ class PlatformMatrixTests(unittest.TestCase):
             cell = next(c for c in json.load(fh)["cells"] if c["id"] == "editor-playmode-mono")
         self.assertEqual((cell["status"], cell["missing_certification_suites"]), ("pass", []))
 
+    def test_standalone_player_file_names(self):
+        meta = pm.metadata_from_name("/c/results-StandaloneWindows64-IL2CPP-20261116-101500.xml")
+        self.assertEqual((meta["target"], meta["run"], meta["backend"], meta["stripping"], meta["arch"], meta["device"]),
+                         ("StandaloneWindows64", "Player", "IL2CPP", "High", "x86_64", "host"))
+        meta = pm.metadata_from_name("results-StandaloneWindows64-Mono-20261116-101500.xml")
+        self.assertEqual((meta["backend"], meta["stripping"]), ("Mono", "Disabled"))
+        self.assertEqual(pm.metadata_from_name("results-StandaloneLinux64-Mono-20261116-101500.xml")["target"],
+                         "StandaloneLinux64")
+        self.assertEqual(pm.metadata_from_name("results-StandaloneWindows64-20261116-101500.xml"), {},
+                         "a standalone name without its backend is not guessed")
+        self.assertEqual(pm.row_id(pm.metadata_from_name("results-StandaloneWindows64-Mono-20261116-101500.xml")),
+                         "standalonewindows64-mono-x86_64-disabled-host")
+
+    def test_standalone_windows_cell_is_filled_from_its_results_and_gated(self):
+        out = os.path.join(self.tmp.name, "standalone.json")
+        mono = self.write("results-StandaloneWindows64-Mono-20261116-101500.xml", results_xml(
+            *[case(suite, "A") for suite in pm.CERTIFICATION_SUITES]))
+        code, stdout, _ = self.run_main("--out", out, "--fresh", "--gate", mono)
+        self.assertEqual(code, 0, stdout)
+        with open(out, encoding="utf-8") as fh:
+            cells = {c["id"]: c for c in json.load(fh)["cells"]}
+        self.assertEqual(cells["standalone-windows"]["status"], "pass")
+        self.assertEqual(cells["standalone-windows"]["rows"], ["standalonewindows64-mono-x86_64-disabled-host"])
+        self.assertEqual(cells["standalone-macos"]["status"], "needs-device-validation")
+
+        il2cpp = self.write("results-StandaloneWindows64-IL2CPP-20261116-111500.xml", results_xml(
+            *[case(suite, "A", result="Failed" if suite == "UnityStressSuiteTests" else "Passed")
+              for suite in pm.CERTIFICATION_SUITES]))
+        code, _, _ = self.run_main("--out", out, "--gate", il2cpp)
+        self.assertEqual(code, 1, "a red standalone row fails the gate")
+        with open(out, encoding="utf-8") as fh:
+            cell = next(c for c in json.load(fh)["cells"] if c["id"] == "standalone-windows")
+        self.assertEqual(cell["status"], "fail")
+        self.assertEqual(sorted(cell["rows"]), ["standalonewindows64-il2cpp-x86_64-high-host",
+                                                "standalonewindows64-mono-x86_64-disabled-host"])
+
+    def test_unrun_standalone_cells_name_their_runner(self):
+        cells = {c["id"]: c for c in pm.build_matrix([], generated="t")["cells"]}
+        self.assertEqual(cells["standalone-windows"]["status"], "not-run")
+        self.assertIn("run-tests.sh --platform StandaloneWindows64", cells["standalone-windows"]["reason"])
+        self.assertIn("run-linux-player-tests.sh", cells["standalone-linux"]["reason"])
+
     def test_inconclusive_case_fails_row_like_its_suite(self):
         path = self.write("results-PlayMode-20261108-101500.xml", results_xml(
             case("UnityStressSuiteTests", "A"), case("UnityStressSuiteTests", "B", result="Inconclusive")))

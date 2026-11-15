@@ -19,9 +19,21 @@ TurboHTTP.Tests.UniTask, #311) compile against UniTask's runtime asmdef at the c
 unitask_pin.py, fetched once with git into .tools/unitask/ and verified against the SHA. Their
 TURBOHTTP_UNITASK comes from their versionDefines, as in Unity. UniTask itself is external: no analyzers.
 
+Compile-only define variants (#898, DEFINE_VARIANTS): code behind an opt-in define that no player
+variant sets would otherwise never compile here, and a compile error in it would abort the whole Unity
+test run of whoever turns the define on. The editor-opt-in variant rebuilds every editor assembly with
+  TURBOHTTP_INTEGRATION_TESTS     the TLS / public-host / socket test rows Tools~/unity/run-tests.sh enables
+  TURBOHTTP_USE_SYSTEM_TEXT_JSON  the System.Text.Json overload in Runtime/JSON and its test; the
+                                  System.Text.Json package (DEFINE_PACKAGES) stands in for the DLL a Unity
+                                  project that sets the define has to add itself
+into its own output directory, without analyzers, documentation snippets or the warning ratchet:
+compiler errors only. No guarded block has an #else branch, so the regular variants cover the other side.
+--variant all (check.sh --full, CI) includes it.
+
 Usage:
   Tools~/ci/shadow_build.py                     # editor variant
-  Tools~/ci/shadow_build.py --variant all       # editor + ios + android
+  Tools~/ci/shadow_build.py --variant all       # editor + ios + android + editor-opt-in
+  Tools~/ci/shadow_build.py --variant editor-opt-in   # only the compile-only opt-in define variant
   Tools~/ci/shadow_build.py --no-tests          # runtime assemblies only (tools that need the DLLs)
   Tools~/ci/shadow_build.py --no-unitask        # offline: skip the UniTask fetch (adapters not built)
   Tools~/ci/shadow_build.py --update-baseline
@@ -80,6 +92,16 @@ VARIANTS = {
     "ios": ("iOS", ["UNITY_IOS", "UNITY_IPHONE", "ENABLE_IL2CPP"], False),
     "android": ("Android", ["UNITY_ANDROID", "ENABLE_IL2CPP"], False),
 }
+# Compile-only define variants (#898): name -> (base variant, extra defines). Every assembly of the base
+# variant is rebuilt with the extra defines into <out>/<name>; analyzers off, no doc snippets, warnings
+# outside the ratchet. Add a define here when code or tests sit behind an opt-in no variant above sets.
+DEFINE_VARIANTS = {
+    "editor-opt-in": ("editor", ["TURBOHTTP_INTEGRATION_TESTS", "TURBOHTTP_USE_SYSTEM_TEXT_JSON"]),
+}
+# NuGet packages an opt-in define needs to compile (#898). Unity 2021.3 ships no System.Text.Json; a project
+# that defines TURBOHTTP_USE_SYSTEM_TEXT_JSON adds the DLL itself. Keep the version patched.
+DEFINE_PACKAGES = {"TURBOHTTP_USE_SYSTEM_TEXT_JSON": [("System.Text.Json", "8.0.5")]}
+ALL_VARIANTS = list(VARIANTS) + list(DEFINE_VARIANTS)
 
 DIAG = re.compile(r"^(?P<file>[^(\n]+?)\((?P<line>\d+),\d+\): (?P<kind>warning|error) (?P<rule>[A-Z]+\d+): (?P<msg>.*?)(?: \[[^\]]+\])?$")
 
@@ -257,10 +279,14 @@ def generate(variant, asmdefs, dlls, out=OUT, precompiled=None, tests=True, docs
     when UniTask was fetched). dropped lists (name, missing references) for asmdefs that pass their
     platform and define constraints but reference an assembly the build cannot provide; main() fails on them.
     """
-    platform, extra, editor_visible = VARIANTS[variant]
+    base, opt_in = DEFINE_VARIANTS.get(variant, (variant, []))
+    compile_only = variant in DEFINE_VARIANTS
+    docs = docs and not compile_only
+    platform, extra, editor_visible = VARIANTS[base]
     precompiled = precompiled or {}
     packages = packages or {}
-    defines = set(COMMON_DEFINES + extra + (["UNITY_INCLUDE_TESTS"] if tests else []))
+    defines = set(COMMON_DEFINES + extra + opt_in + (["UNITY_INCLUDE_TESTS"] if tests else []))
+    nuget = sorted({p for d in defines for p in DEFINE_PACKAGES.get(d, [])})
     candidates = {n: a for n, a in asmdefs.items() if tests or not (a.get("_tests") or a.get("_external"))}
     chosen = {n: a for n, a in candidates.items() if included(a, platform, asmdef_defines(a, defines, packages))}
 
@@ -303,10 +329,12 @@ def generate(variant, asmdefs, dlls, out=OUT, precompiled=None, tests=True, docs
             f"    <AllowUnsafeBlocks>{'true' if a.get('allowUnsafeCode') else 'false'}</AllowUnsafeBlocks>",
             f"    <DefineConstants>$(DefineConstants);{';'.join(sorted(asmdef_defines(a, defines, packages)))}</DefineConstants>",
         ]
-        if a.get("_tests") or a.get("_external"):
-            # Tests and Unity's Test Framework source: compiler errors only, no analyzer policy.
+        if a.get("_tests") or a.get("_external") or compile_only:
+            # Tests, Unity's Test Framework source and the opt-in define variants: compiler errors only.
             lines.append("    <RunAnalyzers>false</RunAnalyzers>")
         lines += ["  </PropertyGroup>", "  <ItemGroup>"]
+        if not a.get("_external"):
+            lines += [f'    <PackageReference Include="{n}" Version="{v}" />' for n, v in nuget]
         lines += [f'    <Compile Include="{escape(s)}" />' for s in sources(a["_dir"])]
         lines += [f'    <ProjectReference Include="../{r}/{r}.csproj" />' for r in a.get("references") or [] if r in chosen]
         lines += [f'    <Reference Include="{escape(r)}" Private="false" />' for r in refs]
@@ -333,10 +361,15 @@ def generate_doc_snippets(vdir, chosen, defines, dlls, unity_refs):
 
     # Documentation snippets (README.md, Documentation~): one generated file per fenced csharp block,
     # compiled against every module so a documented API that does not exist fails the build (#232).
-    files, _, _ = doc_snippets.write_project_sources(os.path.join(vdir, DOC_ASSEMBLY, "src"))
+    # UniTask snippets (<!-- snippet: requires unitask -->) compile when UniTask was fetched (#621).
+    available = {"unitask"} if "UniTask" in chosen and "TurboHTTP.UniTask" in chosen else set()
+    files, skipped, _ = doc_snippets.write_project_sources(os.path.join(vdir, DOC_ASSEMBLY, "src"), available)
+    for sn, reason in skipped:
+        print(f"  doc snippet not compiled: {sn.path}:{sn.line}: {reason}")
     pdir = os.path.join(vdir, DOC_ASSEMBLY)
     doc_refs = sorted(n for n, a in chosen.items()
-                      if not n.startswith("TurboHTTP.Samples.") and not a.get("_tests") and not a.get("_external"))
+                      if not n.startswith("TurboHTTP.Samples.") and not a.get("_tests")
+                      and n not in TEST_RUNNER_ASMDEFS)
     lines = [
         '<Project Sdk="Microsoft.NET.Sdk">',
         f'  <Import Project="{escape(os.path.join(CI, "Shadow.props"))}" />',
@@ -385,7 +418,9 @@ def run_variants(variants, asmdefs, dlls, out=OUT, precompiled=None, tests=True,
     all_errors = []
     for v in variants:
         project, projects, skipped, dropped = generate(v, asmdefs, dlls, out, precompiled, tests, docs, packages)
-        print(f"shadow_build[{v}]: {len(projects)} assemblies (skipped: {', '.join(skipped) or 'none'})")
+        opt_in = DEFINE_VARIANTS.get(v, (v, []))[1]
+        print(f"shadow_build[{v}]: {len(projects)} assemblies (skipped: {', '.join(skipped) or 'none'})"
+              + (f"; compile-only with {', '.join(opt_in)}" if opt_in else ""))
         for name, missing in dropped:
             # A silently skipped assembly would hide every error in it (e.g. all of Tests/Runtime).
             failed = True
@@ -402,7 +437,7 @@ def run_variants(variants, asmdefs, dlls, out=OUT, precompiled=None, tests=True,
         variant_keys = collections.Counter()
         seen = set()
         for d in diags:
-            if d["kind"] != "warning":
+            if d["kind"] != "warning" or v in DEFINE_VARIANTS:  # opt-in variants: compile errors only (#898)
                 continue
             rel = os.path.relpath(os.path.abspath(d["file"]), ROOT)
             if rel.startswith(("..", ".build", ".tools")) or rel.startswith(VENDORED) or rel.endswith(".md"):
@@ -422,7 +457,7 @@ def run_variants(variants, asmdefs, dlls, out=OUT, precompiled=None, tests=True,
 
 def main():
     ap = argparse.ArgumentParser()
-    ap.add_argument("--variant", default="editor", choices=list(VARIANTS) + ["all"])
+    ap.add_argument("--variant", default="editor", choices=ALL_VARIANTS + ["all"])
     ap.add_argument("--update-baseline", action="store_true")
     ap.add_argument("--no-tests", action="store_true",
                     help="skip the Tests/ asmdefs (for tools that only need the runtime assemblies)")
@@ -453,7 +488,7 @@ def main():
     elif not args.no_tests:
         print("shadow_build: --no-unitask: TurboHTTP.UniTask, TurboHTTP.UniTask.WebSocket and "
               "TurboHTTP.Tests.UniTask are not compiled")
-    variants = list(VARIANTS) if args.variant == "all" else [args.variant]
+    variants = ALL_VARIANTS if args.variant == "all" else [args.variant]
     failed, found, _ = run_variants(variants, asmdefs, dlls, precompiled=precompiled, tests=not args.no_tests,
                                     packages=packages)
 

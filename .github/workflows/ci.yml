@@ -17,7 +17,9 @@ concurrency:
 jobs:
   # Repo invariants (.meta, asmdef graph, JSON), whitespace format, shadow build of every
   # asmdef for the Editor/iOS/Android define sets with analyzers + banned APIs (ratchet
-  # baseline), actionlint, shellcheck and the Python tool tests. Same as Tools~/ci/check.sh --full.
+  # baseline) and the compile-only opt-in define variant (#898), the fuzz corpus replay of every
+  # target (#880; fuzz.yml itself is advisory), actionlint, shellcheck and the Python tool tests.
+  # Same as Tools~/ci/check.sh --full.
   lint:
     runs-on: ubuntu-latest
     timeout-minutes: 20
@@ -44,11 +46,12 @@ jobs:
           path: .tools/unity-managed
           key: unity-managed-tests-${{ steps.unity.outputs.version }}
 
+      # shadow_build.py: the opt-in define variant restores System.Text.Json (DEFINE_PACKAGES, #898).
       - name: Cache NuGet packages
         uses: actions/cache@v6
         with:
           path: ~/.nuget/packages
-          key: nuget-${{ hashFiles('Tools~/ci/Shadow.props') }}
+          key: nuget-lint-${{ hashFiles('Tools~/ci/Shadow.props', 'Tools~/ci/shadow_build.py', 'Tools~/fuzz/TurboHTTP.Fuzz.csproj') }}
 
       - name: Install actionlint and ripgrep
         run: |

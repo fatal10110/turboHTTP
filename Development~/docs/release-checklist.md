@@ -65,6 +65,40 @@ Work from a clean worktree of the commit you will tag (normally `origin/main`).
    ```
 
    Record the results (commit, pass and skip counts, build sizes) in the release PR.
+
+   **Certification matrix (release candidates, #404).** On the same commit, run the certification suites on
+   every target at hand ([`agents/testing.md`](agents/testing.md), "Host-editor gates", item 8): the full
+   PlayMode run, both Win64 standalone players, the Android emulator levels and the arm64 phone (the
+   Linux player when a Linux host is available). Run them through `run`, which keeps each run's output and
+   exit code in a directory of this commit, then gate the matrix over exactly the result files these runs
+   printed (each prints `results <xml>, log <log>`; the emulator levels print it in their per-level logs). The
+   shared cache also holds result files of earlier commits and of scoped runs, so never gate on
+   `<cache>/results-*.xml`:
+
+   ```bash
+   rc="TestResults~/rc-$(git rev-parse --short HEAD)"; mkdir -p "$rc"
+   run() { "$@" > "$rc/run-$(date +%s%N).log" 2>&1; echo "exit $? $*" >> "$rc/exits.txt"; }
+   run './Tools~/unity/run-tests.sh' --platform PlayMode
+   run './Tools~/unity/run-tests.sh' --platform StandaloneWindows64 --backend Mono
+   run './Tools~/unity/run-tests.sh' --platform StandaloneWindows64 --backend IL2CPP
+   run './Tools~/unity/run-emulator-tests.sh'
+   run './Tools~/unity/run-device-tests.sh' --serial <phone serial>
+   cat "$rc/exits.txt"
+   emu="$(sed -n 's/^run-emulator-tests: .*; logs in //p' "$rc"/run-*.log)"
+   mapfile -t xmls < <(sed -n 's/^run-[a-z-]*: results \(.*\), log .*/\1/p' "$rc"/run-*.log "$emu"/api*.log)
+   python3 'Tools~/unity/platform_matrix.py' --fresh --out TestResults~/unity-platform-matrix.json --gate "${xmls[@]}"
+   ```
+
+   The PlayMode line here is the full PlayMode run of the block above: run that one through `run` rather than
+   twice. Every row of `exits.txt` reads `exit 0`, or the release PR records that row's exit code and why (for
+   example the IL2CPP player without a Visual Studio C++ toolchain on the host). Check it before the gate: a run
+   that printed no result file leaves its cell at its absent status (`not-run` or `needs-device-validation`),
+   which `--gate` does not fail. The phone run passes `--serial` so its device log covers the whole run
+   ([`agents/testing.md`](agents/testing.md), item 4).
+
+   `--gate` exits 1 on a `fail` or `incomplete` cell; fix it before the version bump. Cells that read
+   `needs-device-validation` or `policy-disabled` are listed in the release notes. Keep
+   `TestResults~/unity-platform-matrix.json` for step 8.
 5. **Device matrix (GA only).** #99 is signed off. Pre-releases list it as pending in the release notes.
 6. **Version bump PR.** In one PR against `main`:
    - `package.json` `version` is the new version.
@@ -87,7 +121,9 @@ Work from a clean worktree of the commit you will tag (normally `origin/main`).
 
 8. The **Release** workflow (`.github/workflows/release.yml`) checks that the tag is on `main`, takes the
    notes from the CHANGELOG section, and creates the GitHub Release (a pre-release when the tag contains `-`).
-   If it fails, fix the cause on `main` and release the next version. Do not re-tag.
+   If it fails, fix the cause on `main` and release the next version. Do not re-tag. Once the Release exists,
+   attach the certification matrix of step 4:
+   `gh release upload vX.Y.Z TestResults~/unity-platform-matrix.json -R fatal10110/turboHTTP`.
 
 ## After the tag
 

@@ -36,7 +36,9 @@ class SummarizeResultsTest(unittest.TestCase):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
         self.baseline = Path(self.tmp.name) / "baseline.txt"
-        self.baseline.write_text("# comment\nEditMode 0\nPlayMode 2  # two env skips\n", encoding="utf-8")
+        self.baseline.write_text("# comment\nEditMode 0\nPlayMode 2  # two env skips\n"
+                                 "min-total EditMode 1\nmin-total PlayMode 1\nmin-total Player-Android 1\n",
+                                 encoding="utf-8")
 
     def run_summary(self, xml, platform="PlayMode", filtered=False):
         path = Path(self.tmp.name) / "results.xml"
@@ -94,7 +96,8 @@ class SummarizeResultsTest(unittest.TestCase):
             self.assertIsNotNone(self.module.read_baseline(str(BASELINE), key), key)
 
     def test_baseline_key_selects_the_run_target_entry(self):
-        self.baseline.write_text("EditMode 0\nPlayMode 2\nPlayer-Android 4  # player [env] skips\n", encoding="utf-8")
+        self.baseline.write_text("EditMode 0\nPlayMode 2\nPlayer-Android 4  # player [env] skips\n"
+                                 "min-total PlayMode 1\nmin-total Player-Android 1\n", encoding="utf-8")
         self.assertEqual(2, self.module.read_baseline(str(self.baseline), "PlayMode"))
         self.assertEqual(4, self.module.read_baseline(str(self.baseline), "Player-Android"))
         four = results_xml("[env] a", "[env] b", "[env] c", "[env] d")

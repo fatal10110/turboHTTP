@@ -92,6 +92,8 @@ in `tooling.md`.
   `Task`/`ValueTask` overload ambiguity, new constructor parameters), then re-run: hidden failures
   show up only after the compile fix.
 - Runtime tests run in PlayMode; an EditMode run against `TurboHTTP.Tests.Runtime` discovers 0 tests.
+  Any run in which no test ran (that, or a `--filter` that matches nothing) exits 4 (#903), so a scoped
+  run that passes ran at least one test; still check that the total matches what the filter should select.
 - **UniTask adapters (#311).** `TurboHTTP.Tests.UniTask` (`UniTaskCancellationTests`) compiles only
   when the project has `com.cysharp.unitask`, which the test project does not install by default.
   Run it with `--with-unitask`, which adds UniTask from the Cysharp git repository at the tag pinned
@@ -136,12 +138,20 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
 './Tools~/unity/build-player.sh' --target android-il2cpp --run [--serial <id>] [--network]  # 4. player smoke on a device/emulator
 ```
 
+A release candidate adds the certification matrix (item 8): the Win64 standalone test players
+(`run-tests.sh --platform StandaloneWindows64 --backend Mono|IL2CPP`), the device and emulator runs, and
+`platform_matrix.py --fresh ... --gate` over all of their result files.
+
 1. **Full suites and the skip gate.** Only this run may omit `--filter`. `summarize_results.py` exits 4
    when a skipped test has no `#issue` or `[env]` reason, or when an unfiltered run skips more tests
    than `Tools~/unity/skip-baseline.txt` allows for its run target (`EditMode 0`, `PlayMode 3`: the
    permanent host skips, #319; `Player-Android` for `run-device-tests.sh`/`run-emulator-tests.sh`, whose
    players skip more platform-scoped `[env]` tests, #341; `Player-iOS` records the iOS simulator run, which
-   no script gates yet, #365; the file lists each skip with its issue or platform reason); a filtered or category run does not apply the baseline. Lower the baseline in the same PR that removes skips; never raise it to make a
+   no script gates yet, #365; the file lists each skip with its issue or platform reason); a filtered or category run does not apply the baseline.
+   The same file keeps a `min-total <run target> <n>` line per scripted target (#903): an unfiltered run
+   that ran fewer cases exits 4 and prints the shortfall, because a fixture that is deleted or compiled out
+   on a target lowers the total and the skips together. Raise a minimum when a periodic run reports more
+   tests; lower it only in the PR that removes tests, naming them. Any run with no test at all exits 4. Lower the baseline in the same PR that removes skips; never raise it to make a
    run pass, and list any justified raise in the file with its test and reason. `check.sh` enforces the static half (`ignores`: an `Ignore` needs an
    `#issue` or `[env]` reason).
 2. **ExternalNetwork run (#115, #263).** Needs the public internet. `--category ExternalNetwork` implies
@@ -168,14 +178,23 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    rows stay `needs-device-validation` (#99).
 4. **Android device run (#99).** With one Android device on `adb` (unlocked, screen kept on:
    Developer options → Stay awake), `'./Tools~/unity/run-device-tests.sh' [--stripping Low|High]
-   [--arch arm64|armv7|x86_64] [--filter ...] [--category ...]` builds the PlayMode suite as an IL2CPP player,
-   installs it and runs it on the device. Results come back over the player connection when it works;
+   [--arch arm64|armv7|x86_64] [--serial <adb serial>] [--filter ...] [--category ...]` builds the PlayMode suite
+   as an IL2CPP player, installs it and runs it on the device. A full-suite run (a release candidate, #404, or a
+   #99 sign-off) passes `--serial`, so the script launches the player itself and keeps the device log of the
+   whole run (below). Results come back over the player connection when it works;
    otherwise (LAN or firewall: the Editor needs an inbound rule for the Private profile) the script waits
    for the XML the player writes on the device and pulls it over adb. That wait ends when the result file
    appears or the player's process is gone (three complete answers without it, 20 s apart: about a minute;
    an empty, failed or truncated `pidof`/`ps` answer counts as unknown, never as gone, #412), and is capped by
    `TURBOHTTP_DEVICE_TEST_WAIT_MIN` (default 120). A player that wrote its results but did not quit is then
-   force-stopped. The device log of every run is kept as `logcat-Android-<tag>-<ts>.txt` in the cache. A
+   force-stopped. The device log of every run is kept as `logcat-Android-<tag>-<ts>.txt` in the cache. It is
+   polled through the wait for the device-side result file (`logcat -t <epoch time>` each check, #419). With
+   `--serial` (and in every `run-emulator-tests.sh` level) that wait starts at the launch, so the log covers the
+   run from the launch to the end even when the run logs more than the 16M ring buffer holds; each poll is a
+   bounded foreground adb call, so no log process outlives the script. Without `--serial`, Unity deploys the
+   player and holds the run: polling starts only after Unity returns, so the log keeps only what the ring
+   buffer still holds then, or nothing when the results came over the player connection (#1220). A logcat without `-v epoch` (before Android 7) falls back to
+   one dump at the end, which keeps only the last 16M. A
    run refuses (exit 2) to start while the player of an earlier run is still running its tests on the device
    (no result file yet), so a queued run never kills it; with `--serial`, a launch that starts no process (a
    lock screen, or a parental-control screen holding the focus) exits 2 naming the focused window, and a
@@ -228,6 +247,9 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    test's NUnit output: `TURBOHTTP_METRIC name=<id> value=<n> budget=<n> unit=<u> profile=<p> result=pass|fail`.
    After the runs, collect the result XMLs from the runners' cache folder into the matrix:
    `python3 'Tools~/unity/platform_matrix.py' <cache>/results-PlayMode-<ts>.xml <cache>/results-Android-High-x86_64-api33-<serial>-<ts>.xml`.
+   `run-tests.sh --platform StandaloneWindows64 --backend Mono|IL2CPP` (#404) writes
+   `results-StandaloneWindows64-<backend>-<ts>.xml`, which fills `standalone-windows`; a Linux player's
+   `results.xml` (item 7) takes `--set target=StandaloneLinux64 --set backend=Mono`.
    It writes `TestResults~/unity-platform-matrix.json` (gitignored; `--out` elsewhere) and prints a
    summary for the PR or journal. The runners' file names give each row its target, backend,
    stripping, arch and API level; anything else takes `--set key=value` (an iOS simulator
@@ -258,6 +280,38 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
    `--out` receives `player-<k>.log`, `player-<k>.out` per launch and `results.xml`. The runner leaves the GC
    mode as built; turning incremental GC off for a crash-free row is a build choice (#404). It does not use
    `wsl-interop.sh`. Whether a native non-WSL2 Linux host also crashes is untested (follow-up #436).
+
+8. **Release-candidate matrix, tiering and capacity (#404, Phase 15.6 Step 3).** The Win64 standalone
+   suite runs through the Unity Test Runner: `'./Tools~/unity/run-tests.sh' --platform StandaloneWindows64
+   --backend Mono|IL2CPP` builds the test player in its own project (`UNITY_STANDALONE_TEST_PROJECT`,
+   default `<cache>/standalone-testproj`), starts it on the editor host and reads the results over the
+   player connection. Mono builds at Unity's default stripping (Disabled), IL2CPP at High and needs the
+   Windows IL2CPP module and the Visual Studio C++ toolchain. The player opens a window, so the host needs
+   a desktop session; it is not headless. Its gates use the `Player-StandaloneWindows64` entries of
+   `skip-baseline.txt`, which the first complete run records (#1219; until then an unfiltered run exits 4 naming
+   the missing entry). Tiers:
+   - **Per PR:** the scoped `--filter` run of the tests the change touches (CLAUDE.md section 5), never the
+     whole suite. CI runs no Unity (#188).
+   - **Periodic host-editor run** (the list above): full EditMode and PlayMode suites with the skip and
+     total gates.
+   - **Per release candidate:** the full matrix on the RC commit: the host-editor run, both Win64
+     standalone backends, the Linux player when a Linux host is at hand, the Android emulator levels
+     (`run-emulator-tests.sh`) and the arm64 phone, then
+     `python3 'Tools~/unity/platform_matrix.py' --fresh --out TestResults~/unity-platform-matrix.json --gate <every result file>`.
+     The JSON is attached to the GitHub Release (`release-checklist.md`). A red (`fail`) or `incomplete`
+     cell fails the gate; `needs-device-validation` (macOS, iOS without a Mac run) and `policy-disabled`
+     (WebGL) do not, and the release notes list them.
+
+   Capacity: one Unity process at a time on a host (the editor, its license and the test projects are
+   shared, so concurrent lanes serialize them on one host-wide `flock` lock file, and a device run takes its
+   device lock before the Unity lock).
+   A full PlayMode suite takes tens of minutes in the host editor and about 70 minutes on the phone, so an
+   RC matrix is a few hours of serial runs: start with the emulators (`run-emulator-tests.sh` builds the
+   player once; `--jobs 2`, the default, runs two API levels at a time at about 3 GB RAM each, `--jobs 1` on
+   smaller hosts), then the
+   host-editor suites and the standalone players while the phone runs. A WSL interop outage (exit 5) is
+   not a result: rerun that one step once `cmd.exe /c ver` answers, at most twice, then record it on #355.
+   Exit 1 (failures), 2 (no results) and 4 (a gate) are results and are never retried away.
 
 From WSL the scripts detect `Unity.exe`, keep their projects under `%LOCALAPPDATA%\turbohttp` and pass
 Windows paths (Unity cannot open a project on `\\wsl$`); set `UNITY_TEST_PROJECT` and
