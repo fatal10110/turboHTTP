@@ -4,6 +4,7 @@ using System.Runtime.InteropServices;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.SecureProtocol.Org.BouncyCastle.Tls;
+using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.BouncyCastle
 {
@@ -31,6 +32,10 @@ namespace TurboHTTP.Transport.BouncyCastle
     /// <see cref="FlushPendingOutputAsync"/>.</item>
     /// <item>The read path has a single owner at a time (<c>_readInProgress</c>); it never takes
     /// <c>_writeGate</c> while waiting, so a stalled write can never block a read.</item>
+    /// <item>Disposal never blocks on the inner stream (#910): close_notify is written
+    /// asynchronously by a task that holds <c>_writeGate</c>; when it does not finish inline it
+    /// owns the inner stream and disposes it (exactly once, <c>_innerDisposed</c>) when the write
+    /// ends or at <see cref="CloseNotifyDrainTimeout"/>.</item>
     /// </list>
     /// </para>
     /// </remarks>
@@ -50,6 +55,11 @@ namespace TurboHTTP.Transport.BouncyCastle
         // with a no_renegotiation warning, about 7x amplification) while the socket is stalled.
         internal const int DefaultMaxPendingOutputBytes = 64 * 1024;
 
+        // How long a disposed stream keeps the inner stream open for its close_notify write to
+        // finish (#910). The write is a few dozen bytes, so only a peer that stopped reading with
+        // a full socket buffer ever reaches the bound; then the socket is closed without it.
+        internal static readonly TimeSpan CloseNotifyDrainTimeout = TimeSpan.FromSeconds(2);
+
         private readonly Stream _inner;
         private readonly TlsClientProtocol _protocol;
         private readonly object _protocolLock = new object();
@@ -65,6 +75,15 @@ namespace TurboHTTP.Transport.BouncyCastle
 
         private int _readInProgress;
         private int _disposed;
+
+        // The inner stream is disposed exactly once (DisposeInner), possibly after Dispose has
+        // returned, by the close_notify hand-off that owns it then (#910).
+        private int _innerDisposed;
+
+        // Set once an inner write failed. Ciphertext the engine handed out is lost then, so the
+        // record stream is broken: every later drain fails instead of sending records after a gap
+        // (#912: the write path reports the dead socket even when a read swallowed the failure).
+        private int _outputFailed;
 
         /// <summary>
         /// Output bytes the engine may hold after the read path tried to flush; above it the read
@@ -192,7 +211,15 @@ namespace TurboHTTP.Transport.BouncyCastle
                         throw;
                     }
 
-                    FlushPendingOutput();
+                    try
+                    {
+                        FlushPendingOutput();
+                    }
+                    catch (Exception) when (HasDeliverableInput())
+                    {
+                        // See ReadCoreAsync: plaintext or a clean close is delivered first.
+                    }
+
                     EnforceOutputBacklogLimit();
                 }
             }
@@ -259,44 +286,120 @@ namespace TurboHTTP.Transport.BouncyCastle
         {
             if (disposing && Interlocked.Exchange(ref _disposed, 1) == 0)
             {
-                try
+                // #910: never block on the inner write (on SaeaStream/PollSelectStream a sync
+                // Write is sync-over-async). The close_notify write is started asynchronously;
+                // it usually completes inline. Otherwise the hand-off owns the inner stream and
+                // disposes it when the write ends or at CloseNotifyDrainTimeout, whichever is first.
+                Task drain = StartCloseNotify();
+                if (drain == null || drain.IsCompleted)
                 {
-                    // RFC 8446 section 6.1: send close_notify before closing the write side. Only
-                    // when no write owns the record stream; otherwise the socket is closed as is.
-                    lock (_protocolLock)
-                    {
-                        _protocol.Close();
-                    }
-
-                    if (_writeGate.Wait(0))
-                    {
-                        try
-                        {
-                            DrainOutputHoldingGate();
-                        }
-                        finally
-                        {
-                            _writeGate.Release();
-                        }
-                    }
+                    if (drain != null)
+                        AbandonableTask.Observe(drain);
+                    DisposeInner();
                 }
-                catch
+                else
                 {
-                    // Best effort: the peer may already be gone.
-                }
-                finally
-                {
-                    try { _inner.Dispose(); } catch { }
+                    HandOffCloseNotify(drain);
                 }
             }
 
             base.Dispose(disposing);
         }
 
+        /// <summary>
+        /// Sends close_notify (RFC 8446 section 6.1) and awaits its write for at most
+        /// <see cref="CloseNotifyDrainTimeout"/>, then disposes the inner stream.
+        /// </summary>
+        public override async ValueTask DisposeAsync()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            {
+                Task drain = StartCloseNotify();
+                if (drain != null)
+                {
+                    if (!drain.IsCompleted)
+                    {
+                        using var bound = new CancellationTokenSource();
+                        Task delay = Task.Delay(CloseNotifyDrainTimeout, bound.Token);
+                        await Task.WhenAny(drain, delay).ConfigureAwait(false);
+                        bound.Cancel();
+                    }
+
+                    // A drain still pending here fails once the inner stream is disposed below.
+                    AbandonableTask.Observe(drain);
+                }
+
+                DisposeInner();
+            }
+
+            Dispose();
+        }
+
+        /// <summary>
+        /// Queues close_notify and starts writing it when no write owns the record stream;
+        /// otherwise (or when the engine refuses) returns null and the socket is closed as is.
+        /// The returned task holds <c>_writeGate</c> until the write ends.
+        /// </summary>
+        private Task StartCloseNotify()
+        {
+            try
+            {
+                lock (_protocolLock)
+                {
+                    _protocol.Close();
+                }
+
+                if (!HasPendingOutput() || !_writeGate.Wait(0))
+                    return null;
+            }
+            catch
+            {
+                // Best effort: the engine may already have failed.
+                return null;
+            }
+
+            return DrainCloseNotifyHoldingGateAsync();
+        }
+
+        private async Task DrainCloseNotifyHoldingGateAsync()
+        {
+            try
+            {
+                await DrainOutputHoldingGateAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                _writeGate.Release();
+            }
+        }
+
+        /// <summary>
+        /// Gives the pending close_notify write ownership of the inner stream: it is disposed when
+        /// the write ends in any state, or when the bound fires (which also fails a stalled write).
+        /// </summary>
+        private void HandOffCloseNotify(Task drain)
+        {
+            AbandonableTask.Observe(drain);
+            _ = Task.WhenAny(drain, Task.Delay(CloseNotifyDrainTimeout)).ContinueWith(
+                static (_, state) => ((BouncyCastleTlsStream)state).DisposeInner(),
+                this,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
         /// <summary>Closes the transport without a close_notify (failed handshake).</summary>
         private void Abort()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
+                return;
+
+            DisposeInner();
+        }
+
+        private void DisposeInner()
+        {
+            if (Interlocked.Exchange(ref _innerDisposed, 1) != 0)
                 return;
 
             try { _inner.Dispose(); } catch { }
@@ -329,7 +432,20 @@ namespace TurboHTTP.Transport.BouncyCastle
                         throw;
                     }
 
-                    await FlushPendingOutputAsync().ConfigureAwait(false);
+                    try
+                    {
+                        await FlushPendingOutputAsync().ConfigureAwait(false);
+                    }
+                    catch (Exception) when (HasDeliverableInput())
+                    {
+                        // #912: the records just processed left decrypted bytes or the peer's
+                        // close_notify (RFC 8446 section 6.1: a clean end of data), and the reply
+                        // this read sent on their behalf (our own close_notify, an alert) failed.
+                        // That reply is best effort: the loop delivers the data or end of stream,
+                        // and the next write reports the dead socket (_outputFailed). With
+                        // nothing to deliver the failure propagates as before.
+                    }
+
                     EnforceOutputBacklogLimit();
                 }
             }
@@ -447,6 +563,18 @@ namespace TurboHTTP.Transport.BouncyCastle
             }
         }
 
+        /// <summary>
+        /// True when the next <see cref="TryReadPlaintext"/> has something to return without an
+        /// error: decrypted bytes, or end of stream after the peer's close_notify.
+        /// </summary>
+        private bool HasDeliverableInput()
+        {
+            lock (_protocolLock)
+            {
+                return _protocol.GetAvailableInputBytes() > 0 || (_protocol.IsClosed && !_protocol.IsFailed);
+            }
+        }
+
         private bool HasPendingOutput()
         {
             lock (_protocolLock)
@@ -491,20 +619,44 @@ namespace TurboHTTP.Transport.BouncyCastle
         /// </remarks>
         private async ValueTask DrainOutputHoldingGateAsync()
         {
-            int count;
-            while ((count = TakeOutput()) > 0)
+            ThrowIfOutputFailed();
+            try
             {
-                await _inner.WriteAsync(_writeBuffer, 0, count, CancellationToken.None).ConfigureAwait(false);
+                int count;
+                while ((count = TakeOutput()) > 0)
+                {
+                    await _inner.WriteAsync(_writeBuffer, 0, count, CancellationToken.None).ConfigureAwait(false);
+                }
+            }
+            catch
+            {
+                Volatile.Write(ref _outputFailed, 1);
+                throw;
             }
         }
 
         private void DrainOutputHoldingGate()
         {
-            int count;
-            while ((count = TakeOutput()) > 0)
+            ThrowIfOutputFailed();
+            try
             {
-                _inner.Write(_writeBuffer, 0, count);
+                int count;
+                while ((count = TakeOutput()) > 0)
+                {
+                    _inner.Write(_writeBuffer, 0, count);
+                }
             }
+            catch
+            {
+                Volatile.Write(ref _outputFailed, 1);
+                throw;
+            }
+        }
+
+        private void ThrowIfOutputFailed()
+        {
+            if (Volatile.Read(ref _outputFailed) != 0)
+                throw new IOException("An earlier write on the TLS connection failed; it can no longer send.");
         }
 
         /// <summary>

@@ -143,6 +143,15 @@ namespace TurboHTTP.Unity.Decoders
             Initialize();
         }
 
+        /// <summary>
+        /// Registers a managed image decoder for threaded texture decode.
+        /// </summary>
+        /// <remarks>
+        /// While <see cref="TextureOptions.MaxPixels"/> is set (the default), payloads whose
+        /// dimensions cannot be read from a PNG or JPEG header are rejected before any decoder
+        /// runs, so a decoder for another format needs <c>MaxPixels = null</c>.
+        /// </remarks>
+        /// <param name="decoder">The decoder to register.</param>
         public static void RegisterImageDecoder(IImageDecoder decoder)
         {
             if (decoder == null) throw new ArgumentNullException(nameof(decoder));
