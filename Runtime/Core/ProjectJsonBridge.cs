@@ -57,6 +57,50 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
+        /// Returns the document-model half of the registered bridge, which parses into and writes from the
+        /// LiteJson tree regardless of <c>JsonSerializer.Default</c> (#1034). Throws an
+        /// <see cref="InvalidOperationException"/> naming TurboHTTP.JSON and <paramref name="requiredBy"/>
+        /// when no bridge is registered or the registered one has no document model. Exceptions the
+        /// returned bridge throws reach the caller unwrapped.
+        /// </summary>
+        /// <param name="requiredBy">Feature name used in the error message.</param>
+        public static IJsonDomBridge GetRequiredDom(string requiredBy)
+        {
+            if (GetRequired(requiredBy) is IJsonDomBridge dom)
+                return dom;
+
+            throw new InvalidOperationException(
+                "TurboHTTP.JSON is required for " + requiredBy + ", but the registered JSON bridge cannot " +
+                "parse JSON into its document model. Call TurboHTTP.JSON.JsonModuleRegistration.EnsureRegistered() " +
+                "at startup.");
+        }
+
+        /// <summary>
+        /// Parses <paramref name="json"/> into the LiteJson tree (<c>Dictionary&lt;string, object&gt;</c>,
+        /// <c>List&lt;object&gt;</c>, strings, numbers, <see cref="bool"/>, null) through
+        /// <see cref="GetRequiredDom"/>, regardless of <c>JsonSerializer.Default</c>.
+        /// </summary>
+        /// <exception cref="InvalidOperationException">
+        /// No bridge with a document model is registered (the message names TurboHTTP.JSON), or parsing
+        /// failed (the bridge's exception is the inner exception).
+        /// </exception>
+        public static object DeserializeDom(string json, string requiredBy)
+        {
+            var dom = GetRequiredDom(requiredBy);
+
+            try
+            {
+                return dom.ParseDom(json, 0);
+            }
+            catch (Exception ex)
+            {
+                throw new InvalidOperationException(
+                    $"Failed to deserialize JSON payload for {requiredBy}.",
+                    ex);
+            }
+        }
+
+        /// <summary>
         /// Deserializes <paramref name="json"/> to <paramref name="payloadType"/> through the registered bridge.
         /// </summary>
         /// <exception cref="InvalidOperationException">
