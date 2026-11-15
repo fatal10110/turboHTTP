@@ -237,7 +237,7 @@ class SmokeReflectionTargetTests(unittest.TestCase):
         text = (REPO / "Runtime" / rel / "link.xml").read_text()
         text = re.sub(r"<!--.*?-->", "", text, flags=re.S)
         types = set()
-        for assembly, body in re.findall(r'<assembly fullname="([^"]+)"\s*>(.*?)</assembly>', text, flags=re.S):
+        for assembly, body in re.findall(r'<assembly fullname="([^"]+)"[^>]*>(.*?)</assembly>', text, flags=re.S):
             for name in re.findall(r'<type fullname="([^"]+)"', body):
                 types.add(f"{name}, {assembly}")
         return types

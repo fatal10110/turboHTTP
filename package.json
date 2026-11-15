@@ -28,7 +28,14 @@
     "type": "git",
     "url": "https://github.com/fatal10110/turboHTTP.git"
   },
-  "dependencies": {},
+  "dependencies": {
+    "com.unity.modules.androidjni": "1.0.0",
+    "com.unity.modules.audio": "1.0.0",
+    "com.unity.modules.imageconversion": "1.0.0",
+    "com.unity.modules.jsonserialize": "1.0.0",
+    "com.unity.modules.unitywebrequest": "1.0.0",
+    "com.unity.modules.unitywebrequestaudio": "1.0.0"
+  },
   "samples": [
     {
       "displayName": "Basic Usage",

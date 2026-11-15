@@ -60,8 +60,10 @@
     Transport registration: the TurboHttpBootstrap RuntimeInitializeOnLoadMethod (TurboHTTP.Complete,
     [Preserve]) calls RawSocketTransport.EnsureRegistered statically. TransportModuleInitializer is
     the secondary path for runtimes that run module initializers; nothing references it statically.
+    ignoreIfMissing="1": the assembly is not compiled for WebGL (excludePlatforms), and with the
+    package under Assets/ Unity reads this file without TurboHttpLinkerProcessor's filtering (#871).
   -->
-  <assembly fullname="TurboHTTP.Transport">
+  <assembly fullname="TurboHTTP.Transport" ignoreIfMissing="1">
     <type fullname="TurboHTTP.Transport.Http2.SingleReaderChannel`1" preserve="all"/>
     <type fullname="TurboHTTP.Transport.Http2.Http2ResponseBodySource" preserve="all"/>
     <type fullname="TurboHTTP.Transport.TransportModuleInitializer" preserve="all"/>

@@ -130,7 +130,9 @@ namespace TurboHTTP.Editor
         /// Merges the package's <c>link.xml</c> files into one document, one <c>assembly</c>
         /// element per assembly name. A file whose owning assembly is known not to be in the build
         /// (<paramref name="isAssemblyInBuild"/> returns false) is skipped; every <c>assembly</c>
-        /// element not confirmed in the build (false or null) gets <c>ignoreIfMissing="1"</c>.
+        /// element not confirmed in the build (false or null) gets <c>ignoreIfMissing="1"</c>, and an
+        /// element confirmed in the build loses the <c>ignoreIfMissing</c> its source file carries
+        /// for package-under-Assets/ builds (#871), so a rule naming a present assembly stays strict.
         /// </summary>
         internal static XDocument BuildMergedLinkXml(string packageRoot, Func<string, bool?> isAssemblyInBuild)
         {
@@ -186,8 +188,7 @@ namespace TurboHTTP.Editor
 
             foreach (var pair in assemblies)
             {
-                if (isAssemblyInBuild(pair.Key) != true)
-                    pair.Value.SetAttributeValue(IgnoreIfMissingAttribute, "1");
+                pair.Value.SetAttributeValue(IgnoreIfMissingAttribute, isAssemblyInBuild(pair.Key) == true ? null : "1");
             }
 
             linker.AddFirst(new XComment(
