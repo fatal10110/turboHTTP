@@ -41,6 +41,8 @@ Main HTTP client class. Thread-safe and reusable. **Create one instance per appl
 
 `UHttpClient` is sealed and implements `IDisposable` and `IAsyncDisposable`. Prefer `await client.DisposeAsync()`: it waits for every plugin's `ShutdownAsync` (each bounded by `PluginShutdownTimeout`) before it disposes owned interceptors and the owned transport. `Dispose()` never blocks: it starts plugin shutdown without waiting and disposes the owned components at once.
 
+**What the client owns.** A client created with default options (no `Transport`, and no `TlsBackend`, `ConnectionPool`, `Http2` or `Streaming` override) uses the shared `HttpTransportFactory.Default` transport and does **not** own it: disposing the client closes no connection and cancels no in-flight request, and idle pooled sockets stay open until the pool idle timeout (`ConnectionPoolOptions.ConnectionIdleTimeout`: 2 minutes in the Editor and on desktop, 45 seconds on iOS/Android). A client with a non-default `TlsBackend`, `ConnectionPool`, `Http2` or `Streaming` option owns the transport it created and disposes it. A custom `Transport` is disposed only when `DisposeTransport` is `true`. To stop in-flight requests, cancel the `CancellationToken` you passed to them.
+
 **Constructor:**
 
 ```csharp
@@ -64,8 +66,8 @@ var configured = new UHttpClient(options);
 | `SendStreamingAsync(request, ct)` | Send a request and stream the body (`Task<UHttpStreamingResponse>`) |
 | `RegisterPluginAsync(plugin, ct)` | Register an `IHttpPlugin` (see Plugins) |
 | `GetOptionsSnapshot()` | A copy of the options the client runs with |
-| `DisposeAsync()` | Wait for plugin shutdown (bounded by `PluginShutdownTimeout`), then release owned interceptors, the connection pool and other resources |
-| `Dispose()` | Same release without waiting: plugin shutdown is started but not awaited |
+| `DisposeAsync()` | Wait for plugin shutdown (bounded by `PluginShutdownTimeout`), then release owned interceptors and the owned transport (not the shared default transport; see above) |
+| `Dispose()` | Same release without waiting: plugin shutdown is started but not awaited. Cancels no in-flight request |
 
 ### UHttpRequest
 
@@ -76,12 +78,12 @@ A mutable request bound to the client that created it. It is single-use: sending
 | Method | Description | Example |
 | :--- | :--- | :--- |
 | `WithHeader(name, value)` | Set a header | `.WithHeader("Accept", "application/json")` |
-| `WithHeaders(headers)` | Set several headers | `.WithHeaders(myHeaders)` |
+| `WithHeaders(headers)` | **Replaces all headers** on the request with `headers`, including those that came from `DefaultHeaders`; to add or change one header and keep the rest, use `WithHeader` | `.WithHeaders(myHeaders)` |
 | `WithBody(byte[])` / `WithBody(ReadOnlyMemory<byte>)` / `WithBody(string)` | Set a buffered body | `.WithBody("plain text")` |
 | `WithLeasedBody(owner, length)`, `WithBodyFactory(...)` | Pooled or re-creatable bodies | |
 | `WithRequestTrailers(...)` | Send request trailers | |
 | `WithExpectContinue(...)` | Send `Expect: 100-continue` | |
-| `WithTimeout(timespan)` | Timeout for this request | `.WithTimeout(TimeSpan.FromSeconds(30))` |
+| `WithTimeout(timespan)` | Timeout for this request. For `SendStreamingAsync` it ends when the response headers arrive; body reads are not bounded (cancel through the token, see [Streaming](Modules/Core.md)) | `.WithTimeout(TimeSpan.FromSeconds(30))` |
 | `WithMetadata(key, value)` | Attach data for interceptors | `.WithMetadata("tag", "login")` |
 | `SendBufferedAsync(ct)` | Send; buffer the body (`ValueTask<UHttpResponse>`) | `await request.SendBufferedAsync()` |
 | `SendStreamingAsync(ct)` | Send; stream the body (`ValueTask<UHttpStreamingResponse>`) | `await request.SendStreamingAsync()` |
@@ -110,7 +112,8 @@ A buffered response. It is `IDisposable`: dispose it when you are done with the 
 
 | Method | Description |
 | :--- | :--- |
-| `GetBodyAsString()` / `GetBodyAsString(Encoding)` | Get body as a string (UTF-8 unless the content type says otherwise) |
+| `GetBodyAsString()` / `GetBodyAsString(Encoding)` | Get the body as a string. The parameterless overload **always decodes UTF-8** and ignores the `charset` of the content type; both overloads return `null` for an empty body |
+| `GetContentEncoding()` | The `Encoding` named by the `charset` parameter of `Content-Type` (UTF-8 if absent or unknown); use it as `response.GetBodyAsString(response.GetContentEncoding())` for non-UTF-8 bodies |
 | `EnsureSuccessStatusCode()` | Throw `UHttpException` if the status is not 2xx |
 | `AsJson<T>()` | Deserialize the body as JSON (`TurboHTTP.JSON`) |
 | `AsTexture2D()` | Decode the body as a texture (`TurboHTTP.Unity`) |
@@ -122,7 +125,7 @@ A response whose body is read as it arrives. It is `IDisposable` and `IAsyncDisp
 | Member | Description |
 | :--- | :--- |
 | `StatusCode`, `Headers` | Available immediately |
-| `Body` | A read-only `Stream` over the body |
+| `Body` | A read-only, non-seekable `Stream` over the body. Read it with `ReadAsync` / `CopyToAsync`: a synchronous `Read` blocks the calling thread until data arrives, ignores any cancellation token and has no deadline, so avoid it on the Unity main thread |
 | `GetTrailersAsync(ct)` | Trailers, after the body reached its end |
 | `Dispose()` / `DisposeAsync()` | Release the connection; aborts an unfinished transfer |
 
@@ -135,7 +138,7 @@ Configuration options for `UHttpClient`.
 | Property | Type | Description |
 | :--- | :--- | :--- |
 | `BaseUrl` | `string` | Base URL that relative request URLs are resolved against |
-| `DefaultTimeout` | `TimeSpan` | Default timeout (default: 30s) |
+| `DefaultTimeout` | `TimeSpan` | Default timeout (default: 30s). For streaming responses it ends when the response headers arrive; body reads are not bounded |
 | `DefaultHeaders` | `HttpHeaders` | Headers applied to every request |
 | `Transport` | `IHttpTransport` | Custom HTTP transport implementation |
 | `DisposeTransport` | `bool` | Dispose a custom `Transport` together with the client |
@@ -170,7 +173,7 @@ using TurboHTTP.JSON;
 // Deserialize a response
 MyDto data = response.AsJson<MyDto>();
 
-// GET with JSON
+// GET with JSON (throws UHttpException of type HttpError on a non-2xx status)
 MyDto got = await client.GetJsonAsync<MyDto>(url);
 
 // POST with JSON
@@ -182,6 +185,8 @@ MyDto updated = await client.PutJsonAsync<MyDto, MyDto>(url, data);
 // Build a request body
 using var response2 = await client.Post(url).WithJsonBody(data).SendBufferedAsync();
 ```
+
+`GetJsonAsync`, `PostJsonAsync`, `PutJsonAsync`, `PatchJsonAsync` and `DeleteJsonAsync` call `EnsureSuccessStatusCode()`: on a non-2xx status they throw `UHttpException` with `UHttpErrorType.HttpError`, and the error response body is not available from the exception. To read the body of an error response, use `SendBufferedAsync()`, check `IsSuccessStatusCode`, then `TryAsJson` or `GetBodyAsString()`.
 
 ### JSON serializers
 
@@ -267,8 +272,8 @@ The client disposes these interceptors only when `DisposeInterceptors` is `true`
 | `NetworkError` | Connection failed (DNS, refused, reset) or a bounded size was exceeded |
 | `Timeout` | Request timeout |
 | `HttpError` | HTTP error status (4xx, 5xx), raised by `EnsureSuccessStatusCode()` |
-| `CertificateError` | TLS certificate or handshake failure |
-| `Cancelled` | Cancelled by the caller |
+| `CertificateError` | TLS certificate validation or handshake (authentication) failure |
+| `Cancelled` | Reserved: the client never raises it. Cancelling through your `CancellationToken` throws `OperationCanceledException` |
 | `InvalidRequest` | Bad request configuration (for example a refused cleartext request) |
 | `Unknown` | Unexpected error |
 

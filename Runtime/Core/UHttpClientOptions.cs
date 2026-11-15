@@ -36,6 +36,8 @@ namespace TurboHTTP.Core
         /// <summary>
         /// Default timeout for requests. Defaults to <see cref="PlatformConfig.RecommendedTimeout"/>.
         /// Can be overridden per-request via <see cref="UHttpRequest.WithTimeout(TimeSpan)"/>.
+        /// For streaming responses the timeout ends when the response headers arrive; body reads are
+        /// not bounded, so pass a <see cref="System.Threading.CancellationToken"/> to bound them.
         /// </summary>
         public TimeSpan DefaultTimeout { get; set; } = PlatformConfig.RecommendedTimeout;
 

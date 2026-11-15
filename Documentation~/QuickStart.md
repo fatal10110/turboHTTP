@@ -112,7 +112,7 @@ public class PostExample : MonoBehaviour
 
 ### 3. GET a typed JSON object
 
-Deserialize the response straight into a class:
+Deserialize the response straight into a class. `GetJsonAsync` and the other JSON helpers throw `UHttpException` with `UHttpErrorType.HttpError` on a non-2xx status (and do not expose the error body), so wrap them in `try/catch`, or use `SendBufferedAsync` and check `IsSuccessStatusCode` first:
 
 ```csharp
 using System;
@@ -134,13 +134,23 @@ public class UserExample : MonoBehaviour
 
     private async void Start()
     {
-        User user = await _client.GetJsonAsync<User>("https://jsonplaceholder.typicode.com/users/1");
-        Debug.Log($"User: {user.name}");
+        try
+        {
+            // Throws UHttpException (HttpError) on a non-2xx status; the error body is not available.
+            User user = await _client.GetJsonAsync<User>("https://jsonplaceholder.typicode.com/users/1");
+            Debug.Log($"User: {user.name}");
 
-        // Or deserialize a response you already hold:
-        using var response = await _client.Get("https://jsonplaceholder.typicode.com/users/2").SendBufferedAsync();
-        if (response.TryAsJson(out User other))
-            Debug.Log($"User: {other.name}");
+            // Or deserialize a response you already hold, and keep the error body of a failure:
+            using var response = await _client.Get("https://jsonplaceholder.typicode.com/users/2").SendBufferedAsync();
+            if (response.IsSuccessStatusCode && response.TryAsJson(out User other))
+                Debug.Log($"User: {other.name}");
+            else
+                Debug.LogWarning($"HTTP {(int)response.StatusCode}: {response.GetBodyAsString()}");
+        }
+        catch (UHttpException ex)
+        {
+            Debug.LogError($"Request failed: {ex.HttpError.Type} {ex.HttpError.Message}");
+        }
     }
 
     private void OnDestroy() => _client.Dispose();
@@ -164,7 +174,7 @@ using var response = await client.Get("/status").SendBufferedAsync(ct);
 
 ### 5. Large downloads: streaming
 
-A buffered response keeps the whole body in memory. For large bodies read the stream instead; see [Core](Modules/Core.md), "Buffered and streaming responses", or use `FileDownloader` (Samples, "File Download").
+A buffered response keeps the whole body in memory. For large bodies read the stream instead; see [Core](Modules/Core.md), "Buffered and streaming responses", or use `FileDownloader` (Samples, "File Download"). The request timeout ends when the response headers arrive and does not bound the body, so pass a `CancellationToken` that you cancel after an overall or per-read limit (`CancellationTokenSource.CancelAfter`); `FileDownloader.DownloadFileAsync` accepts one.
 
 ## Next Steps
 
