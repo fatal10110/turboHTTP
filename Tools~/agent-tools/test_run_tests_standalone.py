@@ -23,8 +23,8 @@ while [ $# -gt 0 ]; do
   case "$1" in -logFile) log="$2"; shift ;; -testResults) xml="$2"; shift ;; esac
   shift
 done
-[ -z "$log" ] || echo "fake unity log" > "$log"
-[ -z "$xml" ] || cat "$FAKE_RESULTS" > "$xml"
+[ -z "$log" ] || printf '%s\n' "${FAKE_LOG:-fake unity log}" > "$log"
+[ -z "$xml" ] || [ "${FAKE_NO_RESULTS:-0}" = 1 ] || cat "$FAKE_RESULTS" > "$xml"
 exit "${FAKE_UNITY_EXIT:-0}"
 """
 
@@ -143,6 +143,14 @@ class StandaloneRunTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2)
         self.assertIn("needs a Windows editor", result.stderr)
         self.assertEqual(self.unity_calls(), [])
+
+    def test_il2cpp_player_without_a_cpp_toolchain_names_the_cause(self):
+        line = "error: Could not set up a toolchain for Architecture x64. Make sure you have the right build tools"
+        result = self.run_tests("--platform", "StandaloneWindows64", "--backend", "IL2CPP", "--filter", "Fake",
+                                FAKE_NO_RESULTS="1", FAKE_UNITY_EXIT="3", FAKE_LOG=line)
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("run-tests: no results (Unity exit 3)", result.stdout)
+        self.assertIn("Could not set up a toolchain", result.stdout)
 
     def test_filter_that_matches_no_test_exits_4(self):
         self.results.write_text(results_xml(total=0))

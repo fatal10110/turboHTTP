@@ -76,7 +76,7 @@ Player-iOS-2021.3 33
 #   PlayMode 2923      the same run
 #   Player-Android 2628  #365 run on main e0a5bf7 (API 29 x86_64 emulator, Stripping High, 2026-11-04)
 # Player-iOS, Player-iOS-2021.3 and Player-StandaloneWindows64 have no entry yet (no complete unfiltered run of
-# them is recorded), so an unfiltered run of them fails until its total is recorded here.
+# them is recorded), so an unfiltered run of them fails until its total is recorded here (Win64: #1219).
 # min-total <run target> <min cases>
 min-total EditMode 71
 min-total PlayMode 2923

@@ -283,7 +283,7 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    player connection. Mono builds at Unity's default stripping (Disabled), IL2CPP at High and needs the
    Windows IL2CPP module and the Visual Studio C++ toolchain. The player opens a window, so the host needs
    a desktop session; it is not headless. Its gates use the `Player-StandaloneWindows64` entries of
-   `skip-baseline.txt`, which the first complete run records (until then an unfiltered run exits 4 naming
+   `skip-baseline.txt`, which the first complete run records (#1219; until then an unfiltered run exits 4 naming
    the missing entry). Tiers:
    - **Per PR:** the scoped `--filter` run of the tests the change touches (CLAUDE.md section 5), never the
      whole suite. CI runs no Unity (#188).

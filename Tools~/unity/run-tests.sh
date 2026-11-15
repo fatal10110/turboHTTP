@@ -235,6 +235,10 @@ fi
 if [ ! -f "$xml" ]; then
   echo "run-tests: no results (Unity exit $code); compile errors? see $log"
   grep -E "error CS[0-9]+" "$log" | head -20 || true
+  # A test player that did not build is not a compile error: say why (an IL2CPP player needs the C++ toolchain).
+  if [ "$platform" = StandaloneWindows64 ]; then
+    grep -m3 -E "Could not set up a toolchain|Build Finished, Result: Failure|BuildFailedException" "$log" || true
+  fi
   exit 2
 fi
 is_filtered=0
