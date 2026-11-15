@@ -17,6 +17,7 @@ namespace TurboHTTP.Core
         private int _disposed;
         private int _resourcesDisposed;
         private int _sessionFaulted;
+        private Task _abandonedBufferedWrite;
         private Func<HttpHeaders> _trailerProvider;
         private string[] _declaredTrailerNames = EmptyDeclaredTrailerNames;
 
@@ -132,6 +133,31 @@ namespace TurboHTTP.Core
 
         internal abstract ValueTask<RequestBodyReadSession> OpenReadSessionCoreAsync(CancellationToken ct);
 
+        /// <summary>
+        /// Called by a transport when a write over the memory <see cref="TryGetBufferedData"/> exposed
+        /// was abandoned on cancellation and may still read that memory (#633: Mono and IL2CPP may not
+        /// end a pending send once its token fired). The body's resources (a leased buffer of
+        /// <see cref="OwnedMemoryRequestBody"/>) are released only after <paramref name="pendingWrite"/>
+        /// ends, so the pool never hands that memory to another renter while the platform still sends
+        /// it. Must be called before the body is disposed; the request owner disposes it only after
+        /// the send that abandoned the write has returned.
+        /// </summary>
+        internal void DeferResourceReleaseUntil(Task pendingWrite)
+        {
+            if (pendingWrite == null || pendingWrite.IsCompleted)
+                return;
+
+            while (true)
+            {
+                var current = Volatile.Read(ref _abandonedBufferedWrite);
+                var next = current == null || current.IsCompleted
+                    ? pendingWrite
+                    : Task.WhenAll(current, pendingWrite);
+                if (Interlocked.CompareExchange(ref _abandonedBufferedWrite, next, current) == current)
+                    return;
+            }
+        }
+
         internal RequestBodyReadSession CreateReadSession(
             Stream stream,
             long? contentLength,
@@ -235,8 +261,34 @@ namespace TurboHTTP.Core
             if (Interlocked.Exchange(ref _resourcesDisposed, 1) != 0)
                 return;
 
-            DisposeCore();
             GC.SuppressFinalize(this);
+            var abandonedWrite = Volatile.Read(ref _abandonedBufferedWrite);
+            if (abandonedWrite != null && !abandonedWrite.IsCompleted)
+            {
+                // The abandoned write's observer (AbandonableTask) observes its fault; this
+                // continuation only releases the memory once the platform no longer reads it.
+                abandonedWrite.ContinueWith(
+                    static (_, state) => ((UHttpRequestBody)state).DisposeCoreAfterAbandonedWrite(),
+                    this,
+                    CancellationToken.None,
+                    TaskContinuationOptions.ExecuteSynchronously,
+                    TaskScheduler.Default);
+                return;
+            }
+
+            DisposeCore();
+        }
+
+        private void DisposeCoreAfterAbandonedWrite()
+        {
+            try
+            {
+                DisposeCore();
+            }
+            catch (Exception)
+            {
+                // No caller is left to report to: the request was disposed before the write ended.
+            }
         }
 
         protected static int ComputeStableHash(ReadOnlySpan<byte> data)

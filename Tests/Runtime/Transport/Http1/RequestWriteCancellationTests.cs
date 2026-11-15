@@ -1,4 +1,5 @@
 using System;
+using System.Buffers;
 using System.IO;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -101,6 +102,58 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         [Test]
+        public void Serialize_LeasedBufferedBodyWriteIgnoresToken_OwnerReleasedOnlyAfterTheWriteEnds()
+        {
+            AssertAsync.Run(async () =>
+            {
+                // Above the small-body threshold (32 KiB), so the body memory itself is written:
+                // write 1 is the head (completes), write 2 the leased body memory (stuck).
+                var stream = new StuckWriteStream(stuckWrite: 2);
+                using var cts = new CancellationTokenSource();
+                var owner = new TrackingMemoryOwner(64 * 1024);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithLeasedBody(owner, owner.Memory.Length);
+                var send = Http11RequestSerializer.SerializeAsync(request, stream, cts.Token, new Http11RequestWriteState());
+
+                await stream.WritePending.ConfigureAwait(false);
+                cts.Cancel();
+
+                Assert.IsInstanceOf<OperationCanceledException>(await CaptureAsync(send).ConfigureAwait(false));
+
+                // The request owner disposes the request after the failed send; the abandoned
+                // write still reads the leased memory, so the owner must not go back to its pool.
+                request.Dispose();
+                Assert.AreEqual(0, owner.DisposeCount,
+                    "the leased body memory the abandoned write still reads must not be released");
+
+                stream.EndWrite();
+                Assert.AreEqual(1, owner.DisposeCount, "the owner is released once the abandoned write ends");
+                Assert.IsTrue(stream.IsDisposed);
+            }, Guard);
+        }
+
+        [Test]
+        public void Serialize_LeasedBufferedBodyCompletes_DisposeReleasesTheOwnerAtOnce()
+        {
+            AssertAsync.Run(async () =>
+            {
+                var stream = new StuckWriteStream(stuckWrite: 2);
+                using var cts = new CancellationTokenSource();
+                var owner = new TrackingMemoryOwner(64 * 1024);
+                var request = new UHttpRequest(HttpMethod.POST, new Uri("http://example.com/"))
+                    .WithLeasedBody(owner, owner.Memory.Length);
+                var send = Http11RequestSerializer.SerializeAsync(request, stream, cts.Token, new Http11RequestWriteState());
+
+                await stream.WritePending.ConfigureAwait(false);
+                stream.EndWrite();
+                await send.ConfigureAwait(false);
+
+                request.Dispose();
+                Assert.AreEqual(1, owner.DisposeCount);
+            }, Guard);
+        }
+
+        [Test]
         public void Serialize_AbandonedWriteFaultsLater_FaultIsObserved()
         {
             using var probe = new UnobservedTaskProbe();
@@ -169,6 +222,18 @@ namespace TurboHTTP.Tests.Transport.Http1
             {
                 return ex;
             }
+        }
+
+        private sealed class TrackingMemoryOwner : IMemoryOwner<byte>
+        {
+            private int _disposeCount;
+
+            public TrackingMemoryOwner(int length) => Memory = new byte[length];
+
+            public Memory<byte> Memory { get; }
+            public int DisposeCount => Volatile.Read(ref _disposeCount);
+
+            public void Dispose() => Interlocked.Increment(ref _disposeCount);
         }
 
         /// <summary>

@@ -291,7 +291,21 @@ namespace TurboHTTP.Transport.Http1
             if (!bodyWriteMode.BufferedBody.IsEmpty)
             {
                 writeState?.RecordBodyBytesWritten(bodyWriteMode.BufferedBody.Length);
-                await Http11RequestWriteRace.WriteAsync(stream, bodyWriteMode.BufferedBody, ct, out _).ConfigureAwait(false);
+                Task pendingWrite = null;
+                try
+                {
+                    await Http11RequestWriteRace.WriteAsync(stream, bodyWriteMode.BufferedBody, ct, out pendingWrite)
+                        .ConfigureAwait(false);
+                }
+                catch
+                {
+                    // The memory is the body's (a leased owner for WithLeasedBody): keep it out of
+                    // its pool until the abandoned write ends.
+                    if (Http11RequestWriteRace.IsStillRunning(pendingWrite))
+                        content?.DeferResourceReleaseUntil(pendingWrite);
+                    throw;
+                }
+
                 return;
             }
 
