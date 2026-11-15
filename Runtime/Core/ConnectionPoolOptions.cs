@@ -68,7 +68,7 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Maximum concurrent connections per host. Defaults to platform recommendation
-        /// (e.g., 6 on Desktop, 8 on Mobile).
+        /// (16 in the Editor and on desktop, 8 on iOS/Android players).
         /// </summary>
         public int MaxConnectionsPerHost
         {

@@ -255,6 +255,9 @@ namespace TurboHTTP.Transport.Tls
         /// </summary>
         internal static bool IsAlpnSetupFailure(Exception ex)
         {
+            // TargetInvocationException and MemberAccessException are legacy arms from the former
+            // reflection-based ALPN setup (#303); kept so a runtime that still throws them is classified
+            // as a setup failure.
             return ex is System.Reflection.TargetInvocationException
                 || ex is MemberAccessException
                 || ex is TypeLoadException

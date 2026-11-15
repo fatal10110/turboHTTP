@@ -4,15 +4,15 @@ TurboHTTP is designed to run reliably across major Unity platforms, supporting b
 
 ## Supported Platforms Matrix
 
-| Platform | Scripting Backend | Status | Notes |
-| :--- | :--- | :--- | :--- |
-| **Windows** | Mono / IL2CPP | ✅ Supported | TLS 1.3 where the OS offers it. HTTP/2 with `TlsBackend.BouncyCastle` (see below). |
-| **macOS** | Mono / IL2CPP | ✅ Supported | TLS 1.3 where the OS offers it. HTTP/2 with `TlsBackend.BouncyCastle` (see below). |
-| **Linux** | Mono / IL2CPP | ✅ Supported | Verified on Ubuntu 20.04+. |
-| **iOS** | IL2CPP | ✅ Supported | Requires AOT-safe configuration. |
-| **Android** | IL2CPP | ✅ Supported | ARM64/ARMv7. Restrictions on cleartext apply. |
-| **WebGL** | IL2CPP | ❌ Unsupported in v1.0 | Browsers provide no raw sockets. A WebGL player build fails at build time with an explanatory error instead of failing every request at runtime. Support is planned for a later release. |
-| **Console** | IL2CPP | ⚠️ Experimental | Socket implementation varies by platform SDK. |
+| Platform | Scripting Backend | Status | HTTP/2 | Notes | Validation |
+| :--- | :--- | :--- | :--- | :--- | :--- |
+| **Windows** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` | `SslStream` negotiates whatever the OS offers (TLS 1.2 floor enforced by TurboHTTP); the negotiated version on desktop Unity 2021.3 is not recorded (needs-device-validation). BouncyCastle negotiated TLS 1.3 on an Android API 23 emulator. | Windows Mono player run done (#404); IL2CPP player rows pending |
+| **macOS** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (SecTrust verifier not yet validated on a Mac, #33) | As Windows. | Needs a Mac (#33) |
+| **Linux** | Mono / IL2CPP | ⚠️ Partly validated | Unavailable (BouncyCastle rejects every certificate on Linux) | Only a Mono standalone player under WSL2 (Ubuntu) was run, with `SslStream`; that Unity runtime crashed in its Boehm GC in 10 of 140 launches before any test ran (a runtime issue, #423). No IL2CPP Linux run, no native Ubuntu or other-distribution run. | Open: #99, #436 |
+| **iOS** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | Requires AOT-safe configuration. | Open: #99 |
+| **Android** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | ARM64/ARMv7. Restrictions on cleartext apply. | Open: #99 |
+| **WebGL** | IL2CPP | ❌ Unsupported in v1.0 | n/a | Browsers provide no raw sockets. A WebGL player build fails at build time with an explanatory error instead of failing every request at runtime. Support is planned for a later release. | n/a |
+| **Consoles** | IL2CPP | Untested | Unknown | Not tested on any console. The socket implementation varies by platform SDK (see `ConnectionPoolOptions.SocketIoMode`). | None |
 
 ## Platform Defaults
 
@@ -21,7 +21,7 @@ TurboHTTP automatically allows the runtime platform to determine optimal default
 | Feature | Desktop / Editor | Mobile (iOS/Android) |
 | :--- | :--- | :--- |
 | **Request Timeout** | 30 seconds | 45 seconds |
-| **Max Concurrency** | 16 requests | 8 requests |
+| **Connections per host** (`ConnectionPoolOptions.MaxConnectionsPerHost`) | 16 | 8 |
 | **Pooled connection idle timeout** (`ConnectionPoolOptions.ConnectionIdleTimeout`) | 120 seconds | 45 seconds (needs device validation, #99) |
 | **Reused-connection first-byte timeout** (`ConnectionPoolOptions.ReusedConnectionFirstByteTimeout`) | 10 seconds | 10 seconds |
 | **TCP keepalive** (`SO_KEEPALIVE`) | on, OS probe timing (Unity's .NET profile exposes no timing options) | on, OS probe timing (needs device validation, #99) |
@@ -45,7 +45,7 @@ options.ConnectionPool.MaxConnectionsPerHost = 4;
 ```
 
 A reused HTTP/1.1 connection that sends no response byte within `ReusedConnectionFirstByteTimeout` after an
-idempotent request (GET, HEAD, PUT, DELETE, OPTIONS, TRACE with a replayable body) is closed and the request is
+idempotent request (GET, HEAD, PUT, DELETE or OPTIONS, with a replayable body) is closed and the request is
 sent once more on a newly connected socket, directly or through the proxy alike. That retry connection waits
 for the response until the request timeout, like any other fresh connection, and is not retried again. The
 bound is a time to first byte: a server slower than it to start answering a request sent on a reused
@@ -58,7 +58,7 @@ HTTP/2 over TLS is selected only through ALPN (RFC 9113 section 3.2). Unity's `S
 UnityTls, in the Editor and in Mono and IL2CPP players on every platform) accepts the ALPN options but
 never sends them and cannot report a negotiated protocol (mono#12880). With the default `TlsBackend.Auto`
 (or `TlsBackend.SslStream`) every HTTPS connection therefore uses HTTP/1.1, and TurboHTTP reports no
-ALPN and no HTTP/2 capability for it (`PlatformConfig.SupportsHttp2` is false without BouncyCastle).
+ALPN and no HTTP/2 capability for it (`HttpTransportFactory.Capabilities.Http2` is false without BouncyCastle).
 `Auto` never switches to BouncyCastle by itself.
 
 To use HTTP/2, add `TURBOHTTP_BOUNCYCASTLE` to Player Settings > Scripting Define Symbols and set
@@ -227,7 +227,7 @@ On Unity, `SslStream` and the other `System.Net.Security` types live in the `Sys
 If issues persist:
 1.  Enable **Development Build** and **Script Debugging**.
 2.  Check Player Logs for `ExecutionEngineException` or `MissingMethodException`.
-3.  Run the package's PlayMode tests (`TurboHTTP.Tests.Runtime`, `PlatformTests`) in a development player: they include the IL2CPP/AOT smoke checks (the `IL2CPPCompatibility` helper is internal since 1.0).
+3.  Add `com.turbohttp.complete` to `testables` in the project's `Packages/manifest.json` (Unity runs a package's tests only then), then run the package's PlayMode tests (`TurboHTTP.Tests.Runtime`, `PlatformTests`) in a development player: they include the IL2CPP/AOT smoke checks (the `IL2CPPCompatibility` helper is internal since 1.0).
 
 ## Managed allocations per body read
 

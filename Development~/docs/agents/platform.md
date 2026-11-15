@@ -10,10 +10,10 @@ Load for TLS, sockets, IL2CPP/AOT, iOS/Android behavior, timeouts or device vali
   overload is used with dispose-on-cancel.
 - BouncyCastle (`TurboHTTP.Transport.BouncyCastle`) exists for IL2CPP platforms where `SslStream`
   ALPN is missing. It is explicit opt-in only (`TlsBackend.BouncyCastle`). Its server certificates
-  are checked by `ServerCertificateVerifier` (#33): RFC 6125 host matching, then `X509Chain` against
-  the platform root store in the Editor and on desktop (revocation off, EKU chained). On iOS/Android
-  players it fails closed (`certificate_unknown`) until the native SecTrust/TrustManager verifiers
-  land (#239).
+  are checked by `ServerCertificateVerifier` (#33): RFC 6125 host matching, then the platform verifier
+  (revocation off): Windows crypt32, macOS and iOS SecTrust, the Android trust manager. Linux has no
+  verifier, so every certificate is rejected (`certificate_unknown`). The macOS, iOS and Android
+  verifiers are not device-validated yet (#33, #239, #447).
 - TLS fallback rule (#34, #110): Auto mode picks the TLS provider before the handshake and never
   picks one without full certificate chain validation; a failed handshake (certificate,
   authentication, network or platform capability) propagates to the caller with no runtime
