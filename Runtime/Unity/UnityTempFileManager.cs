@@ -122,11 +122,10 @@ namespace TurboHTTP.Unity
                 Interlocked.Exchange(ref shared._cleanupRetries, 0);
                 Interlocked.Exchange(ref shared._cleanupFailures, 0);
 
-                var oldLimiter = shared._ioLimiter;
+                // Never disposed: a write from before the reset may still hold or wait on it (#1006).
                 shared._ioLimiter = new SemaphoreSlim(
                     shared._options.MaxConcurrentIo,
                     shared._options.MaxConcurrentIo);
-                oldLimiter?.Dispose();
             }
         }
 
@@ -156,10 +155,21 @@ namespace TurboHTTP.Unity
 
                 if (clone.MaxConcurrentIo != currentIo)
                 {
-                    var oldLimiter = _ioLimiter;
+                    // The replaced limiter is left to the GC, never disposed: in-flight operations
+                    // captured it and still wait on or release it (#1006). Until they finish, old and
+                    // new limiters admit operations side by side.
                     _ioLimiter = new SemaphoreSlim(clone.MaxConcurrentIo, clone.MaxConcurrentIo);
-                    oldLimiter?.Dispose();
                 }
+            }
+        }
+
+        // Each operation waits on and releases the instance returned here, so a Configure in between
+        // cannot make it release a different semaphore.
+        internal SemaphoreSlim GetIoLimiter()
+        {
+            lock (_gate)
+            {
+                return _ioLimiter;
             }
         }
 
@@ -226,7 +236,8 @@ namespace TurboHTTP.Unity
             if (string.IsNullOrWhiteSpace(path))
                 throw new ArgumentException("Path cannot be null or empty.", nameof(path));
 
-            await _ioLimiter.WaitAsync(cancellationToken).ConfigureAwait(false);
+            var limiter = GetIoLimiter();
+            await limiter.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
                 var directory = Path.GetDirectoryName(path);
@@ -260,7 +271,7 @@ namespace TurboHTTP.Unity
             }
             finally
             {
-                _ioLimiter.Release();
+                limiter.Release();
             }
         }
 
@@ -303,6 +314,7 @@ namespace TurboHTTP.Unity
             {
                 DeleteWorkItem workItem;
                 UnityTempFileManagerOptions options;
+                SemaphoreSlim limiter;
 
                 lock (_gate)
                 {
@@ -314,9 +326,10 @@ namespace TurboHTTP.Unity
 
                     workItem = _deleteQueue.Dequeue();
                     options = _options.Clone();
+                    limiter = _ioLimiter;
                 }
 
-                await _ioLimiter.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+                await limiter.WaitAsync(CancellationToken.None).ConfigureAwait(false);
                 try
                 {
                     if (TryDeleteNow(workItem.Path))
@@ -331,7 +344,7 @@ namespace TurboHTTP.Unity
                 }
                 finally
                 {
-                    _ioLimiter.Release();
+                    limiter.Release();
                 }
 
                 if (workItem.Attempt >= options.CleanupRetryCount)

@@ -4,11 +4,11 @@ TurboHTTP's async methods return `ValueTask`/`Task`. If you use [UniTask](https:
 
 ## Enabling UniTask support
 
-Both assemblies compile only when the `com.cysharp.unitask` package (2.0.0 or newer) is installed, which defines `TURBOHTTP_UNITASK`. They are not auto-referenced: reference `TurboHTTP.UniTask` from your own `.asmdef`, and add `TurboHTTP.UniTask.WebSocket` only if you use the WebSocket adapters (an HTTP-only project then does not compile `TurboHTTP.WebSocket`). Both put their types in the `TurboHTTP.UniTask` namespace. The adapters need UniTask, so these snippets are not compiled with the rest of the documentation.
+Both assemblies compile only when `TURBOHTTP_UNITASK` is defined. Installing UniTask as the `com.cysharp.unitask` package (2.0.0 or newer) defines it automatically. A UniTask copied into `Assets/` or imported from a `.unitypackage` does not: add `TURBOHTTP_UNITASK` to **Project Settings > Player > Scripting Define Symbols** yourself (UniTask's assembly must be named `UniTask`, as it is in the official releases). The assemblies are not auto-referenced: reference `TurboHTTP.UniTask` from your own `.asmdef`, and add `TurboHTTP.UniTask.WebSocket` only if you use the WebSocket adapters (an HTTP-only project then does not compile `TurboHTTP.WebSocket`). Both put their types in the `TurboHTTP.UniTask` namespace. Because of that namespace, the bare name `UniTask` binds to `TurboHTTP.UniTask` (not to Cysharp's non-generic `UniTask` type) inside any namespace that starts with `TurboHTTP`, such as `TurboHTTP.Samples.*`. Keep your own code, including code copied from the samples, out of `TurboHTTP.*` namespaces, or write `Cysharp.Threading.Tasks.UniTask` in full there (`UniTask<T>` is not affected). The adapters need UniTask, so these snippets are not compiled with the rest of the documentation.
 
 ## Usage
 
-`GetAsync`, `PostAsync`, `PutAsync`, `PatchAsync`, `DeleteAsync`, `HeadAsync` and `OptionsAsync` on `UHttpClient` return `UniTask<UHttpResponse>` (buffered), and `AsUniTask()` converts any request. Continuations resume on the main thread by UniTask's rules.
+`GetAsync`, `PostAsync`, `PutAsync`, `PatchAsync`, `DeleteAsync`, `HeadAsync` and `OptionsAsync` on `UHttpClient` return `UniTask<UHttpResponse>` (buffered), and `AsUniTask()` converts any request. Where your code resumes depends on the thread you call from; see [Which thread you resume on](#which-thread-you-resume-on).
 
 <!-- snippet: skip needs UniTask: the shadow build compiles the adapters against it (#311) but keeps it out of the documentation build, which also runs offline (--no-unitask) -->
 ```csharp
@@ -30,7 +30,14 @@ public class DataService : MonoBehaviour
 }
 ```
 
-`TurboHttpUniTaskOptions.DefaultPlayerLoopTiming` selects the player-loop timing used for continuations.
+### Which thread you resume on
+
+TurboHTTP completes requests on thread-pool threads and uses `ConfigureAwait(false)` internally, so it never brings you back to the main thread by itself. The adapter awaits the response with a plain `await`, which captures the `SynchronizationContext` of the thread that made the call, and then applies the player-loop timing (the `playerLoopTiming` argument, else `TurboHttpUniTaskOptions.DefaultPlayerLoopTiming`):
+
+- `PlayerLoopTiming.Update`, the default, adds no player-loop yield. Called from the main thread, you resume on the main thread, through Unity's `SynchronizationContext` that the adapter's `await` captured. Called from a thread without one, for example after `await UniTask.SwitchToThreadPool()` or inside `Task.Run`, you resume on the thread-pool thread that completed the request, where Unity APIs throw.
+- Any other timing (for example `PlayerLoopTiming.PreUpdate` or `PostLateUpdate`) ends with `UniTask.Yield(timing)`, so you resume on the main thread in that player-loop phase from any calling thread.
+
+To touch Unity objects after working off the main thread, call `await UniTask.SwitchToMainThread()` before using the response, or pass a timing other than `Update`.
 
 ## Timeouts and cancellation
 
@@ -70,4 +77,4 @@ public static class WebSocketExample
 }
 ```
 
-Plain `Task`/`ValueTask` awaiting also works inside UniTask methods: TurboHTTP never captures the Unity `SynchronizationContext` (it uses `ConfigureAwait(false)` internally), so awaiting from a `UniTask` method returns you to the main thread through UniTask's own awaiter.
+Plain `Task`/`ValueTask` awaiting also works inside UniTask methods. TurboHTTP itself never captures the Unity `SynchronizationContext` (it uses `ConfigureAwait(false)` internally), but your own `await` on the returned `Task`/`ValueTask` does: called from the main thread, it resumes on the main thread through Unity's `SynchronizationContext`. That is the `Task`/`ValueTask` awaiter at work, not UniTask's; called from a thread-pool thread, the same `await` stays on the thread pool.
