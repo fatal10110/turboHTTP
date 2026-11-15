@@ -8,7 +8,11 @@ namespace TurboHTTP.Unity.Mobile.Android
     /// </summary>
     internal interface IAndroidBackgroundPlugin
     {
-        /// <summary>Hands the application context to the plugin once; <see langword="false"/> while unavailable.</summary>
+        /// <summary>
+        /// Hands the application context to the plugin once; <see langword="false"/> while unavailable.
+        /// The plugin's first initialization in a process cancels the tagged deferred work earlier
+        /// processes left behind (#940).
+        /// </summary>
         bool EnsureInitialized();
 
         bool BeginGuard(string scopeId, int graceMilliseconds);
@@ -132,7 +136,8 @@ namespace TurboHTTP.Unity.Mobile.Android
 
         public void CancelDeferredWork(string dedupeKey)
         {
-            if (System.Threading.Volatile.Read(ref _initialized) == 0)
+            // Initializes instead of skipping the cancel in a process that has not called the plugin yet (#940).
+            if (!EnsureInitialized())
                 return;
 
             using var plugin = new UnityEngine.AndroidJavaClass(_className);

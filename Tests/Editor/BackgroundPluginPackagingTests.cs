@@ -117,6 +117,20 @@ namespace TurboHTTP.Tests.Editor
             StringAssert.DoesNotContain("GetAwaiter().GetResult()", source);
         }
 
+        [Test]
+        public void AndroidDeferredWork_EndsOnItsFirstRunAndIsClearedAtStartup()
+        {
+            // #940: the job must not be rescheduled forever after the enqueuing process died.
+            var java = Path.Combine(Root, AndroidLib, "src/main/java/com/turbohttp/background");
+            var worker = File.ReadAllText(Path.Combine(java, "TurboHttpBackgroundWorker.java"));
+            var plugin = File.ReadAllText(Path.Combine(java, "TurboHttpBackgroundPlugin.java"));
+
+            StringAssert.DoesNotContain("return Result.retry()", worker);
+            StringAssert.Contains("Result.success()", worker);
+            StringAssert.Contains(".addTag(DEFERRED_WORK_TAG)", plugin);
+            StringAssert.Contains(".cancelAllWorkByTag(DEFERRED_WORK_TAG)", plugin);
+        }
+
         private static PluginImporter Importer(string relative)
         {
             var importer = AssetImporter.GetAtPath(Package().assetPath + "/" + relative) as PluginImporter;
