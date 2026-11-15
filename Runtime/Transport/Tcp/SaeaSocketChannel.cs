@@ -196,12 +196,14 @@ namespace TurboHTTP.Transport.Tcp
                     "SaeaSocketChannel does not support concurrent ReceiveAsync calls.");
             TestHookActivated?.Invoke();
 
-            int toRead = Math.Min(count, _recvBuffer.Length);
-            _recvSaea.SetBuffer(_recvBuffer, 0, toRead);
+            // Before the buffer is touched: a Dispose that already released it is seen here.
             _recvSource.Reset();
             Interlocked.Exchange(ref _recvCompleting, 0);
             if (Volatile.Read(ref _disposed) != 0)
                 throw AbandonDisposedStart(receive: true, ct);
+
+            int toRead = Math.Min(count, _recvBuffer.Length);
+            _recvSaea.SetBuffer(_recvBuffer, 0, toRead);
 
             CancellationTokenRegistration reg = default;
             if (ct.CanBeCanceled)
@@ -276,14 +278,15 @@ namespace TurboHTTP.Transport.Tcp
                         "SaeaSocketChannel does not support concurrent SendAsync calls.");
                 TestHookActivated?.Invoke();
 
-                int toSend = Math.Min(remaining, _sendBuffer.Length);
-                data.Slice(offset, toSend).Span.CopyTo(_sendBuffer.AsSpan(0, toSend));
-
-                _sendSaea.SetBuffer(_sendBuffer, 0, toSend);
+                // Before the buffer is touched: a Dispose that already released it is seen here.
                 _sendSource.Reset();
                 Interlocked.Exchange(ref _sendCompleting, 0);
                 if (Volatile.Read(ref _disposed) != 0)
                     throw AbandonDisposedStart(receive: false, ct);
+
+                int toSend = Math.Min(remaining, _sendBuffer.Length);
+                data.Slice(offset, toSend).Span.CopyTo(_sendBuffer.AsSpan(0, toSend));
+                _sendSaea.SetBuffer(_sendBuffer, 0, toSend);
 
                 CancellationTokenRegistration reg = default;
                 if (ct.CanBeCanceled)
