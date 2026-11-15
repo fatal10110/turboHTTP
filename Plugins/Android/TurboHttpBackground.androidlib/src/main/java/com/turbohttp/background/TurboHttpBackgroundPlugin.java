@@ -14,9 +14,15 @@ import java.util.concurrent.ConcurrentHashMap;
  * safe to call from any thread and never blocks on WorkManager futures.
  */
 public final class TurboHttpBackgroundPlugin {
+    /** Tag on every deferred job, so a new process can cancel the ones a dead process left (#940). */
+    static final String DEFERRED_WORK_TAG = "turbohttp-deferred";
+
     private static final ConcurrentHashMap<String, Long> activeGuards = new ConcurrentHashMap<>();
     private static final ConcurrentHashMap<String, String> statusByKey = new ConcurrentHashMap<>();
+    private static final Object initLock = new Object();
     private static volatile Context applicationContext;
+    // Guarded by initLock: set once the orphan cancel of this process has been issued.
+    private static boolean orphansCleared;
 
     private TurboHttpBackgroundPlugin() {
     }
@@ -27,7 +33,20 @@ public final class TurboHttpBackgroundPlugin {
         }
 
         Context app = context.getApplicationContext();
-        applicationContext = app != null ? app : context;
+        Context resolved = app != null ? app : context;
+        synchronized (initLock) {
+            if (!orphansCleared) {
+                // The managed replay queue of a new process is empty, so every tagged job left by an
+                // earlier process is an orphan nothing will replay or cancel: cancel them once (#940).
+                // Issued before applicationContext is published, and enqueueDeferredWork needs it, so
+                // no job of this process is enqueued first; WorkManager runs its operations in
+                // submission order on one serial executor. The Operation is not awaited.
+                WorkManager.getInstance(resolved).cancelAllWorkByTag(DEFERRED_WORK_TAG);
+                orphansCleared = true;
+            }
+
+            applicationContext = resolved;
+        }
         return true;
     }
 
@@ -50,6 +69,7 @@ public final class TurboHttpBackgroundPlugin {
         }
 
         OneTimeWorkRequest request = new OneTimeWorkRequest.Builder(TurboHttpBackgroundWorker.class)
+            .addTag(DEFERRED_WORK_TAG)
             .setInputData(new Data.Builder().putString(TurboHttpBackgroundWorker.KEY_DEDUPE, dedupeKey).build())
             .build();
 
@@ -89,11 +109,14 @@ public final class TurboHttpBackgroundPlugin {
         return activeGuards.size();
     }
 
-    static void reportDeferredWorkStatus(String dedupeKey, String status) {
+    /** Records the status of a key this process enqueued; {@code false} for any other key. */
+    static boolean reportDeferredWorkStatus(String dedupeKey, String status) {
         // Only keys this process enqueued are tracked, so the map stays bounded by the managed queue.
-        if (dedupeKey != null && !dedupeKey.isEmpty() && statusByKey.containsKey(dedupeKey)) {
-            statusByKey.put(dedupeKey, status);
+        if (dedupeKey == null || dedupeKey.isEmpty() || status == null) {
+            return false;
         }
+
+        return statusByKey.replace(dedupeKey, status) != null;
     }
 
     private static String uniqueName(String dedupeKey) {
