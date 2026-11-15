@@ -9,16 +9,19 @@ using UnityEngine.Events;
 
 namespace TurboHTTP.Unity.WebSocket
 {
+    /// <summary>Serializable <see cref="UnityEvent{T0}"/> carrying a string (a text message or an error message).</summary>
     [Serializable]
     public sealed class UnityWebSocketStringEvent : UnityEvent<string>
     {
     }
 
+    /// <summary>Serializable <see cref="UnityEvent{T0}"/> carrying a binary message payload.</summary>
     [Serializable]
     public sealed class UnityWebSocketBytesEvent : UnityEvent<byte[]>
     {
     }
 
+    /// <summary>Serializable <see cref="UnityEvent{T0}"/> carrying a WebSocket close code.</summary>
     [Serializable]
     public sealed class UnityWebSocketIntEvent : UnityEvent<int>
     {
@@ -56,11 +59,16 @@ namespace TurboHTTP.Unity.WebSocket
                  "Android also requires the app's network security config to permit the host.")]
         private bool _allowCleartext;
 
+        /// <summary>Invoked on the main thread when the connection opens.</summary>
         [Header("Events")]
         public UnityEvent OnConnectedEvent = new UnityEvent();
+        /// <summary>Invoked on the main thread with the text of each received text message.</summary>
         public UnityWebSocketStringEvent OnMessageReceivedEvent = new UnityWebSocketStringEvent();
+        /// <summary>Invoked on the main thread with a copy of each received binary message payload.</summary>
         public UnityWebSocketBytesEvent OnBinaryReceivedEvent = new UnityWebSocketBytesEvent();
+        /// <summary>Invoked on the main thread with the close code when the connection closes.</summary>
         public UnityWebSocketIntEvent OnDisconnectedEvent = new UnityWebSocketIntEvent();
+        /// <summary>Invoked on the main thread with the error message when the connection reports an error.</summary>
         public UnityWebSocketStringEvent OnErrorEvent = new UnityWebSocketStringEvent();
 
         // Guards the connection/lifecycle fields below. Unity messages run on the main thread; connect and
@@ -82,7 +90,7 @@ namespace TurboHTTP.Unity.WebSocket
 
         /// <summary>
         /// Test seam: creates the client for each connect. <see langword="null"/> uses
-        /// <see cref="WebSocketClient.Create(WebSocketConnectionOptions)"/>.
+        /// <see cref="WebSocketClient.Create(WebSocketConnectionOptions, IWebSocketTransport)"/>.
         /// </summary>
         internal Func<WebSocketConnectionOptions, IWebSocketClient> ClientFactory { get; set; }
 
@@ -95,8 +103,10 @@ namespace TurboHTTP.Unity.WebSocket
             set => _uri = value;
         }
 
+        /// <summary>Whether the current connection is open.</summary>
         public bool IsConnected => Volatile.Read(ref _connection)?.Client.State == WebSocketState.Open;
 
+        /// <summary>State of the current connection, or <see cref="WebSocketState.None"/> when there is none.</summary>
         public WebSocketState ConnectionState => Volatile.Read(ref _connection)?.Client.State ?? WebSocketState.None;
 
         /// <summary>
@@ -219,6 +229,7 @@ namespace TurboHTTP.Unity.WebSocket
             }
         }
 
+        /// <summary>Starts <see cref="ConnectAsync"/> without awaiting it (for UnityEvent wiring); a failure is logged, not thrown.</summary>
         public void Connect()
         {
             ObserveTask(ConnectAsync(), "connect");
@@ -262,6 +273,7 @@ namespace TurboHTTP.Unity.WebSocket
             return completion.Task;
         }
 
+        /// <summary>Starts <see cref="DisconnectAsync"/> without awaiting it (for UnityEvent wiring); a failure is logged, not thrown.</summary>
         public void Disconnect()
         {
             ObserveTask(DisconnectAsync(), "disconnect");
@@ -308,16 +320,19 @@ namespace TurboHTTP.Unity.WebSocket
             return completion.Task;
         }
 
+        /// <summary>Starts <see cref="SendAsync(string, CancellationToken)"/> without awaiting it; a failure is logged, not thrown.</summary>
         public void Send(string message)
         {
             ObserveTask(SendAsync(message), "send text");
         }
 
+        /// <summary>Starts <see cref="SendAsync(byte[], CancellationToken)"/> without awaiting it; a failure is logged, not thrown.</summary>
         public void Send(byte[] data)
         {
             ObserveTask(SendAsync(data), "send binary");
         }
 
+        /// <summary>Sends a text message on the current connection. Throws <see cref="InvalidOperationException"/> when not connected.</summary>
         public async Task SendAsync(string message, CancellationToken ct = default)
         {
             var client = RequireClient();
@@ -325,6 +340,7 @@ namespace TurboHTTP.Unity.WebSocket
             await client.SendAsync(message, linked.Token).ConfigureAwait(false);
         }
 
+        /// <summary>Sends a binary message on the current connection. Throws <see cref="InvalidOperationException"/> when not connected.</summary>
         public async Task SendAsync(byte[] data, CancellationToken ct = default)
         {
             var client = RequireClient();

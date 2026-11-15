@@ -8,7 +8,7 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.WebSocket
 {
-    public sealed partial class WebSocketConnection
+    internal sealed partial class WebSocketConnection
     {
         private async Task WriteMessageWithExtensionsAsync(
             WebSocketOpcode opcode,

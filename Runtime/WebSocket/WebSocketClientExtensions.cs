@@ -6,8 +6,10 @@ using System.Threading.Tasks;
 
 namespace TurboHTTP.WebSocket
 {
+    /// <summary>Typed send and receive helpers for <see cref="IWebSocketClient"/> built on an <see cref="IWebSocketMessageSerializer{T}"/>.</summary>
     public static class WebSocketClientExtensions
     {
+        /// <summary>Serializes <paramref name="message"/> and sends it as a text or binary message per the serializer's <see cref="IWebSocketMessageSerializer{T}.MessageType"/>. A text serializer that produces invalid UTF-8 fails with <see cref="WebSocketError.SerializationFailed"/>.</summary>
         public static async Task SendAsync<T>(
             this IWebSocketClient client,
             T message,
@@ -53,6 +55,7 @@ namespace TurboHTTP.WebSocket
                 nameof(serializer));
         }
 
+        /// <summary>Receives the next message, checks that its type matches the serializer, deserializes it and disposes the raw message.</summary>
         public static async Task<T> ReceiveAsync<T>(
             this IWebSocketClient client,
             IWebSocketMessageSerializer<T> serializer,
@@ -68,6 +71,7 @@ namespace TurboHTTP.WebSocket
             return serializer.Deserialize(raw);
         }
 
+        /// <summary>Streams received messages deserialized with <paramref name="serializer"/>; each raw message is disposed after deserialization.</summary>
         public static async IAsyncEnumerable<T> ReceiveAllAsync<T>(
             this IWebSocketClient client,
             IWebSocketMessageSerializer<T> serializer,

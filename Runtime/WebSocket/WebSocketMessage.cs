@@ -65,8 +65,10 @@ namespace TurboHTTP.WebSocket
             }
         }
 
+        /// <summary>Payload length in bytes.</summary>
         public int Length => _length;
 
+        /// <summary>Returns a pooled payload buffer; the payload is empty afterwards. Safe to call more than once.</summary>
         public void Dispose()
         {
             var buffer = _buffer;
@@ -80,6 +82,7 @@ namespace TurboHTTP.WebSocket
                 ByteArrayPool.Return(buffer);
         }
 
+        /// <summary>Copies <paramref name="source"/> into a message that does not share its pooled buffer, so the copy stays valid after <paramref name="source"/> is disposed.</summary>
         public static WebSocketMessage CreateDetachedCopy(WebSocketMessage source)
         {
             if (source == null)

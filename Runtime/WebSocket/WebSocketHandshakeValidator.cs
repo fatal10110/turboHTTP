@@ -14,7 +14,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// Result of a WebSocket HTTP upgrade response validation.
     /// </summary>
-    public sealed class WebSocketHandshakeResult
+    internal sealed class WebSocketHandshakeResult
     {
         internal WebSocketHandshakeResult(
             bool success,
@@ -76,7 +76,7 @@ namespace TurboHTTP.WebSocket
         }
     }
 
-    public sealed class WebSocketHandshakeException : Exception
+    internal sealed class WebSocketHandshakeException : Exception
     {
         public WebSocketHandshakeException(WebSocketHandshakeResult result)
             : base(CreateMessage(result))
@@ -109,7 +109,7 @@ namespace TurboHTTP.WebSocket
     /// <summary>
     /// Validates HTTP upgrade responses for WebSocket handshakes.
     /// </summary>
-    public static class WebSocketHandshakeValidator
+    internal static class WebSocketHandshakeValidator
     {
         private const int DefaultMaxResponseHeaderBytes = 8 * 1024;
         private const int DefaultMaxErrorBodyBytes = 4 * 1024;

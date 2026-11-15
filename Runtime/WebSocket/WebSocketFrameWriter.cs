@@ -13,7 +13,7 @@ namespace TurboHTTP.WebSocket
     /// Writes masked client WebSocket frames to a stream.
     /// Not thread-safe; callers must serialize sends.
     /// </summary>
-    public sealed class WebSocketFrameWriter : IDisposable
+    internal sealed class WebSocketFrameWriter : IDisposable
     {
         private const int DefaultMaskingChunkSize = 8 * 1024;
         private const int MaskKeyBatchByteSize = 256; // 64 mask keys * 4 bytes
