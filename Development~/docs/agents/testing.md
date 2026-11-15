@@ -178,17 +178,22 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    rows stay `needs-device-validation` (#99).
 4. **Android device run (#99).** With one Android device on `adb` (unlocked, screen kept on:
    Developer options → Stay awake), `'./Tools~/unity/run-device-tests.sh' [--stripping Low|High]
-   [--arch arm64|armv7|x86_64] [--filter ...] [--category ...]` builds the PlayMode suite as an IL2CPP player,
-   installs it and runs it on the device. Results come back over the player connection when it works;
+   [--arch arm64|armv7|x86_64] [--serial <adb serial>] [--filter ...] [--category ...]` builds the PlayMode suite
+   as an IL2CPP player, installs it and runs it on the device. A full-suite run (a release candidate, #404, or a
+   #99 sign-off) passes `--serial`, so the script launches the player itself and keeps the device log of the
+   whole run (below). Results come back over the player connection when it works;
    otherwise (LAN or firewall: the Editor needs an inbound rule for the Private profile) the script waits
    for the XML the player writes on the device and pulls it over adb. That wait ends when the result file
    appears or the player's process is gone (three complete answers without it, 20 s apart: about a minute;
    an empty, failed or truncated `pidof`/`ps` answer counts as unknown, never as gone, #412), and is capped by
    `TURBOHTTP_DEVICE_TEST_WAIT_MIN` (default 120). A player that wrote its results but did not quit is then
    force-stopped. The device log of every run is kept as `logcat-Android-<tag>-<ts>.txt` in the cache. It is
-   polled through the wait (`logcat -t <epoch time>` each check, #419), so it covers the run from the launch to
-   the end even when the run logs more than the 16M ring buffer holds; each poll is a bounded foreground adb
-   call, so no log process outlives the script. A logcat without `-v epoch` (before Android 7) falls back to
+   polled through the wait for the device-side result file (`logcat -t <epoch time>` each check, #419). With
+   `--serial` (and in every `run-emulator-tests.sh` level) that wait starts at the launch, so the log covers the
+   run from the launch to the end even when the run logs more than the 16M ring buffer holds; each poll is a
+   bounded foreground adb call, so no log process outlives the script. Without `--serial`, Unity deploys the
+   player and holds the run: polling starts only after Unity returns, so the log keeps only what the ring
+   buffer still holds then, or nothing when the results came over the player connection (#1220). A logcat without `-v epoch` (before Android 7) falls back to
    one dump at the end, which keeps only the last 16M. A
    run refuses (exit 2) to start while the player of an earlier run is still running its tests on the device
    (no result file yet), so a queued run never kills it; with `--serial`, a launch that starts no process (a
