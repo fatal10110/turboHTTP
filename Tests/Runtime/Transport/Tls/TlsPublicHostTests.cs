@@ -1,5 +1,6 @@
 #if TURBOHTTP_INTEGRATION_TESTS
 using System;
+using System.Collections.Generic;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -41,6 +42,10 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         private static readonly TimeSpan RequestBound = TimeSpan.FromSeconds(20);
         private static readonly TimeSpan TestBound = TimeSpan.FromSeconds(40);
+
+        // Positive-control outcome per backend (RequireWorkingHandshake); one fixture instance per run.
+        private readonly Dictionary<TlsBackend, SendOutcome> _validChainOutcomes =
+            new Dictionary<TlsBackend, SendOutcome>();
 
         [SetUp]
         public void SetUp()
@@ -95,9 +100,15 @@ namespace TurboHTTP.Tests.Transport.Tls
             Assert.AreEqual(HttpStatusCode.OK, outcome.Status);
         }
 
-        private static void AssertCertificateError(TlsBackend backend, string url)
+        private void AssertCertificateError(TlsBackend backend, string url)
         {
             RequireBackend(backend);
+
+            // #451: a TLS stack that cannot handshake at all also reports CertificateError (every
+            // AuthenticationException maps to it), so a negative row counts only on a backend that
+            // completes a handshake with a valid chain.
+            RequireWorkingHandshake(backend);
+
             var outcome = Send(backend, url);
 
             // A bad certificate that produced a response is a validation bypass, not an infra problem.
@@ -105,9 +116,29 @@ namespace TurboHTTP.Tests.Transport.Tls
                 $"{url} over {backend} returned {outcome.Status}; its certificate must be rejected.");
             IgnoreIfUnreachable(outcome, backend, url);
 
-            var ex = outcome.Failure as UHttpException;
-            Assert.IsNotNull(ex, $"Expected UHttpException(CertificateError), got {outcome.Failure}");
-            Assert.AreEqual(UHttpErrorType.CertificateError, ex.HttpError.Type, ex.ToString());
+            CertificateErrorAssert.IsCertificateRejection(outcome.Failure, $"{url} over {backend}");
+        }
+
+        /// <summary>
+        /// The positive control of the negative rows (#451): fails when <paramref name="backend"/> cannot
+        /// complete a handshake with <see cref="ValidChainUrl"/>, skips when that host is unreachable. The
+        /// outcome is kept per backend, so each fixture run sends at most one control request per backend.
+        /// </summary>
+        private void RequireWorkingHandshake(TlsBackend backend)
+        {
+            if (!_validChainOutcomes.TryGetValue(backend, out var control))
+            {
+                control = Send(backend, ValidChainUrl);
+                _validChainOutcomes[backend] = control;
+            }
+
+            IgnoreIfUnreachable(control, backend, ValidChainUrl);
+            if (control.Failure != null)
+            {
+                Assert.Fail(
+                    $"{backend} cannot complete a TLS handshake with the valid chain of {ValidChainUrl} " +
+                    $"({control.Failure}); a certificate rejection on this backend proves nothing (#451).");
+            }
         }
 
         private static void RequireBackend(TlsBackend backend)

@@ -757,8 +757,9 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/"));
                 var context = new RequestContext(request);
-                AssertAsync.ThrowsAsync<UHttpException, UHttpResponse>(
+                var notSent = AssertAsync.ThrowsAsync<UHttpException, UHttpResponse>(
                     () => conn.SendRequestAsync(request, context, cts.Token));
+                Http2FailureAssert.IsNotProcessed(notSent, "the request was not sent");
 
                 conn.Dispose();
             });

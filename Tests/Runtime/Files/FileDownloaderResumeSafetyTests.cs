@@ -72,9 +72,11 @@ namespace TurboHTTP.Tests.Files
                 var transport = new MockTransport(HttpStatusCode.ServiceUnavailable);
                 var downloader = CreateDownloader(transport);
 
-                AssertAsync.ThrowsAsync<UHttpException>(() => downloader.DownloadFileAsync(
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(() => downloader.DownloadFileAsync(
                     "https://test.com/file.bin", dest, new DownloadOptions { EnableResume = true }));
 
+                Assert.AreEqual(UHttpErrorType.HttpError, ex.HttpError.Type, ex.ToString());
+                Assert.AreEqual(HttpStatusCode.ServiceUnavailable, ex.HttpError.StatusCode);
                 Assert.IsNull(transport.LastRequest.Headers.Get("Range"));
                 Assert.AreEqual(complete, File.ReadAllBytes(dest));
                 Assert.IsFalse(File.Exists(dest + ".part"));
@@ -465,9 +467,11 @@ namespace TurboHTTP.Tests.Files
                 var transport = new MockTransport(HttpStatusCode.PartialContent, headers, new byte[] { 6, 7, 8 });
                 var downloader = CreateDownloader(transport);
 
-                AssertAsync.ThrowsAsync<UHttpException>(() => downloader.DownloadFileAsync(
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(() => downloader.DownloadFileAsync(
                     "https://test.com/file.bin", dest, new DownloadOptions { EnableResume = true }));
 
+                Assert.AreEqual(UHttpErrorType.HttpError, ex.HttpError.Type, ex.ToString());
+                StringAssert.Contains("does not match its Content-Range", ex.HttpError.Message);
                 Assert.IsFalse(File.Exists(dest));
                 Assert.IsFalse(File.Exists(dest + ".part"));
                 Assert.IsFalse(File.Exists(dest + ".part.validator"));

@@ -567,8 +567,10 @@ namespace TurboHTTP.Tests.Transport.Http2
                 Assert.AreEqual((uint)Http2ErrorCode.Cancel, ReadErrorCode(rst));
 
                 var buffer = new byte[32];
-                AssertAsync.ThrowsAsync<UHttpException, int>(() =>
+                var ex = AssertAsync.ThrowsAsync<UHttpException, int>(() =>
                     response.Body.ReadAsync(buffer, cts.Token));
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type, ex.ToString());
+                Http2FailureAssert.IsNotMarkedUnprocessed(ex);
 
                 conn.Dispose();
             });
