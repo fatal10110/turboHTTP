@@ -20,7 +20,9 @@ namespace TurboHTTP.Transport.BouncyCastle
         /// <summary>
         /// Registers the BouncyCastle provider with <see cref="TlsProviderSelector"/>. Idempotent.
         /// Runs automatically at <see cref="RuntimeInitializeLoadType.SubsystemRegistration"/> (and
-        /// after each Editor domain reload), before any transport reads its capabilities.
+        /// after each Editor domain reload), before any transport reads its capabilities. On Android
+        /// players it also installs the platform certificate verifier, so certificate verification
+        /// does not depend on a BouncyCastle handshake having run first.
         /// </summary>
         [Preserve]
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.SubsystemRegistration)]
@@ -30,6 +32,10 @@ namespace TurboHTTP.Transport.BouncyCastle
         public static void EnsureRegistered()
         {
             TlsProviderSelector.RegisterBouncyCastleProvider(BouncyCastleTlsProvider.Instance);
+#if UNITY_ANDROID && !UNITY_EDITOR
+            // Only stores a delegate (no JNI call here); the handshake path registers it too (#897).
+            AndroidTrustManagerVerifier.EnsureRegistered();
+#endif
         }
     }
 }
