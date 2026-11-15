@@ -301,7 +301,7 @@ namespace TurboHTTP.Transport.Http2
                     // Credit the window before advertising it (RFC 9113 Section 6.9). A failed write fails
                     // the connection, so the credit is never observed by a live stream.
                     stream.AdjustRecvWindowSize(flowControlledLength);
-                    await SendWindowUpdateAsync(frame.StreamId, flowControlledLength, ct).ConfigureAwait(false);
+                    await SendWindowUpdateAsync(frame.StreamId, flowControlledLength).ConfigureAwait(false);
                 }
 
                 await MaybeSendConnectionWindowUpdateAsync(ct).ConfigureAwait(false);

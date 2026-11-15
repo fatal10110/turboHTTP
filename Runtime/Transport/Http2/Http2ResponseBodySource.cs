@@ -209,7 +209,7 @@ namespace TurboHTTP.Transport.Http2
                 if (TryReadCurrentChunk(destination, out var bytesRead, out var completedChunk))
                 {
                     if (completedChunk.Buffer != null)
-                        await CompleteDetachedChunkAsync(completedChunk, ct).ConfigureAwait(false);
+                        await CompleteDetachedChunkAsync(completedChunk).ConfigureAwait(false);
 
                     if (bytesRead > 0)
                         return bytesRead;
@@ -413,9 +413,9 @@ namespace TurboHTTP.Transport.Http2
                 stallTimeoutMs);
         }
 
-        private async ValueTask CompleteDetachedChunkAsync(
-            Http2ResponseBodyChunk chunk,
-            CancellationToken ct)
+        // No reader token: the chunk is consumed, so its WINDOW_UPDATE must be sent even when the
+        // read that consumed it is cancelled (#687, #689).
+        private async ValueTask CompleteDetachedChunkAsync(Http2ResponseBodyChunk chunk)
         {
             if (chunk.Buffer != null)
             {
@@ -424,7 +424,7 @@ namespace TurboHTTP.Transport.Http2
                 _connection.OnResponseBytesConsumed(chunk.FlowControlledLength);
             }
 
-            await _connection.OnStreamChunkConsumedAsync(_stream, chunk.FlowControlledLength, ct)
+            await _connection.OnStreamChunkConsumedAsync(_stream, chunk.FlowControlledLength)
                 .ConfigureAwait(false);
         }
 

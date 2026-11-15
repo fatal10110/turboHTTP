@@ -247,7 +247,6 @@ namespace TurboHTTP.Transport.Http2
                 Http2FrameType.Ping,
                 0,
                 8,
-                _cts.Token,
                 buffer =>
                 {
                     for (int i = 0; i < 8; i++)

@@ -31,20 +31,23 @@ namespace TurboHTTP.Transport.Http2
             }
         }
 
-        private async Task SendWindowUpdateAsync(int streamId, int increment, CancellationToken ct)
+        /// <summary>
+        /// Sends a WINDOW_UPDATE under the connection token only. Returns false when it was not sent
+        /// because the connection is shutting down; the caller then withdraws any credit it applied.
+        /// </summary>
+        private Task<bool> SendWindowUpdateAsync(int streamId, int increment)
         {
-            await SendFrameWithPooledPayloadAsync(
+            return SendFrameWithPooledPayloadAsync(
                 Http2FrameType.WindowUpdate,
                 streamId,
                 4,
-                ct,
                 payload =>
                 {
                     payload[0] = (byte)((increment >> 24) & 0x7F);
                     payload[1] = (byte)((increment >> 16) & 0xFF);
                     payload[2] = (byte)((increment >> 8) & 0xFF);
                     payload[3] = (byte)(increment & 0xFF);
-                }).ConfigureAwait(false);
+                });
         }
 
         private async Task SendGoAwayAsync(Http2ErrorCode errorCode)
@@ -53,7 +56,6 @@ namespace TurboHTTP.Transport.Http2
                 Http2FrameType.GoAway,
                 0,
                 8,
-                _cts.Token,
                 payload =>
                 {
                     // Client-initiated GOAWAY should use lastStreamId=0 when server push is disabled.
@@ -75,7 +77,6 @@ namespace TurboHTTP.Transport.Http2
                 Http2FrameType.RstStream,
                 streamId,
                 4,
-                _cts.Token,
                 payload =>
                 {
                     payload[0] = (byte)(((uint)errorCode >> 24) & 0xFF);
@@ -85,11 +86,18 @@ namespace TurboHTTP.Transport.Http2
                 }).ConfigureAwait(false);
         }
 
-        private async Task SendFrameWithPooledPayloadAsync(
+        /// <summary>
+        /// Writes one connection-owned control frame. The lock wait and the write both use the
+        /// connection token only, never a caller's token: a control frame (WINDOW_UPDATE in
+        /// particular, RFC 9113 Section 6.9) is connection bookkeeping and must not be dropped because
+        /// a request or read was cancelled. Returns true once the frame is written and false when it
+        /// was not written because the connection is shutting down; other write failures fail the
+        /// connection and propagate.
+        /// </summary>
+        private async Task<bool> SendFrameWithPooledPayloadAsync(
             Http2FrameType type,
             int streamId,
             int payloadLength,
-            CancellationToken ct,
             Action<byte[]> fillPayload)
         {
             var payload = ByteArrayPool.Rent(payloadLength);
@@ -97,8 +105,9 @@ namespace TurboHTTP.Transport.Http2
             {
                 fillPayload?.Invoke(payload);
 
-                // ct only gates the lock; the frame itself is finished with the connection token.
-                await _writeLock.WaitAsync(ct).ConfigureAwait(false);
+                // _cts.Token is read inside the try: it throws ObjectDisposedException once the
+                // connection resources are released.
+                await _writeLock.WaitAsync(_cts.Token).ConfigureAwait(false);
                 try
                 {
                     await WriteFrameLockedAsync(
@@ -112,14 +121,18 @@ namespace TurboHTTP.Transport.Http2
                 {
                     _writeLock.Release();
                 }
+
+                return true;
             }
-            catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
+            catch (OperationCanceledException) when (_cts.IsCancellationRequested)
             {
                 // Connection is shutting down.
+                return false;
             }
             catch (ObjectDisposedException)
             {
                 // Connection is shutting down.
+                return false;
             }
             finally
             {
@@ -289,10 +302,13 @@ namespace TurboHTTP.Transport.Http2
             ScheduleConnectionWindowUpdate();
         }
 
-        internal async ValueTask OnStreamChunkConsumedAsync(
-            Http2Stream stream,
-            int flowControlledLength,
-            CancellationToken ct)
+        /// <summary>
+        /// Advertises the stream window freed by a consumed body chunk. Deliberately takes no reader
+        /// token: the bytes are already consumed, so a cancelled read must not drop the WINDOW_UPDATE
+        /// while the credit stays applied (that would shrink the peer's window for good, RFC 9113
+        /// Section 6.9.1). The frame is sent under the connection token only.
+        /// </summary>
+        internal async ValueTask OnStreamChunkConsumedAsync(Http2Stream stream, int flowControlledLength)
         {
             if (stream == null || flowControlledLength <= 0 || IsStreamClosedForReceive(stream.StreamId))
                 return;
@@ -302,24 +318,22 @@ namespace TurboHTTP.Transport.Http2
             // may send DATA using the new credit, and the read loop must already count it. Withdrawn
             // again when the frame was not sent.
             stream.AdjustRecvWindowSize(flowControlledLength);
+            bool sent;
             try
             {
-                await SendWindowUpdateAsync(stream.StreamId, flowControlledLength, ct).ConfigureAwait(false);
-            }
-            catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
-            {
-                // Connection is shutting down, or the consumer gave up before the frame was written.
-                stream.AdjustRecvWindowSize(-flowControlledLength);
-            }
-            catch (ObjectDisposedException)
-            {
-                // Connection is shutting down.
-                stream.AdjustRecvWindowSize(-flowControlledLength);
+                sent = await SendWindowUpdateAsync(stream.StreamId, flowControlledLength).ConfigureAwait(false);
             }
             catch (Exception ex)
             {
                 stream.AdjustRecvWindowSize(-flowControlledLength);
                 FailAllStreams(ex);
+                return;
+            }
+
+            if (!sent)
+            {
+                // Connection is shutting down.
+                stream.AdjustRecvWindowSize(-flowControlledLength);
             }
         }
 
@@ -386,7 +400,7 @@ namespace TurboHTTP.Transport.Http2
                     return;
 
                 Interlocked.Add(ref _connectionRecvWindow, increment);
-                await SendWindowUpdateAsync(0, increment, ct).ConfigureAwait(false);
+                await SendWindowUpdateAsync(0, increment).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (_cts.IsCancellationRequested || ct.IsCancellationRequested)
             {
