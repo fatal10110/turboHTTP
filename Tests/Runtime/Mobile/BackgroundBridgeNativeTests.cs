@@ -141,7 +141,7 @@ namespace TurboHTTP.Tests.Mobile
                 Assert.IsTrue(bridge.TryMarkReplayComplete("key"));
 
                 CollectionAssert.AreEqual(
-                    new[] { "init", "begin", "end", "init", "enqueue:key", "cancel:key" },
+                    new[] { "init", "init", "begin", "end", "init", "enqueue:key", "init", "cancel:key" },
                     plugin.Calls);
                 CollectionAssert.AreEqual(new[] { thread }, plugin.Threads);
             });

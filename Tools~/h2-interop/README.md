@@ -81,6 +81,36 @@ select h2. Device validation of h2 through CONNECT stays with #103.
 h2spec tests servers, not clients, so it is not used. The adversarial rows are the client-side
 counterpart: they check how the client reacts to hostile server frames.
 
+## Serve mode: the Unity HTTP/2-over-TLS rows (#885)
+
+`run.sh --serve <port>` runs no rows. It generates the per-run PKI and files into `.build/h2-interop/serve`, starts
+Kestrel on `127.0.0.1:<port>` (0 picks a free port) with h2 and HTTP/1.1 over TLS, prints two variables and serves
+until Ctrl+C:
+
+```text
+TURBOHTTP_H2_ROWS_URL=https://127.0.0.1:<port>
+TURBOHTTP_H2_ROWS_ROOT=<repo>/.build/h2-interop/serve/root.pem
+```
+
+`Tests/Runtime/Integration/Http2TlsBackendRowTests.cs` (`[Category("ExternalNetwork")]`, compiled with
+`TURBOHTTP_INTEGRATION_TESTS`) reads them and runs the interop cases on a Unity runtime per TLS backend: 2 MiB
+download, 1 MiB echoed upload, 100 concurrent streams and a streaming read cancelled mid-body followed by a second
+2 MiB download. BouncyCastle trusts the root through the test-anchor hook and must run on HTTP/2. The server also
+serves HTTP/1.1, so a fallback is answered and only the row's assertion (`AlpnAssert.RequireHttp2`) fails it.
+SslStream ignores the hook, so its rows are skipped while `TURBOHTTP_H2_ROWS_ROOT` is set; with only the URL set,
+pointing at a publicly trusted server that serves the same files, they assert h2 where the runtime has ALPN and the
+HTTP/1.1 fallback on Unity's Mono. Without the URL every row is skipped. A Windows editor driven from WSL needs the
+variables in `WSLENV`, with the root path translated:
+
+```bash
+'Tools~/h2-interop/run.sh' --serve 0                      # terminal 1
+export TURBOHTTP_H2_ROWS_URL=... TURBOHTTP_H2_ROWS_ROOT=...  # terminal 2, the printed values
+export WSLENV="TURBOHTTP_H2_ROWS_URL:TURBOHTTP_H2_ROWS_ROOT/p"
+'Tools~/unity/run-tests.sh' --platform PlayMode --integration --filter 'Http2TlsBackendRow'
+```
+
+An in-process server that needs no extra process is #1209; the player-smoke rows are #1210.
+
 ## Usage
 
 ```bash
@@ -89,6 +119,7 @@ export PATH="$HOME/.dotnet:$PATH" DOTNET_ROOT="$HOME/.dotnet"
 'Tools~/h2-interop/run.sh' --only adversarial --row hpack/  # one group, no docker
 'Tools~/h2-interop/run.sh' --only interop --no-shadow-build
 'Tools~/h2-interop/run.sh' --only interop --row /envoy/   # rows of one server (the others print "no row matches" and fail)
+'Tools~/h2-interop/run.sh' --serve 0                       # Kestrel for the Unity rows, until Ctrl+C (above)
 ```
 
 Exit codes:

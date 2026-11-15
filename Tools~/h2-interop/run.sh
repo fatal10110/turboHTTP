@@ -6,6 +6,9 @@
 #   Tools~/h2-interop/run.sh --only interop         only the interop rows (kestrel, nghttpd, nginx, h2o, go, envoy, nghttpx)
 #   Tools~/h2-interop/run.sh --row <filter>         only rows whose name contains <filter>
 #   Tools~/h2-interop/run.sh --no-shadow-build      reuse the existing .build/shadow DLLs
+#   Tools~/h2-interop/run.sh --serve <port>         no rows: Kestrel on 127.0.0.1:<port> (0 = ephemeral), h2 and HTTP/1.1
+#                                                   over TLS with the per-run root, until Ctrl+C, for the Unity
+#                                                   HTTP/2-over-TLS rows (#885); prints TURBOHTTP_H2_ROWS_URL/_ROOT
 #
 # Adversarial rows: Tests/Runtime/Transport/Http2/Adversarial (the NUnit suite runs the same scenarios in the
 # host editor) drive a real Http2Connection in memory with hostile frame sequences. Interop rows: the
@@ -24,18 +27,24 @@ cd "$(dirname "$0")/../.."
 row=()
 only=all
 shadow=1
+serve=""
 while [ $# -gt 0 ]; do
   case "$1" in
     --row) row=(--row "$2"); shift 2 ;;
     --only) only="$2"; shift 2 ;;
     --no-shadow-build) shadow=0; shift ;;
-    *) echo "usage: $0 [--only adversarial|interop] [--row <filter>] [--no-shadow-build]" >&2; exit 2 ;;
+    --serve) serve="${2:-}"; shift 2 || { echo "run.sh: --serve takes a port" >&2; exit 2; } ;;
+    *) echo "usage: $0 [--only adversarial|interop] [--row <filter>] [--no-shadow-build] | --serve <port>" >&2; exit 2 ;;
   esac
 done
 case "$only" in all|adversarial|interop) ;; *) echo "run.sh: --only takes adversarial or interop" >&2; exit 2 ;; esac
+if [ -n "$serve" ]; then
+  case "$serve" in *[!0-9]*) echo "run.sh: --serve takes a port" >&2; exit 2 ;; esac
+  only=serve
+fi
 
 command -v dotnet >/dev/null || { echo "run.sh: dotnet not found" >&2; exit 3; }
-if [ "$only" != adversarial ]; then
+if [ "$only" = all ] || [ "$only" = interop ]; then
   command -v docker >/dev/null || { echo "run.sh: docker not found" >&2; exit 3; }
 fi
 
@@ -48,6 +57,15 @@ fi
 dotnet build "Tools~/h2-interop/TurboHTTP.H2Interop.csproj" -c Release -nologo -v q
 
 dll="$PWD/.build/h2-interop/bin/Release/net8.0/TurboHTTP.H2Interop.dll"
+if [ "$only" = serve ]; then
+  # The Unity rows (Tests/Runtime/Integration/Http2TlsBackendRowTests.cs) read both printed variables. A Windows
+  # editor driven from WSL needs them in WSLENV, the root path translated: WSLENV=TURBOHTTP_H2_ROWS_URL:TURBOHTTP_H2_ROWS_ROOT/p
+  serve_dir="$PWD/.build/h2-interop/serve"
+  rm -rf "$serve_dir"
+  mkdir -p "$serve_dir"
+  dotnet "$dll" generate "$serve_dir"
+  exec dotnet "$dll" serve "$serve_dir" "$serve"
+fi
 out="$PWD/.build/h2-interop/run"
 rm -rf "$out"
 mkdir -p "$out/empty-cert-dir"

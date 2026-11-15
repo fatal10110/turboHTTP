@@ -26,6 +26,12 @@ namespace TurboHTTP.Unity.Mobile.Android
     /// foreground gives later scopes a fresh token. The bridge listens to the signal only while it
     /// has live scopes, so an idle bridge is not rooted by the process-wide pause notifications.
     /// Expiry behavior on devices is tracked in #266.
+    /// <para>
+    /// The deferred-work queue lives in this process only, so the WorkManager job is a placeholder
+    /// that ends on its first run, and a new bridge initializes the plugin at once: the first
+    /// initialization in a process cancels every tagged job an earlier process left behind, before
+    /// this process enqueues any (#940).
+    /// </para>
     /// </remarks>
     public sealed class AndroidBackgroundWorkBridge : IBackgroundExecutionBridge, IDeferredBackgroundWorkBridge
     {
@@ -82,6 +88,27 @@ namespace TurboHTTP.Unity.Mobile.Android
             _onExpiryChanged = OnExpiryChanged;
             if (expirySignal != null)
                 _expiry = new CancellationTokenSource();
+
+            ClearOrphanedDeferredWork(_plugin);
+        }
+
+        // A cold start clears the jobs a dead process queued: the plugin's first initialization in
+        // the process cancels all tagged deferred work, and every enqueue initializes first, so no
+        // job of this process is enqueued before that cancel (#940). An unavailable plugin is
+        // retried by the next call that needs it.
+        private static void ClearOrphanedDeferredWork(IAndroidBackgroundPlugin plugin)
+        {
+            if (plugin == null)
+                return;
+
+            try
+            {
+                plugin.EnsureInitialized();
+            }
+            catch
+            {
+                // Plugin unavailable: requests keep foreground semantics until it initializes.
+            }
         }
 
         /// <inheritdoc />
@@ -254,11 +281,14 @@ namespace TurboHTTP.Unity.Mobile.Android
             {
                 try
                 {
-                    plugin.CancelDeferredWork(dedupeKey);
+                    // Initialize first: a process that has not initialized the plugin yet must still
+                    // cancel the job (#940).
+                    if (plugin.EnsureInitialized())
+                        plugin.CancelDeferredWork(dedupeKey);
                 }
                 catch
                 {
-                    // WorkManager keeps retrying the placeholder job; the replay itself already happened.
+                    // The placeholder job ends on its first run anyway; the replay itself already happened.
                 }
             }
 
