@@ -336,7 +336,7 @@ namespace TurboHTTP.WebSocket
                 ex.Error == WebSocketError.DecompressedMessageTooLarge)
             {
                 var protocolEx = new WebSocketProtocolException(
-                    WebSocketError.ProtocolViolation,
+                    ex.Error,
                     ex.Message,
                     WebSocketCloseCode.ProtocolError,
                     ex);
@@ -505,8 +505,9 @@ namespace TurboHTTP.WebSocket
 
         private async Task TryHandleProtocolErrorAsync(WebSocketProtocolException ex, CancellationToken ct)
         {
+            // The specific error the reader or assembler raised stays observable (#1139).
             var error = new WebSocketException(
-                WebSocketError.ProtocolViolation,
+                ex.Error,
                 ex.Message,
                 ex,
                 ex.CloseCode);

@@ -131,7 +131,12 @@ the timeout.
 fragments, and after decompression. `MaxFrameSize` (default 4 MB) bounds one frame and must not be
 larger than `MaxMessageSize` (`Validate` throws otherwise). A frame or message over its limit is
 rejected from its header, before the payload is read, and the connection closes with code 1009
-(Message Too Big).
+(Message Too Big). `MaxFragmentCount` (default 4096) bounds how many frames one message may arrive in:
+RFC 6455 sets no fragment limit and `MaxMessageSize` already bounds the bytes, so this only stops a
+message that never ends in empty or tiny fragments. The default admits a 4 MB message in 1 KB frames;
+raise it together with `MaxMessageSize` for peers that send large messages in small frames
+(`MaxMessageSize <= MaxFrameSize * MaxFragmentCount` must hold). The fragment past the limit closes the
+connection with 1009.
 
 ### Cancelling a send
 
@@ -164,9 +169,19 @@ await ws.ConnectAsync(new Uri("wss://api.example.com/stream"), options, ct);
 
 `WebSocketReconnectPolicy.Default`, `.Infinite` and `.None` are ready-made policies.
 
+A failed connect reports its cause in `WebSocketException.Error` and in `HttpError.Type`, as HTTP requests
+do: `Timeout` (the handshake or connect timeout expired; `UHttpErrorType.Timeout`), `CertificateError`
+(the server certificate was rejected; `UHttpErrorType.CertificateError`), `DnsResolutionFailed`,
+`InvalidRequest` (for example a URI that is not `ws://`/`wss://`), and `HandshakeFailed` with the server's
+status in `HandshakeStatusCode` and `HttpError.StatusCode`. `IsRetryable()` follows the HTTP error model.
+The resilient client stops reconnecting on failures that repeat on every attempt: a rejected certificate,
+an invalid request, a cleartext refusal, a 407 from the proxy and a 4xx handshake rejection other than 408
+and 429. Protocol violations from the server keep their specific error (`InvalidFrame`, `ReservedOpcode`,
+`MaskedServerFrame`, `InvalidUtf8`, ...).
+
 ## Proxies, TLS and limits
 
-`WebSocketConnectionOptions.ProxySettings` (a `WebSocketProxySettings`) routes the connection through an HTTP CONNECT proxy; `TlsBackend` selects the TLS provider with the same rules as HTTP (see [Transport](Transport.md)); `MaxMessageSize`, `MaxFrameSize` and the receive-queue bounds cap what a peer can make the client buffer.
+`WebSocketConnectionOptions.ProxySettings` (a `WebSocketProxySettings`) routes the connection through an HTTP CONNECT proxy; `TlsBackend` selects the TLS provider with the same rules as HTTP (see [Transport](Transport.md)); left at `Auto`, the backend passed to the `RawSocketWebSocketTransport` constructor applies; `MaxMessageSize`, `MaxFrameSize` and the receive-queue bounds cap what a peer can make the client buffer.
 
 ## Extensions & Compression
 

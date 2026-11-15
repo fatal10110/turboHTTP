@@ -1,4 +1,5 @@
 using System;
+using System.Net;
 using TurboHTTP.Core;
 
 namespace TurboHTTP.WebSocket
@@ -34,20 +35,40 @@ namespace TurboHTTP.WebSocket
             Exception innerException = null,
             WebSocketCloseCode? closeCode = null,
             string closeReason = null)
-            : base(new UHttpError(MapErrorType(error), message, innerException))
+            : this(error, message, innerException, closeCode, closeReason, null)
         {
-            Error = error;
-            CloseCode = closeCode;
-            CloseReason = closeReason;
         }
 
+        /// <summary>
+        /// A failed opening handshake: <paramref name="handshakeStatusCode"/> is also the
+        /// <see cref="UHttpError.StatusCode"/>, and a 4xx/5xx status makes the error type
+        /// <see cref="UHttpErrorType.HttpError"/> (#1139).
+        /// </summary>
         internal WebSocketException(
             WebSocketError error,
             string message,
             Exception innerException,
             int? handshakeStatusCode)
-            : this(error, message, innerException)
+            : this(error, message, innerException, null, null, handshakeStatusCode)
         {
+        }
+
+        private WebSocketException(
+            WebSocketError error,
+            string message,
+            Exception innerException,
+            WebSocketCloseCode? closeCode,
+            string closeReason,
+            int? handshakeStatusCode)
+            : base(new UHttpError(
+                MapErrorType(error, handshakeStatusCode),
+                message,
+                innerException,
+                handshakeStatusCode.HasValue ? (HttpStatusCode)handshakeStatusCode.Value : (HttpStatusCode?)null))
+        {
+            Error = error;
+            CloseCode = closeCode;
+            CloseReason = closeReason;
             HandshakeStatusCode = handshakeStatusCode;
         }
 
@@ -67,7 +88,13 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         public int? HandshakeStatusCode { get; }
 
-        /// <summary> Determines if the error represents a potentially transient state that can be retried. </summary>
+        /// <summary>
+        /// Determines if the error represents a potentially transient state that can be retried, by the
+        /// same rule as <see cref="UHttpError.IsRetryable"/>: dropped connections, network and proxy
+        /// failures, DNS failures and timeouts are retryable; certificate failures, invalid requests and
+        /// protocol violations are not. A rejected opening handshake is retryable only for 408, 429 and
+        /// 5xx (RFC 9110 section 15).
+        /// </summary>
         public bool IsRetryable()
         {
             switch (Error)
@@ -77,9 +104,16 @@ namespace TurboHTTP.WebSocket
                 case WebSocketError.SendFailed:
                 case WebSocketError.ReceiveFailed:
                 case WebSocketError.ProxyConnectionFailed:
+                case WebSocketError.ProxyTunnelFailed:
+                case WebSocketError.Timeout:
+                case WebSocketError.DnsResolutionFailed:
                     return true;
 
+                case WebSocketError.HandshakeFailed:
+                    return HandshakeStatusCode.HasValue && IsTransientHandshakeStatus(HandshakeStatusCode.Value);
+
                 case WebSocketError.InvalidFrame:
+                case WebSocketError.FrameTooLarge:
                 case WebSocketError.InvalidCloseCode:
                 case WebSocketError.InvalidUtf8:
                 case WebSocketError.MaskedServerFrame:
@@ -89,25 +123,63 @@ namespace TurboHTTP.WebSocket
                 case WebSocketError.PayloadLengthOverflow:
                 case WebSocketError.SerializationFailed:
                 case WebSocketError.ProxyAuthenticationRequired:
-                case WebSocketError.HandshakeFailed:
                 case WebSocketError.ExtensionNegotiationFailed:
                 case WebSocketError.MessageTooLarge:
                 case WebSocketError.CompressionFailed:
                 case WebSocketError.DecompressionFailed:
                 case WebSocketError.DecompressedMessageTooLarge:
                 case WebSocketError.CleartextNotPermitted:
+                case WebSocketError.CertificateError:
+                case WebSocketError.InvalidRequest:
                 default:
                     return false;
             }
         }
 
-        private static UHttpErrorType MapErrorType(WebSocketError error)
+        /// <summary>
+        /// True when a connect attempt that failed with this error fails the same way on every attempt,
+        /// so the resilient client stops reconnecting: a certificate failure, an invalid request, a
+        /// cleartext policy refusal, a 407 from the proxy, and a 4xx rejection of the opening handshake
+        /// other than 408 and 429 (RFC 9110 section 15.5). Everything <see cref="IsRetryable"/> calls
+        /// transient is not permanent.
+        /// </summary>
+        internal bool IsPermanentConnectFailure()
+        {
+            switch (Error)
+            {
+                case WebSocketError.CertificateError:
+                case WebSocketError.InvalidRequest:
+                case WebSocketError.CleartextNotPermitted:
+                case WebSocketError.ProxyAuthenticationRequired:
+                    return true;
+
+                case WebSocketError.HandshakeFailed:
+                    if (!HandshakeStatusCode.HasValue)
+                        return false;
+
+                    int status = HandshakeStatusCode.Value;
+                    return status >= 400 && status < 500 && !IsTransientHandshakeStatus(status);
+
+                default:
+                    return false;
+            }
+        }
+
+        private static bool IsTransientHandshakeStatus(int status) =>
+            status == 408 || status == 429 || (status >= 500 && status < 600);
+
+        private static UHttpErrorType MapErrorType(WebSocketError error, int? handshakeStatusCode)
         {
             switch (error)
             {
                 case WebSocketError.HandshakeFailed:
+                    return handshakeStatusCode >= 400 && handshakeStatusCode < 600
+                        ? UHttpErrorType.HttpError
+                        : UHttpErrorType.InvalidRequest;
+
                 case WebSocketError.ExtensionNegotiationFailed:
                 case WebSocketError.InvalidFrame:
+                case WebSocketError.FrameTooLarge:
                 case WebSocketError.InvalidCloseCode:
                 case WebSocketError.InvalidUtf8:
                 case WebSocketError.MaskedServerFrame:
@@ -122,6 +194,7 @@ namespace TurboHTTP.WebSocket
                 case WebSocketError.DecompressionFailed:
                 case WebSocketError.DecompressedMessageTooLarge:
                 case WebSocketError.CleartextNotPermitted:
+                case WebSocketError.InvalidRequest:
                     return UHttpErrorType.InvalidRequest;
 
                 case WebSocketError.ConnectionClosed:
@@ -130,7 +203,14 @@ namespace TurboHTTP.WebSocket
                 case WebSocketError.ReceiveFailed:
                 case WebSocketError.ProxyConnectionFailed:
                 case WebSocketError.ProxyTunnelFailed:
+                case WebSocketError.DnsResolutionFailed:
                     return UHttpErrorType.NetworkError;
+
+                case WebSocketError.Timeout:
+                    return UHttpErrorType.Timeout;
+
+                case WebSocketError.CertificateError:
+                    return UHttpErrorType.CertificateError;
 
                 default:
                     return UHttpErrorType.Unknown;

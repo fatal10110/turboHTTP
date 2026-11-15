@@ -23,7 +23,13 @@ namespace TurboHTTP.WebSocket
         /// </summary>
         public const int DefaultMaxFrameSize = DefaultMaxMessageSize;
 
-        public const int DefaultMaxFragmentCount = 64;
+        /// <summary>
+        /// Default largest number of frames one message may arrive in (#1144). RFC 6455 section 5.4 puts no
+        /// bound on fragments; the bytes are already bounded by <see cref="DefaultMaxMessageSize"/>, so this
+        /// only stops a message that never ends in empty or tiny fragments. 4096 admits a default-size
+        /// (4 MiB) message in 1 KiB fragments.
+        /// </summary>
+        public const int DefaultMaxFragmentCount = 4096;
         public const int DefaultFragmentationThreshold = 64 * 1024;
         public const int DefaultReceiveQueueCapacity = 100;
 
@@ -275,7 +281,37 @@ namespace TurboHTTP.WebSocket
         /// <see langword="false"/> or the platform cleartext policy refuses the host. Raised before
         /// any socket is opened.
         /// </summary>
-        CleartextNotPermitted
+        CleartextNotPermitted,
+
+        /// <summary>
+        /// The connect did not finish in time: <see cref="WebSocketConnectionOptions.HandshakeTimeout"/>
+        /// expired (TCP connect, CONNECT tunnel, TLS and the upgrade exchange) or the transport's connect
+        /// timeout did. Reported as <see cref="TurboHTTP.Core.UHttpErrorType.Timeout"/>; retryable.
+        /// </summary>
+        Timeout,
+
+        /// <summary>
+        /// TLS authentication of the server failed: its certificate was rejected (RFC 5280 path or
+        /// RFC 6125 name validation) or the handshake could not be authenticated. Reported as
+        /// <see cref="TurboHTTP.Core.UHttpErrorType.CertificateError"/>; not retryable, and the
+        /// resilient client does not reconnect into it.
+        /// </summary>
+        CertificateError,
+
+        /// <summary>
+        /// The host name of the server (or of the proxy) could not be resolved: no such name, no
+        /// addresses, a resolver failure or the DNS timeout. Reported as
+        /// <see cref="TurboHTTP.Core.UHttpErrorType.NetworkError"/>; retryable.
+        /// </summary>
+        DnsResolutionFailed,
+
+        /// <summary>
+        /// The connect request cannot be carried out as given: for example a URI scheme other than
+        /// <c>ws</c>/<c>wss</c>, or an option value the transport rejects. Reported as
+        /// <see cref="TurboHTTP.Core.UHttpErrorType.InvalidRequest"/>; not retryable, and the resilient
+        /// client does not reconnect into it.
+        /// </summary>
+        InvalidRequest
     }
 
     /// <summary>
