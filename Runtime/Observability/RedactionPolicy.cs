@@ -1,14 +1,15 @@
 using System;
 using System.Collections.Generic;
 using System.Collections.ObjectModel;
-using System.Text;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Observability
 {
     /// <summary>
     /// Immutable redaction policy shared by <see cref="LoggingInterceptor"/>, <see cref="MonitorInterceptor"/>
     /// and the Editor HTTP Monitor. Redaction is on by default: values of sensitive headers, URL query
-    /// values (names are kept) and URL user-info are replaced by <see cref="RedactedValue"/>.
+    /// values (names are kept) and URL user-info are replaced by <see cref="RedactedValue"/>, including the
+    /// URLs carried by <c>Location</c>, <c>Content-Location</c>, <c>Referer</c>, <c>Link</c> and <c>Refresh</c>.
     /// </summary>
     /// <remarks>
     /// Instances are immutable and safe to share across threads. Derive a custom policy with
@@ -128,12 +129,16 @@ namespace TurboHTTP.Observability
         }
 
         /// <summary>
-        /// Returns <see cref="RedactedValue"/> when <paramref name="headerName"/> is sensitive, else
-        /// <paramref name="value"/>.
+        /// Returns <see cref="RedactedValue"/> when <paramref name="headerName"/> is sensitive. Otherwise,
+        /// when <see cref="RedactQueryValues"/> is set, the URI parts of URL-valued headers have their
+        /// query values and user-info redacted: the whole value of <c>Location</c>, <c>Content-Location</c>
+        /// and <c>Referer</c> (RFC 9110 sections 10.2.2, 8.7, 10.1.3), every <c>&lt;...&gt;</c> target of
+        /// <c>Link</c> (RFC 8288) and the <c>url=</c> part of <c>Refresh</c>. Any other value is returned
+        /// unchanged.
         /// </summary>
         public string RedactHeaderValue(string headerName, string value)
         {
-            return IsSensitiveHeader(headerName) ? RedactedValue : value;
+            return IsSensitiveHeader(headerName) ? RedactedValue : RedactUrlValuedHeader(headerName, value);
         }
 
         /// <summary>
@@ -160,80 +165,28 @@ namespace TurboHTTP.Observability
             if (string.IsNullOrEmpty(url) || !RedactQueryValues)
                 return url;
 
-            var fragmentIndex = url.IndexOf('#');
-            var beforeFragment = fragmentIndex >= 0 ? url.Substring(0, fragmentIndex) : url;
-            var fragment = fragmentIndex >= 0 ? url.Substring(fragmentIndex) : string.Empty;
-
-            var queryIndex = beforeFragment.IndexOf('?');
-            var beforeQuery = queryIndex >= 0 ? beforeFragment.Substring(0, queryIndex) : beforeFragment;
-            var query = queryIndex >= 0 ? beforeFragment.Substring(queryIndex + 1) : null;
-
-            var builder = new StringBuilder(url.Length + 16);
-            AppendWithoutUserInfo(builder, beforeQuery);
-            if (query != null)
-            {
-                builder.Append('?');
-                AppendRedactedQuery(builder, query);
-            }
-
-            builder.Append(fragment);
-            return builder.ToString();
+            return UrlRedaction.RedactUrl(url, null, RedactedValue);
         }
 
-        private static void AppendWithoutUserInfo(StringBuilder builder, string beforeQuery)
+        /// <summary>
+        /// URL-valued header redaction alone (no sensitive-name check): applied when
+        /// <see cref="RedactQueryValues"/> is set.
+        /// </summary>
+        internal string RedactUrlValuedHeader(string headerName, string value)
         {
-            var schemeEnd = beforeQuery.IndexOf("://", StringComparison.Ordinal);
-            if (schemeEnd < 0)
-            {
-                builder.Append(beforeQuery);
-                return;
-            }
-
-            var authorityStart = schemeEnd + 3;
-            var authorityEnd = beforeQuery.IndexOf('/', authorityStart);
-            if (authorityEnd < 0)
-                authorityEnd = beforeQuery.Length;
-
-            var at = beforeQuery.LastIndexOf('@', authorityEnd - 1, authorityEnd - authorityStart);
-            if (at < 0)
-            {
-                builder.Append(beforeQuery);
-                return;
-            }
-
-            builder.Append(beforeQuery, 0, authorityStart)
-                .Append(RedactedValue)
-                .Append(beforeQuery, at, beforeQuery.Length - at);
+            return RedactQueryValues
+                ? UrlRedaction.RedactUrlHeaderValue(headerName, value, null, RedactedValue)
+                : value;
         }
 
-        private static void AppendRedactedQuery(StringBuilder builder, string query)
+        /// <summary>
+        /// Free-text redaction for timeline values and error messages: every absolute URL in
+        /// <paramref name="text"/> has its query values and user-info redacted (when
+        /// <see cref="RedactQueryValues"/> is set).
+        /// </summary>
+        internal string RedactText(string text)
         {
-            var start = 0;
-            while (start <= query.Length)
-            {
-                var end = query.IndexOf('&', start);
-                if (end < 0)
-                    end = query.Length;
-
-                var pair = query.Substring(start, end - start);
-                var equals = pair.IndexOf('=');
-                if (equals < 0)
-                {
-                    builder.Append(pair);
-                }
-                else
-                {
-                    builder.Append(pair, 0, equals + 1);
-                    if (equals + 1 < pair.Length)
-                        builder.Append(RedactedValue);
-                }
-
-                if (end >= query.Length)
-                    break;
-
-                builder.Append('&');
-                start = end + 1;
-            }
+            return RedactQueryValues ? UrlRedaction.RedactUrlsInText(text, RedactedValue) : text;
         }
     }
 }

@@ -102,7 +102,9 @@ namespace TurboHTTP.Observability
                 messageBuilder.Append("\n  Headers:");
                 foreach (var header in request.Headers)
                 {
-                    var value = ShouldRedact(header.Key) ? RedactionPolicy.RedactedValue : header.Value;
+                    var value = ShouldRedact(header.Key)
+                        ? RedactionPolicy.RedactedValue
+                        : _redactionPolicy.RedactUrlValuedHeader(header.Key, header.Value);
                     messageBuilder.Append("\n    ").Append(header.Key).Append(": ").Append(value);
                 }
             }
@@ -149,7 +151,7 @@ namespace TurboHTTP.Observability
             {
                 var value = redactSensitiveHeaders && redactionPolicy.IsSensitiveHeader(header.Key)
                     ? RedactionPolicy.RedactedValue
-                    : header.Value;
+                    : redactionPolicy.RedactUrlValuedHeader(header.Key, header.Value);
                 builder.Append("\n    ").Append(header.Key).Append(": ").Append(value);
             }
 

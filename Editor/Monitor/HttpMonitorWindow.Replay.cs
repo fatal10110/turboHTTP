@@ -113,8 +113,10 @@ namespace TurboHTTP.Editor
                         continue;
                     }
 
-                    // Captured with redaction: never send the placeholder as a credential.
-                    if (string.Equals(pair.Value, RedactionPolicy.RedactedValue, StringComparison.Ordinal))
+                    // Captured with redaction: never send the placeholder as a credential (a whole value, or a
+                    // redacted URL inside Referer and the other URL-valued headers).
+                    if (pair.Value != null
+                        && pair.Value.IndexOf(RedactionPolicy.RedactedValue, StringComparison.Ordinal) >= 0)
                     {
                         skippedRedactedHeaders = true;
                         continue;
