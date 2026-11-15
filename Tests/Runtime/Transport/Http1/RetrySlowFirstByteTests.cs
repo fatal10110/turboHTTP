@@ -80,8 +80,10 @@ namespace TurboHTTP.Tests.Transport.Http1
         }
 
         /// <summary>
-        /// Answers <c>/warm</c> at once and keeps the connection; answers <c>/slow</c> only after the
-        /// configured time to first byte, then closes.
+        /// Answers <c>/warm</c> at once and keeps the connection. A <c>/slow</c> on a connection that
+        /// already served <c>/warm</c> (the pooled one) is never answered: its handler waits until a
+        /// <c>/slow</c> arrives on another connection, then drops it. Any other <c>/slow</c> is answered
+        /// after the configured time to first byte, then the connection closes.
         /// </summary>
         private sealed class SlowServer : IDisposable
         {
@@ -89,6 +91,8 @@ namespace TurboHTTP.Tests.Transport.Http1
             private readonly List<TcpClient> _clients = new List<TcpClient>();
             private readonly object _lock = new object();
             private readonly TimeSpan _slowFirstByte;
+            private readonly TaskCompletionSource<bool> _slowOnOtherConnection =
+                new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
             private int _acceptCount;
             private int _slowRequestCount;
             private volatile bool _disposed;
@@ -139,6 +143,7 @@ namespace TurboHTTP.Tests.Transport.Http1
                 try
                 {
                     var stream = client.GetStream();
+                    bool servedWarm = false;
                     while (true)
                     {
                         var head = await ReadHeadAsync(stream);
@@ -148,6 +153,15 @@ namespace TurboHTTP.Tests.Transport.Http1
                         if (head.StartsWith("GET /slow ", StringComparison.Ordinal))
                         {
                             Interlocked.Increment(ref _slowRequestCount);
+                            if (servedWarm)
+                            {
+                                // The pooled connection: no answer, so only the first-byte bound ends
+                                // this attempt, whatever the host load.
+                                await _slowOnOtherConnection.Task;
+                                return;
+                            }
+
+                            _slowOnOtherConnection.TrySetResult(true);
                             await Task.Delay(_slowFirstByte);
                             var slow = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 4\r\nConnection: close\r\n\r\nslow");
                             await stream.WriteAsync(slow, 0, slow.Length);
@@ -157,6 +171,7 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                         var ok = Encoding.ASCII.GetBytes("HTTP/1.1 200 OK\r\nContent-Length: 0\r\n\r\n");
                         await stream.WriteAsync(ok, 0, ok.Length);
+                        servedWarm = true;
                     }
                 }
                 catch (IOException)
@@ -188,6 +203,7 @@ namespace TurboHTTP.Tests.Transport.Http1
             public void Dispose()
             {
                 _disposed = true;
+                _slowOnOtherConnection.TrySetResult(true);
                 _listener.Stop();
                 lock (_lock)
                 {

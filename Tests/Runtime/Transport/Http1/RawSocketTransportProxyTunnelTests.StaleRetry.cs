@@ -82,7 +82,8 @@ namespace TurboHTTP.Tests.Transport.Http1
 
                     Assert.AreEqual(HttpStatusCode.OK, second.StatusCode);
                     Assert.AreEqual("ok", second.GetBodyAsString());
-                    Assert.IsTrue(secondSentOnReusedTunnel.Task.IsCompleted,
+                    var sentOnReusedTunnel = await Task.WhenAny(secondSentOnReusedTunnel.Task, Task.Delay(TimeSpan.FromSeconds(5)));
+                    Assert.AreSame(secondSentOnReusedTunnel.Task, sentOnReusedTunnel,
                         "the first attempt of /second must go out on the reused tunnel");
                     Assert.AreEqual(2, proxyServer.AcceptCount, "the retry opens a new proxy connection");
                     Assert.AreEqual(2, originServer.AcceptCount, "the retry establishes a new tunnel");
