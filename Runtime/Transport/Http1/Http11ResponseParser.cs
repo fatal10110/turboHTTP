@@ -541,7 +541,7 @@ namespace TurboHTTP.Transport.Http1
                 while (true)
                 {
                     int comma = span.IndexOf(',');
-                    var token = TrimWhitespace(comma >= 0 ? span.Slice(0, comma) : span);
+                    var token = HttpFieldSyntax.TrimOws(comma >= 0 ? span.Slice(0, comma) : span);
                     if (!token.IsEmpty &&
                         !token.Equals("identity".AsSpan(), StringComparison.OrdinalIgnoreCase))
                     {
@@ -575,12 +575,13 @@ namespace TurboHTTP.Transport.Http1
             {
                 for (int i = 1; i < clValues.Count; i++)
                 {
-                    if (clValues[i].Trim() != clValues[0].Trim())
+                    // Values are already SP/HTAB-trimmed by ParseResponseHeaderLine.
+                    if (!string.Equals(clValues[i], clValues[0], StringComparison.Ordinal))
                         throw new FormatException("Conflicting Content-Length values");
                 }
             }
 
-            if (!long.TryParse(contentLengthStr.Trim(), NumberStyles.None,
+            if (!long.TryParse(contentLengthStr, NumberStyles.None,
                 CultureInfo.InvariantCulture, out contentLength))
             {
                 throw new FormatException("Invalid Content-Length value");
@@ -610,8 +611,8 @@ namespace TurboHTTP.Transport.Http1
                 {
                     int comma = span.IndexOf(',');
                     var token = comma >= 0
-                        ? TrimWhitespace(span.Slice(0, comma))
-                        : TrimWhitespace(span);
+                        ? HttpFieldSyntax.TrimOws(span.Slice(0, comma))
+                        : HttpFieldSyntax.TrimOws(span);
 
                     if (!token.IsEmpty)
                     {
@@ -683,7 +684,7 @@ namespace TurboHTTP.Transport.Http1
             int secondSpace = statusCodeSpan.IndexOf(' ');
             if (secondSpace >= 0)
                 statusCodeSpan = statusCodeSpan.Slice(0, secondSpace);
-            statusCodeSpan = TrimWhitespace(statusCodeSpan);
+            statusCodeSpan = HttpFieldSyntax.TrimOws(statusCodeSpan);
 
             if (!TryParseStatusCode(statusCodeSpan, out statusCode))
                 throw new FormatException($"Invalid HTTP status code: {statusCodeSpan.ToString()}");
@@ -718,8 +719,11 @@ namespace TurboHTTP.Transport.Http1
                     throw new FormatException("Response header field name is not a valid token");
             }
 
+            var valueSpan = HttpFieldSyntax.TrimOws(lineSpan.Slice(colonIndex + 1));
+            ValidateFieldValue(valueSpan, "header");
+
             name = nameSpan.ToString();
-            value = TrimWhitespace(lineSpan.Slice(colonIndex + 1)).ToString();
+            value = valueSpan.ToString();
         }
 
         private static bool TryParseHeaderLine(string line, out string name, out string value)
@@ -733,8 +737,8 @@ namespace TurboHTTP.Transport.Http1
                 return false;
             }
 
-            name = TrimWhitespace(lineSpan.Slice(0, colonIndex)).ToString();
-            value = TrimWhitespace(lineSpan.Slice(colonIndex + 1)).ToString();
+            name = HttpFieldSyntax.TrimOws(lineSpan.Slice(0, colonIndex)).ToString();
+            value = HttpFieldSyntax.TrimOws(lineSpan.Slice(colonIndex + 1)).ToString();
             return true;
         }
 
@@ -749,7 +753,7 @@ namespace TurboHTTP.Transport.Http1
             if (!IsValidHeaderFieldName(name))
                 return false;
 
-            ValidateHeaderValue(name, value);
+            ValidateFieldValue(value.AsSpan(), "trailer");
 
             if (TrailerFieldValidator.IsProhibitedResponseTrailer(name))
                 return false;
@@ -770,26 +774,8 @@ namespace TurboHTTP.Transport.Http1
             if (spaceIndex >= 0)
                 sizeSpan = sizeSpan.Slice(0, spaceIndex);
 
-            sizeSpan = TrimWhitespace(sizeSpan);
+            sizeSpan = HttpFieldSyntax.TrimOws(sizeSpan);
             return ParseChunkSizeToken(sizeSpan);
-        }
-
-        private static ReadOnlySpan<char> TrimWhitespace(ReadOnlySpan<char> value)
-        {
-            int start = 0;
-            while (start < value.Length && char.IsWhiteSpace(value[start]))
-                start++;
-
-            int end = value.Length - 1;
-            while (end >= start && char.IsWhiteSpace(value[end]))
-                end--;
-
-            if (start == 0 && end == value.Length - 1)
-                return value;
-            if (start > end)
-                return ReadOnlySpan<char>.Empty;
-
-            return value.Slice(start, end - start + 1);
         }
 
         private static long ParseChunkSizeToken(ReadOnlySpan<char> sizeSpan)
@@ -936,8 +922,9 @@ namespace TurboHTTP.Transport.Http1
                     throw new FormatException("Response trailers exceed maximum size");
 
                 trailers ??= new HttpHeaders();
-                // Invalid or prohibited trailers are skipped for wire compatibility with
-                // permissive servers/proxies; malformed framing still throws earlier.
+                // Invalid names and prohibited trailers are skipped for wire compatibility with
+                // permissive servers/proxies; malformed framing and control characters in a
+                // value still throw (ValidateFieldValue).
                 AddResponseTrailer(trailers, line);
             }
 
@@ -946,10 +933,22 @@ namespace TurboHTTP.Transport.Http1
                 : trailers;
         }
 
-        private static void ValidateHeaderValue(string name, string value)
+        /// <summary>
+        /// The one rule for received header and trailer field values (#652): a value holding NUL,
+        /// CR, LF, another C0 control (HTAB excepted) or DEL rejects the whole message with a
+        /// <see cref="FormatException"/>, which the transport maps to a network error. RFC 9110
+        /// Section 5.5 lets a recipient either reject or replace CR/LF/NUL with SP; rejecting is
+        /// the conservative choice and also covers the other controls the grammar excludes. The
+        /// message names the character code, never the value.
+        /// </summary>
+        private static void ValidateFieldValue(ReadOnlySpan<char> value, string section)
         {
-            if (value != null && value.AsSpan().IndexOfAny('\r', '\n') >= 0)
-                throw new FormatException($"Header value for '{name}' contains CRLF characters");
+            int invalid = HttpFieldSyntax.IndexOfInvalidFieldValueChar(value);
+            if (invalid >= 0)
+            {
+                throw new FormatException(
+                    $"Response {section} field value contains control character 0x{(int)value[invalid]:X2}");
+            }
         }
 
         private static bool IsValidHeaderFieldName(string name)
