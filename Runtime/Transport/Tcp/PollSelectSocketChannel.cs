@@ -54,22 +54,47 @@ namespace TurboHTTP.Transport.Tcp
     /// 1 ms spin, documented at 2-10% of a core per idle connection).
     /// </para>
     /// <para>
-    /// <b>Cancellation:</b> Cancelling an operation disposes the socket, so the next poll throws
-    /// <see cref="ObjectDisposedException"/>, which is surfaced as
-    /// <see cref="OperationCanceledException"/>. Cancellation wins: an operation whose token was
-    /// cancelled completes as cancelled with that token whatever error the poll thread hit first,
-    /// e.g. a send that reached the socket while the cancellation was tearing it down and failed
-    /// with "socket shut down" (#415).
+    /// <b>Cancellation:</b> Cancelling an operation begins disposing the channel without blocking
+    /// the cancelling thread: it shuts the socket down (which ends a pending poll at once) and wakes
+    /// the poll thread, which leaves its loop, completes what is pending as
+    /// <see cref="OperationCanceledException"/> and only then closes the socket (#846), so the
+    /// descriptor is never released under a socket call of the poll thread. Cancellation wins: an
+    /// operation whose token was cancelled completes as cancelled with that token whatever error
+    /// the poll thread hit first, e.g. a send that reached the socket while the cancellation was
+    /// tearing it down and failed with "socket shut down" (#415).
+    /// </para>
+    /// <para>
+    /// <b>Close and buffer ownership:</b> the poll thread owns the close of the socket and the two
+    /// pooled buffers (only it reads and writes them): its exit path closes the socket after its
+    /// last socket call and returns the buffers. <see cref="Dispose"/> on another thread waits a
+    /// bounded time for that exit and, if the thread is stuck, closes the socket itself and gives
+    /// the buffers up (<see cref="ByteArrayPool.Abandon"/>). <see cref="Dispose"/> on the poll thread
+    /// (a continuation of a completed operation runs inline there) never waits for itself (#840).
     /// </para>
     /// </remarks>
     internal sealed class PollSelectSocketChannel : IDisposable
     {
         private const int BufferSize = 16 * 1024;
 
+        /// <summary>How long <see cref="Dispose"/> on another thread waits for the poll thread to exit.</summary>
+        internal const int DisposeJoinTimeoutMs = 500;
+
+        /// <summary><see cref="BufferState"/>: the poll thread still owns the pooled buffers.</summary>
+        internal const int BuffersOwned = 0;
+
+        /// <summary><see cref="BufferState"/>: the buffers went back to the pool.</summary>
+        internal const int BuffersReturned = 1;
+
+        /// <summary><see cref="BufferState"/>: the poll thread outlived the dispose bound; the buffers were given up.</summary>
+        internal const int BuffersAbandoned = 2;
+
         /// <summary>Upper bound of one readiness wait, in microseconds (20 ms).</summary>
         internal const int PollSliceUs = 20_000;
 
         private static int s_threadCounter;
+
+        private static readonly Action<object> s_beginDispose =
+            static state => ((PollSelectSocketChannel)state).BeginDispose();
 
         private readonly Socket _socket;
         private readonly byte[] _recvBuffer;
@@ -81,7 +106,14 @@ namespace TurboHTTP.Transport.Tcp
         private readonly Thread _pollThread;
         // Set by ReceiveAsync/SendAsync/Dispose; the poll thread blocks on it while idle.
         private readonly ManualResetEventSlim _workSignal = new ManualResetEventSlim(false);
+        // Interlocked: 1 once disposal began (Dispose or a cancellation); the poll loop exits on it.
         private int _disposed;
+        // Interlocked: 1 once Dispose ran (the bounded wait for the poll thread happens once).
+        private int _disposeCalled;
+        // Interlocked: BuffersOwned until the first of the poll thread's exit (return) or a timed-out
+        // Dispose (abandon) settles the buffers; exactly one of them does.
+        private int _bufferState;
+        private int _joinTimeoutMs = DisposeJoinTimeoutMs;
         private long _pollIterations;
 
         // ── Per-direction state ───────────────────────────────────────────────
@@ -137,6 +169,21 @@ namespace TurboHTTP.Transport.Tcp
         /// <summary>Test hook: as <see cref="TestHookSendFailing"/>, for a pending receive.</summary>
         internal Action TestHookReceiveFailing { get; set; }
 
+        /// <summary>
+        /// Test hook: runs on the poll thread once it left its loop, right before it closes the
+        /// socket, so a test can observe the close order (#846) or hold the thread past the dispose
+        /// bound (#840).
+        /// </summary>
+        internal Action TestHookBeforeClose { get; set; }
+
+        /// <summary>
+        /// <see cref="BuffersOwned"/>, <see cref="BuffersReturned"/> or <see cref="BuffersAbandoned"/>.
+        /// </summary>
+        internal int BufferState => Volatile.Read(ref _bufferState);
+
+        /// <summary>Test hook: the bound of <see cref="Dispose"/>'s wait for the poll thread.</summary>
+        internal void SetDisposeJoinTimeoutForTest(int milliseconds) => Volatile.Write(ref _joinTimeoutMs, milliseconds);
+
         // ── Public API ────────────────────────────────────────────────────────
 
         /// <summary>
@@ -165,10 +212,9 @@ namespace TurboHTTP.Transport.Tcp
             if (!ct.CanBeCanceled)
                 return vt;
 
-            // Register cancellation (disposes socket → next poll throws → OperationCanceledException).
-            // Direct socket capture avoids the object[] allocation used in naïve patterns.
+            // Cancellation begins the dispose: shut down, wake the poll thread, let it close (#846).
             TestHookBeforeRegister?.Invoke();
-            var reg = ct.Register(static s => { try { ((Socket)s).Dispose(); } catch { } }, _socket);
+            var reg = ct.Register(s_beginDispose, this);
             return WrapWithCancellationCleanup(vt, reg, ct);
         }
 
@@ -204,7 +250,7 @@ namespace TurboHTTP.Transport.Tcp
                     lock (_sendLock) { _sendBusy = false; }
                     if (IsLostToCancellation(ex, ct))
                         throw new OperationCanceledException("Socket I/O was cancelled.", ex, ct);
-                    ThrowMapped(ex, ct);
+                    ThrowMapped(DisposedFailure(ex), ct);
                 }
 
                 if (sent == data.Length)
@@ -228,7 +274,7 @@ namespace TurboHTTP.Transport.Tcp
                 return vt;
 
             TestHookBeforeRegister?.Invoke();
-            var reg = ct.Register(static s => { try { ((Socket)s).Dispose(); } catch { } }, _socket);
+            var reg = ct.Register(s_beginDispose, this);
             return WrapSendWithCancellationCleanup(vt, reg, ct);
         }
 
@@ -286,11 +332,16 @@ namespace TurboHTTP.Transport.Tcp
                     }
                     catch (Exception ex)
                     {
-                        // Socket disposed (cancellation) or failed: fail whatever is pending.
+                        // Socket failed (or was closed by a timed-out Dispose): fail whatever is pending.
                         if (recv) FailRecv(ex);
                         if (send) FailSend(ex);
                         continue;
                     }
+
+                    // Disposal shut the socket down, which reports it readable: leave instead of
+                    // reading the shutdown as end of stream.
+                    if (Volatile.Read(ref _disposed) != 0)
+                        break;
 
                     if (readable) ServiceRecv();
                     if (writable) ServiceSend();
@@ -298,9 +349,32 @@ namespace TurboHTTP.Transport.Tcp
             }
             finally
             {
-                // Poll loop exited — signal any pending sources so awaiters don't hang.
-                AbortPendingOperations();
+                ExitPollLoop();
             }
+        }
+
+        /// <summary>
+        /// The poll thread's exit: no socket call of this thread is in flight any more, so the
+        /// socket is closed here (#846) and the pooled buffers, which only this thread uses, go back
+        /// to the pool unless a timed-out <see cref="Dispose"/> already gave them up (#840). Pending
+        /// operations fail last: their continuations may run inline on this thread.
+        /// </summary>
+        private void ExitPollLoop()
+        {
+            // Also covers a loop that died of an exception: later operations fail instead of hanging.
+            Interlocked.Exchange(ref _disposed, 1);
+
+            TestHookBeforeClose?.Invoke();
+            try { _socket.Dispose(); } catch { }
+
+            if (Interlocked.CompareExchange(ref _bufferState, BuffersReturned, BuffersOwned) == BuffersOwned)
+            {
+                ByteArrayPool.Return(_recvBuffer);
+                ByteArrayPool.Return(_sendBuffer);
+            }
+
+            // Signal any pending sources so awaiters don't hang.
+            AbortPendingOperations();
         }
 
         private void ServiceRecv()
@@ -332,6 +406,11 @@ namespace TurboHTTP.Transport.Tcp
 
                 if (err != SocketError.Success)
                     throw new SocketException((int)err);
+
+                // A disposal that raced the readiness check shut the socket down: this is not the
+                // peer's end of stream. Leave the receive pending; the loop exits and aborts it.
+                if (received == 0 && Volatile.Read(ref _disposed) != 0)
+                    return;
 
                 if (received > 0)
                     Buffer.BlockCopy(_recvBuffer, 0, target, offset, received);
@@ -460,7 +539,7 @@ namespace TurboHTTP.Transport.Tcp
                 src = _recvSource;
             }
 
-            src.SetException(MapException(ex, default));
+            src.SetException(MapException(DisposedFailure(ex), default));
         }
 
         private void FailSend(Exception ex)
@@ -477,8 +556,19 @@ namespace TurboHTTP.Transport.Tcp
                 src = _sendSource;
             }
 
-            src.SetException(MapException(ex, default));
+            src.SetException(MapException(DisposedFailure(ex), default));
         }
+
+        /// <summary>
+        /// A failure met after <see cref="Dispose"/> began (e.g. "socket shut down") is reported as
+        /// that disposal, the way the former close-first dispose reported its
+        /// <see cref="ObjectDisposedException"/>. A disposal begun by token cancellation keeps the
+        /// raw error: the cancellation wrapper reports it as the cancellation's cause (#415).
+        /// </summary>
+        private Exception DisposedFailure(Exception ex) =>
+            Volatile.Read(ref _disposeCalled) != 0 && !(ex is OperationCanceledException)
+                ? new ObjectDisposedException("The PollSelect channel was disposed.", ex)
+                : ex;
 
         private void AbortPendingOperations()
         {
@@ -515,39 +605,51 @@ namespace TurboHTTP.Transport.Tcp
 
         // ── Disposal ──────────────────────────────────────────────────────────
 
+        /// <summary>
+        /// Disposes the channel. On another thread it waits up to <see cref="DisposeJoinTimeoutMs"/>
+        /// for the poll thread to close the socket and return the buffers; past that bound it closes
+        /// the socket itself and gives the buffers up. On the poll thread (from an inline
+        /// continuation) it returns at once and the thread's exit does both (#840).
+        /// </summary>
         public void Dispose()
         {
-            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+            if (Interlocked.Exchange(ref _disposeCalled, 1) != 0)
                 return;
 
-            // Disposing the socket makes the next poll throw; the signal wakes an idle thread.
-            // Either way the poll thread exits within one poll slice, calls
-            // AbortPendingOperations(), and terminates.
+            BeginDispose();
+
+            // Joining itself would only time out, and abandon buffers the exit path returns.
+            if (Thread.CurrentThread == _pollThread)
+                return;
+
+            if (_pollThread.Join(Volatile.Read(ref _joinTimeoutMs)))
+                return; // the exit path closed the socket and returned the buffers
+
+            // Pathological (e.g. the thread was not scheduled within the bound): close here, and
+            // give the buffers up rather than return one the thread might still be writing into.
+            // (_workSignal is deliberately not disposed: a racing ReceiveAsync/SendAsync may still
+            // Set it; it holds no unmanaged handle until a wait blocks, and that handle is
+            // finalizable.)
             try { _socket.Dispose(); } catch { }
-            _workSignal.Set();
-
-            // Wait for the poll thread to exit before returning the pooled buffers.
-            // 500ms is generous enough for mobile GC pauses; if it still hasn't exited,
-            // we accept the minor leak rather than returning a buffer the thread might
-            // still be writing into. (_workSignal is deliberately not disposed: a racing
-            // ReceiveAsync/SendAsync may still Set it; it holds no unmanaged handle until a
-            // wait blocks, and that handle is finalizable.)
-            _pollThread.Join(millisecondsTimeout: 500);
-
-            if (!_pollThread.IsAlive)
-            {
-                ByteArrayPool.Return(_recvBuffer);
-                ByteArrayPool.Return(_sendBuffer);
-            }
-            else
+            if (Interlocked.CompareExchange(ref _bufferState, BuffersAbandoned, BuffersOwned) == BuffersOwned)
             {
                 ByteArrayPool.Abandon(_recvBuffer);
                 ByteArrayPool.Abandon(_sendBuffer);
             }
-            // If the thread is still alive after 500ms (pathological case), the buffers
-            // are not returned. This is a deliberate safety trade-off: a small one-time
-            // allocation leak is preferable to corrupting a rented buffer from another
-            // operation.
+        }
+
+        /// <summary>
+        /// Starts disposal without blocking (Dispose and token cancellation): marks the channel
+        /// disposed, shuts the socket down so a pending poll ends at once with the descriptor still
+        /// open, and wakes an idle poll thread. The poll thread closes the socket on its way out.
+        /// </summary>
+        private void BeginDispose()
+        {
+            if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)
+                return;
+
+            try { _socket.Shutdown(SocketShutdown.Both); } catch { }
+            _workSignal.Set();
         }
 
         // ── Helpers ───────────────────────────────────────────────────────────
