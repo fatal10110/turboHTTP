@@ -15,6 +15,7 @@ namespace TurboHTTP.Tests.Transport.Tls
     /// #169: the BouncyCastle handshake (and later I/O) never blocks a thread on the inner stream.
     /// Over <see cref="SaeaStream"/> a synchronous Read/Write is sync-over-async that needs a
     /// second pool thread to complete; with the pool clamped, blocking handshakes stall.
+    /// #910: disposing the stream (its close_notify) never writes synchronously either.
     /// </summary>
     // ThreadPool limits are process-global; Unity's runner executes tests serially.
     [TestFixture]
@@ -181,8 +182,9 @@ namespace TurboHTTP.Tests.Transport.Tls
             Assert.AreEqual(1, read);
             Assert.AreEqual(value, echo[0]);
 
-            // Counts are asserted after the run; Dispose's best-effort close_notify is synchronous
-            // by contract (Stream.Dispose), so the stream is released by the socket cleanup instead.
+            // #910: Dispose sends close_notify through the inner stream's async write; the counts
+            // asserted after the run include it (one synchronous Write per Dispose before the fix).
+            secure.Dispose();
         }
     }
 }
