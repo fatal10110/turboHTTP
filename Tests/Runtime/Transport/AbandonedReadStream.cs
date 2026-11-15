@@ -51,6 +51,12 @@ namespace TurboHTTP.Tests.Transport
         public int ReadCount => Volatile.Read(ref _readCount);
 
         /// <summary>
+        /// Called at the start of each <see cref="ReadAsync(byte[], int, int, CancellationToken)"/>; it may
+        /// throw, which makes the read fail synchronously (a closed socket racing the read start).
+        /// </summary>
+        public Action OnRead { get; set; }
+
+        /// <summary>
         /// Called with each write as ASCII text (a handshake request, say), before the write returns; it
         /// may queue the reply with <see cref="Answer"/>.
         /// </summary>
@@ -77,6 +83,7 @@ namespace TurboHTTP.Tests.Transport
         public override Task<int> ReadAsync(byte[] buffer, int offset, int count, CancellationToken cancellationToken)
         {
             Interlocked.Increment(ref _readCount);
+            OnRead?.Invoke();
             TaskCompletionSource<bool> started;
             TaskCompletionSource<int> read;
             lock (_gate)

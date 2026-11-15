@@ -1478,7 +1478,19 @@ namespace TurboHTTP.Transport.Http1
 
                 // From here Dispose may abandon the read at any time; it then fails _bodyReadCore and
                 // leaves `buffer` to the GC, so starting the stream read below is still safe.
-                var pending = _stream.ReadAsync(buffer, 0, count, ct);
+                // A stream that throws synchronously (a closed socket racing the read start) goes
+                // through the completed/abandoned paths below like any other fault, so an abandon that
+                // already began is ended and the state goes back to Idle.
+                Task<int> pending;
+                try
+                {
+                    pending = _stream.ReadAsync(buffer, 0, count, ct);
+                }
+                catch (Exception ex)
+                {
+                    pending = Task.FromException<int>(ex);
+                }
+
                 if (pending.IsCompleted &&
                     Interlocked.CompareExchange(ref _bodyReadState, BodyReadIdle, BodyReadPending) == BodyReadPending)
                 {
@@ -1529,8 +1541,14 @@ namespace TurboHTTP.Transport.Http1
                     return;
                 }
 
-                // Abandoned: the caller already saw the cancellation. Observe the outcome and drop
-                // the stream, which can no longer be read in order.
+                // Abandoned: the caller already saw the cancellation. Drop the token registration
+                // (after Dispose it is the caller's own, possibly long-lived token, whose callback
+                // list would otherwise root this reader), observe the outcome and drop the stream,
+                // which can no longer be read in order. _bodyReadToken stays: the queued
+                // FailAbandonedBodyRead may still read it.
+                _bodyReadRegistration.Dispose();
+                _bodyReadRegistration = default;
+                _bodyReadAwaiter = default;
                 try
                 {
                     read.GetResult();

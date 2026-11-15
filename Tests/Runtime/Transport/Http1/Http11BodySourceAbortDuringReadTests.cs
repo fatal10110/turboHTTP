@@ -3,11 +3,13 @@ using System.Buffers;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
 using TurboHTTP.Core;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport;
 using TurboHTTP.Transport.Http1;
 using TurboHTTP.Transport.Tcp;
@@ -25,6 +27,9 @@ namespace TurboHTTP.Tests.Transport.Http1
     {
         // Guard only: the read must end long before this; it never synchronizes the test.
         private static readonly TimeSpan Guard = TimeSpan.FromSeconds(15);
+
+        // Guard only, below Guard so the settings are restored even when the wait fails.
+        private static readonly TimeSpan SettleGuard = TimeSpan.FromSeconds(5);
 
         [TestCase(false)]
         [TestCase(true)]
@@ -142,6 +147,100 @@ namespace TurboHTTP.Tests.Transport.Http1
             }, Guard);
         }
 
+        [TestCase(false)]
+        [TestCase(true)]
+        public void ReadAsync_StreamThrowsSynchronously_EndsTheReadAndLeavesNothingAbandoned(bool abortDuringRead)
+        {
+            AssertAsync.Run(async () =>
+            {
+                var savedSettle = AbandonedSocketIo.SettleTimeout;
+                // Far beyond the wait below: an entry the read never ends cannot expire in time. Finite,
+                // so a failing run does not hold back the sockets of later tests for good.
+                AbandonedSocketIo.SettleTimeout = TimeSpan.FromMinutes(1);
+                try
+                {
+                    var stream = new AbandonedReadStream();
+                    using var socket = NewSocket();
+                    var source = NewSource(stream, socket, Http11ResponseBodyKind.ContentLength, 100);
+                    stream.OnRead = () =>
+                    {
+                        // Abort racing the read start: Dispose abandons the read before the stream
+                        // throws on the socket Abort closed.
+                        if (abortDuringRead)
+                            source.Abort();
+                        throw new IOException("socket closed");
+                    };
+
+                    var error = await CaptureAsync(source.ReadAsync(new byte[100], CancellationToken.None).AsTask())
+                        .ConfigureAwait(false);
+                    Assert.IsNotNull(error, "the read must fail");
+                    Assert.AreEqual(1, stream.ReadCount);
+
+                    source.Abort();
+                    stream.OnRead = null;
+
+                    // Neither the abandon Dispose began nor a later Dispose may leave an entry
+                    // that holds back new sockets.
+                    var settled = AbandonedSocketIo.WaitForSettledAsync(CancellationToken.None);
+                    var winner = await Task.WhenAny(settled, Task.Delay(SettleGuard)).ConfigureAwait(false);
+                    Assert.AreSame(settled, winner, "an abandoned body-read entry was never ended");
+                }
+                finally
+                {
+                    AbandonedSocketIo.SettleTimeout = savedSettle;
+                }
+            }, Guard);
+        }
+
+        [Test]
+        public void Abort_PendingReadWithCallerToken_DoesNotLeaveTheReaderOnTheCallersToken()
+        {
+            AssertAsync.Run(async () =>
+            {
+                using var cts = new CancellationTokenSource();
+                var stream = new AbandonedReadStream();
+                using var socket = NewSocket();
+
+                var reader = await AbortThenEndLateAsync(stream, socket, cts.Token).ConfigureAwait(false);
+
+                GC.Collect();
+                GC.WaitForPendingFinalizers();
+                GC.Collect();
+                Assert.IsFalse(reader.IsAlive,
+                    "the abandoned read's registration on the caller's token still roots the reader");
+                GC.KeepAlive(cts);
+            }, Guard);
+        }
+
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static async Task<WeakReference> AbortThenEndLateAsync(
+            AbandonedReadStream stream,
+            Socket socket,
+            CancellationToken callerToken)
+        {
+            var source = NewTrackedSource(stream, socket, out var weak);
+            var read = source.ReadAsync(new byte[100], callerToken).AsTask();
+            await stream.ReadPending.ConfigureAwait(false);
+            source.Abort();
+            Assert.IsInstanceOf<ObjectDisposedException>(await CaptureAsync(read).ConfigureAwait(false));
+
+            // The platform ends the abandoned read late; its continuation runs inline here.
+            stream.EndRead(0);
+            return weak;
+        }
+
+        // Not inlined, so no frame of the test holds the reader itself.
+        [MethodImpl(MethodImplOptions.NoInlining)]
+        private static Http11ResponseBodySource NewTrackedSource(
+            AbandonedReadStream stream,
+            Socket socket,
+            out WeakReference reader)
+        {
+            var bufferedReader = new Http11ResponseParser.BufferedStreamReader(stream);
+            reader = new WeakReference(bufferedReader);
+            return NewSource(bufferedReader, stream, socket, Http11ResponseBodyKind.ContentLength, 100, keepAlive: false);
+        }
+
         // #643: RFC 9112 Section 9.3. A second response in the same write as the first leaves bytes
         // in the reader once the first is complete; that connection must not be reused.
         [TestCase("HTTP/1.1 200 OK\r\nContent-Length: 1\r\n\r\na", 1)]
@@ -240,9 +339,18 @@ namespace TurboHTTP.Tests.Transport.Http1
             Socket socket,
             Http11ResponseBodyKind kind,
             long? contentLength,
-            bool keepAlive = false)
+            bool keepAlive = false) =>
+            NewSource(new Http11ResponseParser.BufferedStreamReader(stream), stream, socket, kind, contentLength, keepAlive);
+
+        private static Http11ResponseBodySource NewSource(
+            Http11ResponseParser.BufferedStreamReader reader,
+            AbandonedReadStream stream,
+            Socket socket,
+            Http11ResponseBodyKind kind,
+            long? contentLength,
+            bool keepAlive)
         {
-            var head = new ParsedResponseHead(new Http11ResponseParser.BufferedStreamReader(stream))
+            var head = new ParsedResponseHead(reader)
             {
                 StatusCode = HttpStatusCode.OK,
                 Headers = HttpHeaders.Empty,
