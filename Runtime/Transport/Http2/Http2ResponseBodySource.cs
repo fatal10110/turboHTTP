@@ -605,7 +605,7 @@ namespace TurboHTTP.Transport.Http2
             releasedFlowControlledBytes += chunk.FlowControlledLength;
         }
 
-        private sealed class DetachedBufferedChunkOwner : IDisposable
+        private sealed class DetachedBufferedChunkOwner : IDisposable, IAbandonableBufferOwner
         {
             private Http2ResponseBodyChunk[] _chunks;
             private readonly ReadOnlySequence<byte> _sequence;
@@ -628,6 +628,21 @@ namespace TurboHTTP.Transport.Http2
                 {
                     if (chunks[i].Buffer != null)
                         ByteArrayPool.Return(chunks[i].Buffer);
+                }
+            }
+
+            // Finalizer path of UHttpResponse (#582): the detached sequence may still be read, so the
+            // chunk buffers are counted as abandoned and left to the GC instead of being returned.
+            public void AbandonToGc()
+            {
+                var chunks = Interlocked.Exchange(ref _chunks, null);
+                if (chunks == null)
+                    return;
+
+                for (var i = 0; i < chunks.Length; i++)
+                {
+                    if (chunks[i].Buffer != null)
+                        ByteArrayPool.Abandon(chunks[i].Buffer);
                 }
             }
 
