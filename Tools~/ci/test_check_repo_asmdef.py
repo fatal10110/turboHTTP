@@ -18,6 +18,7 @@ import warnings
 
 HERE = os.path.dirname(os.path.abspath(__file__))
 BOUNCY = "Runtime/Transport/BouncyCastle/TurboHTTP.Transport.BouncyCastle.asmdef"
+SECURE_PROTOCOL = "Runtime/Transport/BouncyCastle/Lib/TurboHTTP.SecureProtocol.asmdef"
 COMPLETE = "Runtime/TurboHTTP.Complete.asmdef"
 TESTS_RUNTIME = "Tests/Runtime/TurboHTTP.Tests.Runtime.asmdef"
 UNITASK = "Runtime/UniTask/TurboHTTP.UniTask.asmdef"
@@ -99,6 +100,12 @@ class AsmdefSettingsTests(Fixture):
         # Without TURBOHTTP_BOUNCYCASTLE the glue and the vendored library would compile into every project (#196).
         self.edit_asmdef(BOUNCY, defineConstraints=[])
         self.assertReported(self.asmdef_errors(), "TurboHTTP.Transport.BouncyCastle", "defineConstraints")
+
+    def test_vendored_library_losing_its_define_constraint_fails(self):
+        # Unconstrained, TurboHTTP.SecureProtocol compiles in every project and a Mono player at Managed
+        # Stripping Level Disabled copies it to Managed/ although nothing can call it (#870).
+        self.edit_asmdef(SECURE_PROTOCOL, defineConstraints=[])
+        self.assertReported(self.asmdef_errors(), "TurboHTTP.SecureProtocol", "defineConstraints")
 
     def test_auto_referenced_flips_fail(self):
         self.edit_asmdef(JSON_ASMDEF, autoReferenced=False)

@@ -28,12 +28,18 @@ test run of whoever turns the define on. The editor-opt-in variant rebuilds ever
                                   project that sets the define has to add itself
 into its own output directory, without analyzers, documentation snippets or the warning ratchet:
 compiler errors only. No guarded block has an #else branch, so the regular variants cover the other side.
---variant all (check.sh --full, CI) includes it.
+The regular variants set the package's own opt-in defines (OPT_IN_DEFINES: TURBOHTTP_BOUNCYCASTLE,
+TURBOHTTP_BACKGROUND_NETWORKING) so that code is compiled and analyzed; the editor-defaults and
+android-defaults variants (#870) drop them, the configuration of a project that opts into neither, so an
+assembly that needs the BouncyCastle assemblies without the define fails as DROPPED and code that only
+compiles with an opt-in define fails as a compile error. Same compile-only rules.
+--variant all (check.sh --full, CI) includes them.
 
 Usage:
   Tools~/ci/shadow_build.py                     # editor variant
-  Tools~/ci/shadow_build.py --variant all       # editor + ios + android + editor-opt-in
+  Tools~/ci/shadow_build.py --variant all       # editor + ios + android + the compile-only define variants
   Tools~/ci/shadow_build.py --variant editor-opt-in   # only the compile-only opt-in define variant
+  Tools~/ci/shadow_build.py --variant editor-defaults # only the editor without the package's opt-in defines
   Tools~/ci/shadow_build.py --no-tests          # runtime assemblies only (tools that need the DLLs)
   Tools~/ci/shadow_build.py --no-unitask        # offline: skip the UniTask fetch (adapters not built)
   Tools~/ci/shadow_build.py --update-baseline
@@ -80,24 +86,26 @@ UNITY_VERSIONS = ["5_3", "5_4", "5_5", "5_6", "2017_1", "2017_2", "2017_3", "201
                   "2018_3", "2018_4", "2019_1", "2019_2", "2019_3", "2019_4", "2020_1", "2020_2", "2020_3",
                   "2021_1", "2021_2", "2021_3"]
 COMMON_DEFINES = ["UNITY_" + v + "_OR_NEWER" for v in UNITY_VERSIONS] + [
-    "UNITY_2021", "UNITY_2021_3", "NET_STANDARD_2_1", "NET_STANDARD", "NETSTANDARD2_1", "NETSTANDARD", "CSHARP_7_3_OR_NEWER", "TRACE",
-    # Opt-in BouncyCastle (#196): defined so its glue and vendored library stay compiled and analyzed.
-    # Nothing else references them, so the other assemblies build the same with or without it.
-    "TURBOHTTP_BOUNCYCASTLE",
-    # Opt-in background networking (#106): defined so the iOS/Android native bridge code paths compile
-    # and are analyzed in the ios/android variants.
-    "TURBOHTTP_BACKGROUND_NETWORKING"]
+    "UNITY_2021", "UNITY_2021_3", "NET_STANDARD_2_1", "NET_STANDARD", "NETSTANDARD2_1", "NETSTANDARD", "CSHARP_7_3_OR_NEWER", "TRACE"]
+# The package's opt-in defines, set in every regular variant and dropped by the *-defaults variants (#870):
+#   TURBOHTTP_BOUNCYCASTLE           (#196) compiles the BouncyCastle glue and the vendored TurboHTTP.SecureProtocol
+#   TURBOHTTP_BACKGROUND_NETWORKING  (#106) compiles the iOS/Android native background bridge code paths
+OPT_IN_DEFINES = ["TURBOHTTP_BOUNCYCASTLE", "TURBOHTTP_BACKGROUND_NETWORKING"]
 VARIANTS = {
     # name: (Unity platform name for include/excludePlatforms, extra defines, editor assemblies visible)
     "editor": ("Editor", ["UNITY_EDITOR", "UNITY_EDITOR_64", "UNITY_EDITOR_OSX", "DEBUG", "ENABLE_MONO"], True),
     "ios": ("iOS", ["UNITY_IOS", "UNITY_IPHONE", "ENABLE_IL2CPP"], False),
     "android": ("Android", ["UNITY_ANDROID", "ENABLE_IL2CPP"], False),
 }
-# Compile-only define variants (#898): name -> (base variant, extra defines). Every assembly of the base
-# variant is rebuilt with the extra defines into <out>/<name>; analyzers off, no doc snippets, warnings
-# outside the ratchet. Add a define here when code or tests sit behind an opt-in no variant above sets.
+# Compile-only define variants (#898): name -> (base variant, added defines, removed defines). Every assembly
+# of the base variant is rebuilt with the changed define set into <out>/<name>; analyzers off, no doc
+# snippets, warnings outside the ratchet. Add a define here when code or tests sit behind an opt-in no
+# variant above sets. The *-defaults variants (#870) build what a project without the opt-in defines
+# compiles: the editor (with Editor/ and Tests/) and a player (android: the mobile #if branches).
 DEFINE_VARIANTS = {
-    "editor-opt-in": ("editor", ["TURBOHTTP_INTEGRATION_TESTS", "TURBOHTTP_USE_SYSTEM_TEXT_JSON"]),
+    "editor-opt-in": ("editor", ["TURBOHTTP_INTEGRATION_TESTS", "TURBOHTTP_USE_SYSTEM_TEXT_JSON"], []),
+    "editor-defaults": ("editor", [], OPT_IN_DEFINES),
+    "android-defaults": ("android", [], OPT_IN_DEFINES),
 }
 # NuGet packages an opt-in define needs to compile (#898). Unity 2021.3 ships no System.Text.Json; a project
 # that defines TURBOHTTP_USE_SYSTEM_TEXT_JSON adds the DLL itself. Keep the version patched.
@@ -280,13 +288,13 @@ def generate(variant, asmdefs, dlls, out=OUT, precompiled=None, tests=True, docs
     when UniTask was fetched). dropped lists (name, missing references) for asmdefs that pass their
     platform and define constraints but reference an assembly the build cannot provide; main() fails on them.
     """
-    base, opt_in = DEFINE_VARIANTS.get(variant, (variant, []))
+    base, added, removed = DEFINE_VARIANTS.get(variant, (variant, [], []))
     compile_only = variant in DEFINE_VARIANTS
     docs = docs and not compile_only
     platform, extra, editor_visible = VARIANTS[base]
     precompiled = precompiled or {}
     packages = packages or {}
-    defines = set(COMMON_DEFINES + extra + opt_in + (["UNITY_INCLUDE_TESTS"] if tests else []))
+    defines = set(COMMON_DEFINES + OPT_IN_DEFINES + extra + added + (["UNITY_INCLUDE_TESTS"] if tests else [])) - set(removed)
     nuget = sorted({p for d in defines for p in DEFINE_PACKAGES.get(d, [])})
     candidates = {n: a for n, a in asmdefs.items() if tests or not (a.get("_tests") or a.get("_external"))}
     chosen = {n: a for n, a in candidates.items() if included(a, platform, asmdef_defines(a, defines, packages))}
@@ -424,9 +432,10 @@ def run_variants(variants, asmdefs, dlls, out=OUT, precompiled=None, tests=True,
     all_errors = []
     for v in variants:
         project, projects, skipped, dropped = generate(v, asmdefs, dlls, out, precompiled, tests, docs, packages)
-        opt_in = DEFINE_VARIANTS.get(v, (v, []))[1]
+        _, added, removed = DEFINE_VARIANTS.get(v, (v, [], []))
         print(f"shadow_build[{v}]: {len(projects)} assemblies (skipped: {', '.join(skipped) or 'none'})"
-              + (f"; compile-only with {', '.join(opt_in)}" if opt_in else ""))
+              + (f"; compile-only with {', '.join(added)}" if added else "")
+              + (f"; compile-only without {', '.join(removed)}" if removed else ""))
         for name, missing in dropped:
             # A silently skipped assembly would hide every error in it (e.g. all of Tests/Runtime).
             failed = True
