@@ -9,8 +9,8 @@
 #     Tools~/unity/build-player.sh --target android-il2cpp [--bouncycastle] --run [--serial <adb serial>] [--arch arm64|x86_64] [--network]
 #     Tools~/unity/build-player.sh --target android-il2cpp [--bouncycastle] --apk <built APK> [--serial <adb serial>] [--network]
 #
-# The project gets Tools~/unity/player-smoke/ as Assets/TurboHttpSmoke/ with no .asmdef:
-# TurboHttpPlayerSmoke.cs runs the rows of TurboHttpSmokeRows.cs WITHOUT any EnsureRegistered() call
+# The project gets Tools~/unity/player-smoke/ as Assets/TurboHttpSmoke/; the smoke itself has no .asmdef
+# (it compiles into Assembly-CSharp) and only H2Rows/ is its own assembly. TurboHttpPlayerSmoke.cs runs the rows of TurboHttpSmokeRows.cs WITHOUT any EnsureRegistered() call
 # (#1 AC1, #7 AC1): transport registration, the link.xml reflection targets (#8), WebSocket JSON (#192),
 # OAuth refresh (#67) and GetJsonCoroutine<T> (#95) offline, and with --network one HTTPS request per
 # TLS provider (#141, #258 AC2) and the HTTP/2-over-TLS rows (#1210, H2Rows/: its own assembly). It logs one "TURBOHTTP_SMOKE ROW <id> PASS|FAIL|SKIP" line per row and
@@ -43,7 +43,9 @@
 # concurrent streams after a warm-up, a streaming read cancelled mid-body then a second 2 MiB download) per
 # TLS provider against an h2-interop file server: TURBOHTTP_H2_ROWS_URL and TURBOHTTP_H2_ROWS_ROOT (what
 # Tools~/h2-interop/run.sh --serve prints; ROOT may be unset for a publicly trusted server), else this script
-# starts run.sh --serve 0 itself (needs dotnet; stopped on exit). The player gets the URL and the root as
+# starts run.sh --serve 0 itself when --bouncycastle is given (needs dotnet; stopped on exit). Without
+# --bouncycastle and without TURBOHTTP_H2_ROWS_URL no provider can run them (SslStream rejects the test root),
+# so no server is started and the rows are SKIP and not required. The player gets the URL and the root as
 # base64 DER (Windows: -turbohttpSmokeH2Url/-turbohttpSmokeH2Root; Android: intent extras
 # turbohttp_smoke_h2_url/_root, and adb reverse for a loopback URL). With --bouncycastle the four
 # h2-*-bouncycastle rows must PASS over HTTP/2 (protocol=h2); the h2-*-sslstream rows must PASS when no root
@@ -162,6 +164,7 @@ check_smoke_log() {
   fi
   if [ "$network" = 1 ]; then
     for row in $h2_rows; do
+      [ -z "$h2_url" ] && break
       [ -z "$h2_root_b64" ] && rows="$rows $row-sslstream"
       [ "$bouncycastle" = 1 ] && rows="$rows $row-bouncycastle"
     done
@@ -182,7 +185,11 @@ check_smoke_log() {
 h2_rows="h2-download h2-upload h2-concurrent h2-stream-cancel"
 h2_url="${TURBOHTTP_H2_ROWS_URL:-}"; h2_root="${TURBOHTTP_H2_ROWS_ROOT:-}"; h2_root_b64=""; h2_pid=""; h2_log=""
 h2_stop() { if [ -n "$h2_pid" ]; then kill "$h2_pid" 2>/dev/null || true; fi; }
-if [ "$network" = 1 ] && [ -z "$h2_url" ]; then
+# The rows need a server a built-in provider can trust: a given URL, or the started one (test root) with
+# --bouncycastle. Otherwise (the plain --network TLS run, #450) they are not run.
+h2_on=0
+if [ "$network" = 1 ] && { [ -n "$h2_url" ] || [ "$bouncycastle" = 1 ]; }; then h2_on=1; fi
+if [ "$h2_on" = 1 ] && [ -z "$h2_url" ]; then
   command -v dotnet >/dev/null || {
     echo "TOOLCHAIN_UNAVAILABLE: --network starts the HTTP/2 row server (Tools~/h2-interop/run.sh --serve), which needs dotnet;" \
       "or set TURBOHTTP_H2_ROWS_URL/_ROOT to a running one"; exit 3; }
@@ -195,6 +202,10 @@ h2_prepared=0
 h2_prepare() {
   { [ "$network" = 1 ] && [ "$h2_prepared" = 0 ]; } || return 0
   h2_prepared=1
+  if [ "$h2_on" = 0 ]; then
+    echo "build-player: HTTP/2 rows not run (no --bouncycastle and no TURBOHTTP_H2_ROWS_URL; SslStream cannot trust the test root)"
+    return 0
+  fi
   if [ -n "$h2_pid" ]; then
     local deadline=$(( $(date +%s) + ${TURBOHTTP_H2_SERVE_WAIT_S:-900} ))
     until grep -q '^serving until' "$h2_log"; do
@@ -301,7 +312,8 @@ if [ "$run" = 1 ]; then
     adbr logcat -c >/dev/null || adb_failed "$?" "logcat -c"
     if [ "$network" = 1 ]; then
       h2_prepare
-      extra=(--es turbohttp_smoke_network 1 --es turbohttp_smoke_h2_url "$h2_url")
+      extra=(--es turbohttp_smoke_network 1)
+      [ -n "$h2_url" ] && extra+=(--es turbohttp_smoke_h2_url "$h2_url")
       [ -n "$h2_root_b64" ] && extra+=(--es turbohttp_smoke_h2_root "$h2_root_b64")
       # A loopback row server is the host's: adb reverse maps the device's port to it.
       local hostport="${h2_url#https://}"; hostport="${hostport%%/*}"
@@ -524,7 +536,8 @@ if [ "$target" != android-il2cpp ]; then
   player_args=(-batchmode -nographics)
   if [ "$network" = 1 ]; then
     h2_prepare
-    player_args+=(-turbohttpSmokeNetwork -turbohttpSmokeH2Url "$h2_url")
+    player_args+=(-turbohttpSmokeNetwork)
+    [ -n "$h2_url" ] && player_args+=(-turbohttpSmokeH2Url "$h2_url")
     [ -n "$h2_root_b64" ] && player_args+=(-turbohttpSmokeH2Root "$h2_root_b64")
   fi
   for _ in 1 2 3; do
