@@ -115,7 +115,9 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 // The request body source fails after the response started.
                 requestBody.Fail();
-                await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await WithWatchdog(dispatch, cts.Token));
+                var dispatchFailure = await TestHelpers.AssertThrowsAsync<UHttpException>(async () => await WithWatchdog(dispatch, cts.Token));
+                Assert.AreEqual(UHttpErrorType.NetworkError, dispatchFailure.HttpError.Type);
+                Http2FailureAssert.IsNotMarkedUnprocessed(dispatchFailure);
                 await AssertResetAsync(serverCodec, headers.StreamId, Http2ErrorCode.Cancel, cts.Token);
                 Assert.AreEqual(0, GetActiveStreams(conn).Count, "the reset removed the stream");
 

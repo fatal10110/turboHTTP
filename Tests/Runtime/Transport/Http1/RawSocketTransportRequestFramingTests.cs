@@ -128,12 +128,13 @@ namespace TurboHTTP.Tests.Transport.Http1
                 using var client = CreateClient(new RawSocketTransport(pool));
                 var connection = await InjectIdleConnectionAsync(pool, server.Port, tcp => new FailBodyWriteStream(tcp));
 
-                AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                 {
                     using var response = await client.Post(server.Url("/upload"))
                         .WithBody(new byte[64 * 1024])
                         .SendBufferedAsync();
                 });
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
 
                 Assert.IsTrue(connection.BodyWriteFailed, "The request body write must have failed.");
                 Assert.AreEqual(1, server.AcceptCount, "A non-idempotent request must not be replayed.");

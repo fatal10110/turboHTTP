@@ -107,7 +107,8 @@ namespace TurboHTTP.Tests.Core
                 });
                 using var client = CreateClient(transport, probe);
 
-                await TestHelpers.AssertThrowsAsync<UHttpException>(() => client.SendStreamingAsync(Get()));
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(() => client.SendStreamingAsync(Get()));
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
 
                 Assert.IsNull(probe.Captured.GetState<string>(ProbeKey));
                 AssertStopped(probe.Captured);

@@ -242,7 +242,7 @@ namespace TurboHTTP.Tests.Core
         [Test]
         public void GetJsonAsync_NonSuccess_Throws()
         {
-            AssertAsync.ThrowsAsync<UHttpException>(() =>
+            var ex = AssertAsync.ThrowsAsync<UHttpException>(() =>
             {
                 return Task.Run(async () =>
                 {
@@ -252,6 +252,7 @@ namespace TurboHTTP.Tests.Core
                         "https://test.com/missing");
                 });
             });
+            Assert.AreEqual(UHttpErrorType.HttpError, ex.HttpError.Type);
         }
 
         [Test]

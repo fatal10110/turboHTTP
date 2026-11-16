@@ -88,7 +88,8 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 // A's dial fails: A fails (no connection to fall back to), B and C dial themselves.
                 failFirst.TrySetResult(true);
-                await TestHelpers.AssertThrowsAsync<UHttpException>(() => taskA);
+                var dialFailure = await TestHelpers.AssertThrowsAsync<UHttpException>(() => taskA);
+                Assert.AreEqual(UHttpErrorType.NetworkError, dialFailure.HttpError.Type);
                 await WaitForConditionAsync(() => origin.Handshakes == 3, cts.Token);
 
                 // The second dial publishes HTTP/2 and serves its request.
@@ -136,7 +137,8 @@ namespace TurboHTTP.Tests.Transport.Http2
                 // A's dial fails: B and C dial themselves. One holds the only permit in handshake 2, the
                 // other waits for that permit.
                 failFirst.TrySetResult(true);
-                await TestHelpers.AssertThrowsAsync<UHttpException>(() => taskA);
+                var dialFailure = await TestHelpers.AssertThrowsAsync<UHttpException>(() => taskA);
+                Assert.AreEqual(UHttpErrorType.NetworkError, dialFailure.HttpError.Type);
                 await WaitForConditionAsync(
                     () => origin.Handshakes == 2 && origin.Connecting() >= 3,
                     cts.Token);

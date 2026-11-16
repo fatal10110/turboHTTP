@@ -269,8 +269,12 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 await serverCodec.WriteFrameAsync(BuildDataFrame(headers.StreamId, "abcdef", endStream: true), cts.Token);
 
-                await TestHelpers.AssertThrowsAsync<UHttpException>(
+                var ex = await TestHelpers.AssertThrowsAsync<UHttpException>(
                     async () => await ReadAllTextAsync(response, cts.Token));
+                // The streaming body reader surfaces the malformed-response error without the protocol exception as cause;
+                // the stream reset below carries the ProtocolError code the client sent.
+                Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
+                Http2FailureAssert.IsNotMarkedUnprocessed(ex);
                 await AssertResetAsync(serverCodec, headers.StreamId, Http2ErrorCode.ProtocolError, cts.Token);
                 Assert.IsTrue(conn.IsAlive);
             });
