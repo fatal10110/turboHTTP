@@ -11,9 +11,12 @@ namespace TurboHTTP.Core
         /// Auto picks the provider before the handshake and never picks one without full
         /// certificate chain validation; a failed handshake (certificate, authentication,
         /// network or platform capability) propagates to the caller with no retry on another
-        /// provider. BouncyCastle does not yet perform full chain validation, so Auto always
-        /// uses SslStream and throws <see cref="System.PlatformNotSupportedException"/> when
-        /// SslStream is unavailable; it never falls back to BouncyCastle.
+        /// provider. BouncyCastle validates chains with the operating system verifier (Windows,
+        /// macOS, iOS, Android), but the macOS, iOS and Android verifiers are not yet validated on
+        /// real hardware and Linux has none (#33, #239, #447), so BouncyCastle is explicit opt-in
+        /// only: Auto always uses SslStream and throws
+        /// <see cref="System.PlatformNotSupportedException"/> when SslStream is unavailable; it never
+        /// falls back to BouncyCastle.
         ///
         /// Unity's SslStream (Editor and players) cannot negotiate ALPN, so Auto connections
         /// complete a plain TLS handshake and use HTTP/1.1 (no HTTP/2). HTTP/2 on Unity needs

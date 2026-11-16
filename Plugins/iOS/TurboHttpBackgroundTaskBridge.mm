@@ -3,8 +3,9 @@
 #include <math.h>
 
 // TurboHTTP background networking bridge (experimental, opt-in): Unity links this file only when
-// the TURBOHTTP_BACKGROUND_NETWORKING scripting define is set (importer define constraint), the
-// same define that compiles the managed IosBackgroundTaskBindings.
+// the TURBOHTTP_BACKGROUND_NETWORKING scripting define is set in Player Settings. Unity 2021.3 ignores
+// importer define constraints for native plugins, so Editor/TurboHttpBackgroundPluginGate.cs gates it
+// with SetIncludeInBuildDelegate. The same define compiles the managed IosBackgroundTaskBindings.
 //
 // Threading: beginBackgroundTaskWithName:expirationHandler: and endBackgroundTask: are documented
 // as safe to call from any thread, so begin/end never hop to the main thread and keep working while

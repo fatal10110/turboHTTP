@@ -1,6 +1,6 @@
 # Agent rules for TurboHTTP
 
-TurboHTTP is a commercial UPM package for Unity 2021.3 LTS (.NET Standard 2.1, C# 9): an HTTP
+TurboHTTP is an MIT-licensed UPM package for Unity 2021.3 LTS (.NET Standard 2.1, C# 9): an HTTP
 client on raw `System.Net.Sockets` with its own HTTP/1.1, HTTP/2 (HPACK, flow control) and
 WebSocket stacks, TLS via `SslStream` or bundled BouncyCastle. Targets: Editor, Standalone, iOS,
 Android (IL2CPP). WebGL is not supported by the socket transport.
