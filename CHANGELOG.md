@@ -78,6 +78,9 @@ fixes, hardening, validation and documentation.
 - Android: JNI calls run on one attached thread (#328, #335).
 - Apple TLS: "no chain to a trusted anchor" (-25318) is reported as `UntrustedRoot` (#333).
 - Managed Stripping Medium/High keeps Mono's configuration init (#453).
+- The vendored BouncyCastle library (`TurboHTTP.SecureProtocol`) compiles only with `TURBOHTTP_BOUNCYCASTLE`,
+  like its glue: without the define no player contains it, including Mono builds with managed stripping
+  Disabled, which shipped it before (#870).
 - HPACK: the `{` Huffman code and the encoder dynamic table cap (#1161).
 - HTTP/1.1 body, 407-drain and WebSocket handshake reads race their token (#345, #226, #1204); pending body
   reads fail on Abort/Dispose and a connection with unread bytes is never pooled (#1174).
@@ -126,7 +129,7 @@ First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); t
 Assemblies shipped in this package: `TurboHTTP.Core`, `TurboHTTP.Transport` (raw-socket HTTP/1.1 and
 HTTP/1.1 over `SslStream`; Unity's `SslStream` sends no ALPN, so HTTP/2 over TLS needs the BouncyCastle backend,
 see `Documentation~/PlatformNotes.md`), `TurboHTTP.Transport.BouncyCastle` (opt-in TLS fallback over the vendored `TurboHTTP.SecureProtocol`
-library, compiled with the `TURBOHTTP_BOUNCYCASTLE` scripting symbol; the vendored `TurboHTTP.SecureProtocol` assembly itself is always compiled), `TurboHTTP.Middleware` (redirect, cookie, decompression and
+library, compiled with the `TURBOHTTP_BOUNCYCASTLE` scripting symbol; in this release the vendored `TurboHTTP.SecureProtocol` assembly itself is always compiled, since #870 (Unreleased) only with the symbol), `TurboHTTP.Middleware` (redirect, cookie, decompression and
 default-header interceptors), `TurboHTTP.Auth` (OAuth 2.0, OIDC, PKCE), `TurboHTTP.Retry`,
 `TurboHTTP.Cache`, `TurboHTTP.RateLimit`, `TurboHTTP.Observability`, `TurboHTTP.Files`, `TurboHTTP.JSON`
 (with a built-in LiteJson reader/writer), `TurboHTTP.Testing` (`MockTransport`, `RecordReplayTransport`),
@@ -207,7 +210,7 @@ authentication and rate limiting are interceptors on `UHttpClientOptions.Interce
   Player Settings > Scripting Define Symbols to compile the `TurboHTTP.Transport.BouncyCastle`
   glue. Without the define, TLS connections with `TlsBackend.BouncyCastle` fail (the provider
   lookup throws `InvalidOperationException`, the inner exception of the request's
-  `UHttpException`) and nothing roots the BouncyCastle library, so IL2CPP builds and Mono builds with managed stripping enabled leave `TurboHTTP.SecureProtocol` out (recorded at stripping High; a Mono build with stripping Disabled ships it). `TlsBackend.Auto` is unchanged
+  `UHttpException`) and nothing roots the BouncyCastle library, so IL2CPP builds and Mono builds with managed stripping enabled leave `TurboHTTP.SecureProtocol` out (recorded at stripping High; in this release a Mono build with stripping Disabled ships it; since #870 (Unreleased) no build without the define contains it). `TlsBackend.Auto` is unchanged
   (it never selects BouncyCastle).
 
 Core public surface reduced before the API freeze (#77, #156). Moved types keep their names; add

@@ -77,16 +77,17 @@ COMPLETE_REFS = {
 # Who sees an assembly and when Unity compiles it (#877): name -> (autoReferenced, defineConstraints,
 # includePlatforms, excludePlatforms). PR CI has no Unity, so this mirrors Tests/Editor/ModuleAutoReferenceTests.cs
 # and BackgroundPluginPackagingTests.cs: user-facing modules are visible to Assembly-CSharp, the opt-in ones
-# (Testing, BouncyCastle) stay explicit, BouncyCastle and the UniTask adapters compile only with their define,
-# socket assemblies skip WebGL. Every Runtime/, Editor/ and Tests/ asmdef needs an entry (the vendored
-# SecureProtocol asmdef included: its settings are ours to check, its code is not). Samples~ asmdefs are
+# (Testing, BouncyCastle) stay explicit, BouncyCastle (the glue and the vendored SecureProtocol library, #870)
+# and the UniTask adapters compile only with their define, socket assemblies skip WebGL. Every Runtime/,
+# Editor/ and Tests/ asmdef needs an entry (the SecureProtocol asmdef included: it is TurboHTTP-owned and kept
+# by the re-vendor sync, so its settings are ours to check; the vendored code is not). Samples~ asmdefs are
 # customer copies checked by the sample rules in check_asmdef and check_docs instead.
 _WEBGL = ["WebGL"]
 ASMDEF_EXPECTED = {
     "TurboHTTP.Core": (True, [], [], []),
     "TurboHTTP.Transport": (True, [], [], _WEBGL),
     "TurboHTTP.Transport.BouncyCastle": (False, ["TURBOHTTP_BOUNCYCASTLE"], [], _WEBGL),
-    "TurboHTTP.SecureProtocol": (False, [], [], _WEBGL),
+    "TurboHTTP.SecureProtocol": (False, ["TURBOHTTP_BOUNCYCASTLE"], [], _WEBGL),
     "TurboHTTP.WebSocket": (True, [], [], []),
     "TurboHTTP.WebSocket.Transport": (True, [], [], _WEBGL),
     "TurboHTTP.Unity.WebSocket": (True, [], [], []),

@@ -2,8 +2,9 @@
 # Local quality gate. CI runs the same steps (.github/workflows/ci.yml).
 #
 #   Tools~/ci/check.sh            fast: repo invariants, format, shadow build incl. Tests/ (editor variant)
-#   Tools~/ci/check.sh --full     also iOS/Android shadow builds, the compile-only opt-in define variant
-#                                 (#898), the fuzz corpus replay (#880), workflow/shell/python linters
+#   Tools~/ci/check.sh --full     also iOS/Android shadow builds, the compile-only define variants (with the
+#                                 opt-in test defines, #898; without the package's opt-in defines, #870),
+#                                 the fuzz corpus replay (#880), workflow/shell/python linters
 #   Tools~/ci/check.sh --fix      apply whitespace formatting instead of verifying it
 #   Tools~/ci/check.sh --no-unitask  offline: skip the pinned UniTask fetch (the UniTask adapters are not built)
 #
@@ -63,7 +64,7 @@ if [ "$full" = 1 ]; then
   fi
   python3 "Tools~/ci/test_doc_snippets.py" -q || fail "doc snippet harness tests"
   python3 "Tools~/ci/test_banned_symbols.py" -q || fail "banned-symbol (sync-over-async) gate test"
-  python3 "Tools~/ci/test_shadow_build_tests.py" -q || fail "shadow build of Tests/ (Unity NUnit) and opt-in define gate test"
+  python3 "Tools~/ci/test_shadow_build_tests.py" -q || fail "shadow build of Tests/ (Unity NUnit) and define variant gate test"
   python3 "Tools~/ci/test_check_repo_asmdef.py" -q || fail "asmdef and native plugin invariant test"
   python3 "Tools~/ci/test_il2cpp_filter_check.py" -q || fail "il2cppfilter invariant test"
   python3 "Tools~/ci/test_unity_modules.py" -q || fail "package.json built-in module check test"

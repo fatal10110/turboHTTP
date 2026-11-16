@@ -11,7 +11,10 @@ Before #297 the shadow build never compiled Tests/, so none of these failures su
 
 The compile-only editor-opt-in variant (#898) must fail on a compile error inside
 #if TURBOHTTP_INTEGRATION_TESTS that the editor variant never sees, and compile System.Text.Json code
-behind TURBOHTTP_USE_SYSTEM_TEXT_JSON against the DEFINE_PACKAGES package.
+behind TURBOHTTP_USE_SYSTEM_TEXT_JSON against the DEFINE_PACKAGES package. The *-defaults variants (#870)
+build without the package's opt-in defines: an always-compiled assembly that references an assembly
+constrained by TURBOHTTP_BOUNCYCASTLE must fail as DROPPED there, and so must a compile error that only
+appears when TURBOHTTP_BACKGROUND_NETWORKING is not defined (both pass the editor variant, which sets them).
 
 Needs the .NET SDK and the fetched Unity DLLs + packages (Tools~/ci/fetch-unity-dlls.sh). Skips when
 they are missing locally; fails under CI, where check.sh --full always has them.
@@ -82,6 +85,12 @@ GUARDED_ERROR = """#if TURBOHTTP_INTEGRATION_TESTS
         public void Guarded() { Assert.AreEqual(1, notDeclaredAnywhere); }
 #endif
 """
+# Compiled only in a project without the opt-in define (#870); the regular variants all set it.
+DEFINE_OFF_ERROR = """#if !TURBOHTTP_BACKGROUND_NETWORKING
+        [Test]
+        public void DefineOff() { Assert.AreEqual(1, notDeclaredAnywhere); }
+#endif
+"""
 SYSTEM_TEXT_JSON = """#if TURBOHTTP_USE_SYSTEM_TEXT_JSON
         [Test]
         public void Serializes()
@@ -93,12 +102,13 @@ SYSTEM_TEXT_JSON = """#if TURBOHTTP_USE_SYSTEM_TEXT_JSON
 """
 
 
-def write_case(src, name, body, references=("UnityEngine.TestRunner", "UnityEditor.TestRunner")):
+def write_case(src, name, body, references=("UnityEngine.TestRunner", "UnityEditor.TestRunner"),
+               constraints=("UNITY_INCLUDE_TESTS",)):
     d = os.path.join(src, "Tests", name)
     os.makedirs(d)
     asmdef = {"name": name, "references": list(references), "includePlatforms": [], "excludePlatforms": [],
               "overrideReferences": True, "precompiledReferences": ["nunit.framework.dll"],
-              "autoReferenced": False, "defineConstraints": ["UNITY_INCLUDE_TESTS"]}
+              "autoReferenced": False, "defineConstraints": list(constraints)}
     with open(os.path.join(d, name + ".asmdef"), "w") as f:
         json.dump(asmdef, f)
     with open(os.path.join(d, name + ".cs"), "w") as f:
@@ -163,6 +173,26 @@ class ShadowBuildTestsTest(unittest.TestCase):
         failed, _, errors = self.build("optin-good", [("SystemTextJson", SYSTEM_TEXT_JSON)], variants=("editor-opt-in",))
         self.assertFalse(failed, errors)
         self.assertEqual([], errors)
+
+    def test_defaults_variants_build_without_the_opt_in_defines(self):
+        for v in ("editor-defaults", "android-defaults"):
+            self.assertIn(v, shadow_build.ALL_VARIANTS, "--variant all (check.sh --full) must build " + v)
+            self.assertEqual(set(shadow_build.OPT_IN_DEFINES), set(shadow_build.DEFINE_VARIANTS[v][2]), v)
+        runner = ("UnityEngine.TestRunner", "UnityEditor.TestRunner")
+        # Shaped like the BouncyCastle assemblies: compiled only with TURBOHTTP_BOUNCYCASTLE.
+        opt_in_only = ("OptInOnly", VALID, runner, ("UNITY_INCLUDE_TESTS", "TURBOHTTP_BOUNCYCASTLE"))
+        needs_opt_in = ("NeedsOptIn", VALID, runner + ("OptInOnly",))
+        failed, _, errors = self.build("defaults-editor", [opt_in_only, needs_opt_in, ("DefineOffError", DEFINE_OFF_ERROR)])
+        self.assertFalse(failed, errors)
+        for v in ("editor-defaults", "android-defaults"):
+            failed, _, errors = self.build(v + "-bad", [opt_in_only, needs_opt_in, ("DefineOffError", DEFINE_OFF_ERROR)],
+                                           variants=(v,))
+            self.assertTrue(failed, v + ": a project without the opt-in defines must fail check.sh --full")
+            self.assertIn({"file": "", "line": "0", "rule": "DROPPED", "msg": "NeedsOptIn"}, errors, v)
+            self.assertTrue([e for e in errors if os.path.basename(e["file"]) == "DefineOffError.cs"
+                             and e["rule"] == "CS0103"], errors)
+            failed, _, errors = self.build(v + "-good", [opt_in_only, ("ValidTests", VALID)], variants=(v,))
+            self.assertFalse(failed, errors)
 
 
 if __name__ == "__main__":

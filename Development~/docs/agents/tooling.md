@@ -10,7 +10,7 @@ cloud agent containers).
 | --- | --- | --- | --- |
 | Repo invariants: every imported asset has a `.meta`, no orphan/duplicate GUIDs, asmdef dependency graph follows `architecture.md`, JSON/asmdef/package.json valid | `python3 "Tools~/ci/check_repo.py"` | `lint` | yes |
 | Whitespace format (`.editorconfig`, `dotnet format whitespace`) | `"Tools~/ci/check.sh"` (`--fix` to apply) | `lint` | yes |
-| Shadow build: every runtime/editor/sample asmdef compiled by the .NET SDK for the Editor, iOS and Android define sets, with Roslyn analyzers and banned APIs (`Tools~/ci/BannedSymbols.txt`), warnings ratcheted by `Tools~/ci/analyzer-baseline.txt`; the `Tests/` asmdefs compiled against Unity's own NUnit (compile errors only, #297); with `--full` also the compile-only `editor-opt-in` variant, which rebuilds everything with `TURBOHTTP_INTEGRATION_TESTS` and `TURBOHTTP_USE_SYSTEM_TEXT_JSON` (compile errors only, #898) | `"Tools~/ci/check.sh"` (editor) / `--full` (all) | `lint` | yes |
+| Shadow build: every runtime/editor/sample asmdef compiled by the .NET SDK for the Editor, iOS and Android define sets, with Roslyn analyzers and banned APIs (`Tools~/ci/BannedSymbols.txt`), warnings ratcheted by `Tools~/ci/analyzer-baseline.txt`; the `Tests/` asmdefs compiled against Unity's own NUnit (compile errors only, #297); with `--full` also the compile-only `editor-opt-in` variant, which rebuilds everything with `TURBOHTTP_INTEGRATION_TESTS` and `TURBOHTTP_USE_SYSTEM_TEXT_JSON` (#898), and the compile-only `editor-defaults` and `android-defaults` variants, which rebuild without the package's opt-in `TURBOHTTP_BOUNCYCASTLE` and `TURBOHTTP_BACKGROUND_NETWORKING` that every other variant sets, as most projects compile (#870) (compile errors only) | `"Tools~/ci/check.sh"` (editor) / `--full` (all) | `lint` | yes |
 | Fuzz corpus replay: every committed seed of every target in `Tools~/fuzz/corpus` against the shadow-built DLLs; a crash or hang fails (#880) | `"Tools~/ci/check.sh" --full` (or `"Tools~/fuzz/run.sh"`) | `lint` | yes |
 | Coverage-guided fuzzing (SharpFuzz + libFuzzer, one job per target) on PRs touching the parsers, weekly and on demand (#112) | `"Tools~/fuzz/run.sh" --driver libfuzzer` | `fuzz` (path-filtered, so it cannot be required) | no; advisory, findings become issues (#880) |
 | actionlint, shellcheck, Python tool tests, issue-seed validation | `"Tools~/ci/check.sh" --full` | `lint` | yes |
@@ -187,7 +187,7 @@ outside the ratchet: test projects build without analyzers and only their compil
 - Deliberate exception (rare): run `python3 "Tools~/ci/shadow_build.py" --variant all --update-baseline`
   and explain the new baseline line in the PR.
 - Fixed an existing one: `--update-baseline` shrinks the file; commit it.
-- Vendored code (`Runtime/Transport/BouncyCastle/Lib/**`) is compiled but never analyzed or formatted.
+- Vendored code (`Runtime/Transport/BouncyCastle/Lib/**`) is compiled (with `TURBOHTTP_BOUNCYCASTLE`) but never analyzed or formatted.
 
 ### Adding files without Unity
 
