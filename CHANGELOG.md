@@ -16,17 +16,22 @@ fixes, hardening, validation and documentation.
   PING probe (#238, #396).
 - The HTTP/2 response handler chain runs off the read loop (#29, #393).
 - `UHttpClient.DisposeAsync` awaits plugin shutdown before disposing interceptors and the transport (#385).
-- `WebSocket` `DisposeAsync` sends a Close frame (1000) instead of aborting (#301, #390).
-- HTTP/1.1 repeats a request once without `Expect: 100-continue` after an early 417 (#214, #392).
-- `LiteJson` follows the RFC 8259 grammar strictly, accepts a BOM, reads UTC timestamps, has
-  `MaxInputBytes` and throws `NotSupportedException` for POCOs (#75, #395).
 - Public API reference documentation: the public Core, Transport, proxy, middleware, auth, cache, retry,
   WebSocket and Unity surfaces carry XML docs, and CS1591 is enforced for Core and Transport
   (#1228-#1233).
-- Download verification runs whenever an expected hash is set, not only with `VerifyChecksum` (#1201).
-- Unity texture and audio decodes are bounded by default and fail closed on unreadable image headers (#1200).
 
 ### Changed
+- `WebSocket` `DisposeAsync` sends a Close frame (1000) instead of aborting (#301, #390).
+- `LiteJson` follows the RFC 8259 grammar strictly (invalid JSON that parsed before now throws), accepts a
+  BOM, reads UTC timestamps, has `MaxInputBytes` and throws `NotSupportedException` for POCOs (#75, #395).
+- Download verification runs whenever an expected hash is set, not only with `VerifyChecksum` (#1201).
+- Unity texture and audio decodes are bounded by default and fail closed on unreadable image headers (#1200).
+- `SslStream` connections request ALPN through the netstandard2.1 API without reflection, and report no
+  ALPN or HTTP/2 where the runtime cannot negotiate it (#303, #381, #418, #430).
+- The wire host is checked as an RFC 3986 host before any socket opens (#340, #358); `localhost` names
+  resolve to loopback without the platform resolver (#322, #351).
+- Happy Eyeballs interleaves address families (#361, #362, #373).
+- WebSocket sends the A-label wire host in the `Host` header and CONNECT authority (#309, #371).
 - Decompression is bounded: chain cap, per-layer work budget and all `Content-Encoding` lines are
   honored (#1162); Range requests skip content coding and 206 passes through undecoded (#1172).
 - HTTP/1.1: empty POST/PUT/PATCH are framed, request `Connection: close` is honored (#1165); response field
@@ -62,6 +67,17 @@ fixes, hardening, validation and documentation.
   asmdef settings (#1224); allocation gates use counted bytes with measured baselines (#881).
 
 ### Fixed
+- HTTP/1.1 repeats a request once without `Expect: 100-continue` after an early 417 (#214, #392).
+- WebSocket: a disconnect of the replacement connection is never lost during a reconnect (#427).
+- Socket channels: cancellation wins over any I/O error (#410, #415, #425); no new socket is opened while
+  an abandoned socket read is pending (IL2CPP descriptor reuse, #369, #377); `PollSelect` `SendAsync` no
+  longer blocks on a full send buffer (#329, #339).
+- The HTTP/1.1 head read and the CONNECT reply read race the cancellation token (#293, #346).
+- IL2CPP: exceptions thrown in catch clauses stay out of sibling clauses and the HTTP/2 stream is claimed
+  before cancel (#318, #320, #334).
+- Android: JNI calls run on one attached thread (#328, #335).
+- Apple TLS: "no chain to a trusted anchor" (-25318) is reported as `UntrustedRoot` (#333).
+- Managed Stripping Medium/High keeps Mono's configuration init (#453).
 - HPACK: the `{` Huffman code and the encoder dynamic table cap (#1161).
 - HTTP/1.1 body, 407-drain and WebSocket handshake reads race their token (#345, #226, #1204); pending body
   reads fail on Abort/Dispose and a connection with unread bytes is never pooled (#1174).

@@ -64,8 +64,9 @@ Gates worth knowing:
     `Tools~/ci/api-baseline/core-public-types.txt` (`python3 'Tools~/ci/check_repo.py' coreapi`, at most
     60 types). Prefer `internal`; a deliberate public addition updates the baseline and is called out in
     the PR.
-*   **Doc snippets.** C# blocks in `Documentation~/` and `README.md` are compiled by
-    `python3 'Tools~/ci/doc_snippets.py'`; a snippet that does not compile fails the gate.
+*   **Doc snippets.** C# blocks in `Documentation~/` and `README.md` are extracted by
+    `python3 'Tools~/ci/doc_snippets.py'` and compiled by the `TurboHTTP.DocSnippets` project in the shadow
+    build of `check.sh`; a snippet that does not compile fails the gate.
 *   **Unity tests do not run in PR CI** (no license, #188). Run only the tests your change can affect with
     `'./Tools~/unity/run-tests.sh' --platform EditMode|PlayMode --filter <regex>`; the full suites run
     periodically in a host editor. Details: `Development~/docs/agents/tooling.md` and
