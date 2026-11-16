@@ -5,6 +5,9 @@
 # host numbers. An unfiltered run that skips more than its entry exits 4. Each counted skip is listed
 # below with its issue or platform reason; any other skip means a test silently stopped executing, so
 # investigate before raising a number, and list every raise here with its test and reason (#319).
+# A not-selected [Explicit] test (Unity reports it as Skipped, label="Explicit") is listed as EXPLICIT and not
+# counted on any target (#1235): it is opt-in by design, e.g. the two #384 ReusedConnectionFirstByteTimeoutTests
+# Loop384_*_200x stress loops (#455), which run only when a filter selects them.
 #
 # PlayMode 3, all permanent on the Windows host editor (Unity 2021.3, Mono):
 #   1 SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName("127.0.0.1")

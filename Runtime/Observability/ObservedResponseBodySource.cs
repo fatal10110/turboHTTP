@@ -27,7 +27,12 @@ namespace TurboHTTP.Observability
         internal Exception Error { get; }
     }
 
-    internal sealed class ObservedResponseBodySource : IResponseBodySource
+    /// <summary>
+    /// Forwards the inner body unchanged and reports the bytes read and the completion to the Logging, Metrics
+    /// and Monitor handlers. It is a <see cref="IPassThroughResponseBodySource"/>: an observe-only plugin may
+    /// forward it without <c>MutateResponses</c> (#1235), so it must never change what a reader sees.
+    /// </summary>
+    internal sealed class ObservedResponseBodySource : IResponseBodySource, IPassThroughResponseBodySource
     {
         private readonly IResponseBodySource _inner;
         private readonly Action<ReadOnlyMemory<byte>> _onChunkRead;
@@ -50,6 +55,8 @@ namespace TurboHTTP.Observability
         }
 
         public long? Length => _inner.Length;
+
+        IResponseBodySource IPassThroughResponseBodySource.Inner => _inner;
 
         public bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
         {

@@ -80,6 +80,26 @@ class SummarizeResultsTest(unittest.TestCase):
         code, _ = self.run_summary(results_xml(None), filtered=True)
         self.assertEqual(4, code)
 
+    def test_not_selected_explicit_tests_are_listed_but_not_counted(self):
+        # Unity reports an [Explicit] test that an unfiltered run did not select as Skipped/Explicit (#384, #1235).
+        explicit = ('<test-case name="E{0}" fullname="N.T.Explicit{0}" runstate="Explicit" result="Skipped" '
+                    'label="Explicit"><reason><message><![CDATA[200 iterations (#384)]]></message></reason>'
+                    '</test-case>')
+        with_explicit = lambda xml: xml.replace("</test-suite>", explicit.format(0) + explicit.format(1) + "</test-suite>")
+        code, out = self.run_summary(with_explicit(results_xml("[env] a", "[env] b")))
+        self.assertEqual(0, code)
+        self.assertIn("EXPLICIT N.T.Explicit0: 200 iterations (#384)", out)
+        self.assertNotIn("SKIP N.T.Explicit", out)
+        self.assertIn("skipped=2 within baseline 2 for PlayMode (2 not-selected [Explicit] not counted)", out)
+        # An Explicit test without a reason is not an unexplained skip either.
+        bare = '<test-case name="E" fullname="N.T.Bare" runstate="Explicit" result="Skipped" label="Explicit" />'
+        code, _ = self.run_summary(results_xml().replace("</test-suite>", bare + "</test-suite>"), filtered=True)
+        self.assertEqual(0, code)
+        # Real skips still count next to the Explicit ones.
+        code, out = self.run_summary(with_explicit(results_xml("[env] a", "[env] b", "[env] c")))
+        self.assertEqual(4, code)
+        self.assertIn("3 skipped > baseline 2", out)
+
     def test_missing_platform_entry_fails_unfiltered_run(self):
         self.baseline.write_text("EditMode 0\n", encoding="utf-8")
         code, out = self.run_summary(results_xml(), platform="PlayMode")
