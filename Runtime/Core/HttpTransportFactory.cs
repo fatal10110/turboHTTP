@@ -10,6 +10,11 @@ namespace TurboHTTP.Core
     /// registered by TurboHTTP's startup bootstrap (a RuntimeInitializeOnLoadMethod in the
     /// TurboHTTP.Complete assembly) through <c>RawSocketTransport.EnsureRegistered()</c>.
     /// </summary>
+    /// <remarks>
+    /// The registered factories and <see cref="SetForTesting"/> must produce TurboHTTP's own transports
+    /// (<c>RawSocketTransport</c> or a TurboHTTP.Testing transport): third-party
+    /// <see cref="IHttpTransport"/> implementations are not supported in 1.0 (see <see cref="IHttpTransport"/>).
+    /// </remarks>
     public static class HttpTransportFactory
     {
         private static volatile Func<IHttpTransport> _factory;

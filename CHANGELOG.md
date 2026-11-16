@@ -65,6 +65,11 @@ fixes, hardening, validation and documentation.
   cleartext policy is rooted in the Complete bootstrap (#1214).
 - Tooling: `Tools~/ci/check.sh` gates compile the opt-in define code, replay the fuzz corpus and pin
   asmdef settings (#1224); allocation gates use counted bytes with measured baselines (#881).
+- Transports: 1.0 supports only TurboHTTP's own transports (`RawSocketTransport` and the `TurboHTTP.Testing`
+  transports); third-party `IHttpTransport` implementations are not supported and the custom-transport
+  example is gone from the docs. Public custom transport support is planned (#574, #1237).
+  `UHttpRequestBody` has a `private protected` constructor, which states the closed body hierarchy (no
+  subclass outside TurboHTTP could compile before either).
 
 ### Fixed
 - HTTP/1.1 repeats a request once without `Expect: 100-continue` after an early 417 (#214, #392).

@@ -40,8 +40,8 @@ The managed decoder adapters behind the last three defines are stubs today: with
 
 | Type | Members worth knowing |
 | --- | --- |
-| `HttpTransportFactory` | `Register`, `RegisterCapabilities`, `Capabilities` (`TransportCapabilities`: `None`, `Http2`), `Default`, `CreateWithBackend`, `CreateWithOptions`. |
-| `IHttpHandler`, `IResponseBodySource` | The callback and the pull-based body contracts custom transports and interceptors implement; `IResponseBodySource.GetTrailersAsync` returns response trailers. |
+| `HttpTransportFactory` | `Register`, `RegisterCapabilities`, `Capabilities` (`TransportCapabilities`: `None`, `Http2`), `Default`, `CreateWithBackend`, `CreateWithOptions`. The registered factories must produce TurboHTTP's own transports (1.0 supports no third-party transports). |
+| `IHttpHandler`, `IResponseBodySource` | The callback and the pull-based body contracts that TurboHTTP's transports and interceptors implement (third-party transports are not supported in 1.0, see [Supported transports](Transport.md#supported-transports)); `IResponseBodySource.GetTrailersAsync` returns response trailers. |
 | `IHttpPlugin`, `PluginCapabilities` | `UHttpClient.RegisterPluginAsync`, `GetRegisteredPlugins`. Capabilities (flags): `ObserveRequests`, `ReadOnlyMonitoring`, `MutateRequests`, `MutateResponses`, `HandleErrors`, `Diagnostics`, `AllowRedispatch`. Lifecycle (`PluginLifecycleState`): `Created`, `Initializing`, `Initialized`, `Faulted`, `ShuttingDown`, `Disposed`. `UHttpClientOptions.PluginShutdownTimeout` bounds shutdown. |
 | `ConnectionPoolOptions` (`options.ConnectionPool`) | `MaxConnectionsPerHost`, `ConnectionIdleTimeout`, `DnsTimeoutMs`, `ConnectTimeout`, `ReusedConnectionFirstByteTimeout`, `HappyEyeballs`, `SocketIoMode`. |
 | `SocketIoMode` | `NetworkStream` (default, most compatible), `Saea` (lower allocation socket I/O), `PollSelect`. |
