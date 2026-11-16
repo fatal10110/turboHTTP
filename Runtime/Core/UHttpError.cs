@@ -8,7 +8,7 @@ namespace TurboHTTP.Core
     /// </summary>
     public enum UHttpErrorType
     {
-        /// <summary>Network connectivity issue (no internet, DNS failure, connection refused)</summary>
+        /// <summary>Network connectivity issue (no internet, DNS failure, connection refused, reset) or a bounded size was exceeded</summary>
         NetworkError,
 
         /// <summary>Request timeout</summary>
@@ -17,10 +17,10 @@ namespace TurboHTTP.Core
         /// <summary>HTTP error status code (4xx, 5xx)</summary>
         HttpError,
 
-        /// <summary>SSL/TLS certificate validation failure</summary>
+        /// <summary>SSL/TLS certificate validation or handshake (authentication) failure</summary>
         CertificateError,
 
-        /// <summary>Request cancelled by user</summary>
+        /// <summary>Reserved: the client never raises this type. Cancelling through a <see cref="System.Threading.CancellationToken"/> throws <see cref="OperationCanceledException"/>.</summary>
         Cancelled,
 
         /// <summary>Invalid request configuration</summary>

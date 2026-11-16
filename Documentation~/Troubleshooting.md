@@ -51,9 +51,9 @@ Common issues and solutions for TurboHTTP.
 ## Tools
 
 ### HTTP Monitor Window
-If the HTTP Monitor (Window -> TurboHTTP -> Monitor) is empty:
+If the HTTP Monitor (Window > TurboHTTP > HTTP Monitor) is empty:
 1.  Ensure **Enable HTTP Monitor** is checked in Preferences -> TurboHTTP.
-2.  Ensure you have `include HTTP Monitor` defined in your build settings/defines if using custom defines.
+2.  Create your `UHttpClient` in `Awake` or `Start`, not in a field initializer or constructor of a `MonoBehaviour`. The client decides whether to install the monitor interceptor when it is constructed, and it can only do that while `Application.isPlaying` is true. Unity can construct a component outside play mode and during deserialization, so a client built there is created without the monitor interceptor and the requests you watch are sent by a different, unmonitored client.
 
 ### Logging
 Enable detailed logging to debug issues:
@@ -62,8 +62,10 @@ Enable detailed logging to debug issues:
 ```csharp
 using TurboHTTP.Observability;
 
-options.Interceptors.Insert(0, new LoggingInterceptor(Debug.Log, LoggingInterceptor.LogLevel.Detailed));
+options.Interceptors.Insert(0, new LoggingInterceptor(Debug.Log, LoggingInterceptor.LogLevel.Detailed, logHeaders: true));
 ```
+
+Sensitive header values are redacted by default, but logged bodies (`logBody: true`) are not redacted. See [Modules and manual registration](Modules/ModulesAndRegistration.md#http-monitor) for the HTTP Monitor settings.
 
 ### Library warnings on devices
 Failures TurboHTTP swallows on purpose (background cache stores, dispose-time errors) appear as

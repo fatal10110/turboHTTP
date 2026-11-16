@@ -8,9 +8,11 @@ using TurboHTTP.Core;
 namespace TurboHTTP.Cache
 {
     /// <summary>
-    /// Thread-safe in-memory cache with bounded size and LRU eviction.
+    /// Thread-safe in-memory cache with bounded size and LRU eviction. Defaults: 100 entries and 10 MiB.
     /// </summary>
     /// <remarks>
+    /// <see cref="GetAsync"/> and <see cref="SetAsync"/> clone the entry, so callers and the storage never share
+    /// mutable state.
     /// Entries leave only through the entry/size bounds (least recently used first) or explicit
     /// removal. Freshness is the cache middleware's decision: a stale entry with a validator is kept
     /// for conditional revalidation (RFC 9111 section 4.3).
@@ -36,6 +38,12 @@ namespace TurboHTTP.Cache
             public long SizeBytes;
         }
 
+        /// <summary>
+        /// Creates an in-memory storage.
+        /// </summary>
+        /// <param name="maxEntries">Maximum number of entries; the least recently used entry is evicted beyond it. Default 100.</param>
+        /// <param name="maxSizeBytes">Maximum estimated total size in bytes (body plus a fixed per-entry overhead); least recently used entries are evicted beyond it. Default 10 MiB.</param>
+        /// <exception cref="ArgumentOutOfRangeException">A limit is not greater than 0.</exception>
         public MemoryCacheStorage(int maxEntries = 100, long maxSizeBytes = 10 * 1024 * 1024)
         {
             if (maxEntries <= 0)
@@ -50,6 +58,12 @@ namespace TurboHTTP.Cache
         /// <summary>Entry limit; bounds the interceptor's in-memory variant index (#60).</summary>
         internal int MaxEntries => _maxEntries;
 
+        /// <summary>
+        /// Gets a copy of the entry for <paramref name="key"/> and marks it most recently used. Returns null when missing.
+        /// The caller owns the returned clone; mutating it does not change the stored entry.
+        /// </summary>
+        /// <exception cref="ArgumentException"><paramref name="key"/> is null or empty.</exception>
+        /// <exception cref="ObjectDisposedException">The storage is disposed.</exception>
         public async Task<CacheEntry> GetAsync(string key, CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
@@ -72,6 +86,13 @@ namespace TurboHTTP.Cache
             }
         }
 
+        /// <summary>
+        /// Stores a copy of <paramref name="entry"/> under <paramref name="key"/>, replacing an existing entry, then evicts least recently
+        /// used entries until both limits hold. An entry larger than the size limit is not stored.
+        /// </summary>
+        /// <exception cref="ArgumentException"><paramref name="key"/> is null or empty.</exception>
+        /// <exception cref="ArgumentNullException"><paramref name="entry"/> is null.</exception>
+        /// <exception cref="ObjectDisposedException">The storage is disposed.</exception>
         public async Task SetAsync(string key, CacheEntry entry, CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
@@ -119,6 +140,9 @@ namespace TurboHTTP.Cache
             }
         }
 
+        /// <summary>
+        /// Removes the entry for <paramref name="key"/> if present.
+        /// </summary>
         public async Task RemoveAsync(string key, CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
@@ -138,6 +162,9 @@ namespace TurboHTTP.Cache
             }
         }
 
+        /// <summary>
+        /// Removes all entries.
+        /// </summary>
         public async Task ClearAsync(CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
@@ -155,6 +182,9 @@ namespace TurboHTTP.Cache
             }
         }
 
+        /// <summary>
+        /// Gets the current number of entries.
+        /// </summary>
         public async Task<int> GetCountAsync(CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
@@ -170,6 +200,9 @@ namespace TurboHTTP.Cache
             }
         }
 
+        /// <summary>
+        /// Gets the current estimated size in bytes (bodies plus a fixed per-entry overhead).
+        /// </summary>
         public async Task<long> GetSizeAsync(CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
@@ -185,6 +218,9 @@ namespace TurboHTTP.Cache
             }
         }
 
+        /// <summary>
+        /// Releases the storage. Later calls throw <see cref="ObjectDisposedException"/>. Safe to call more than once.
+        /// </summary>
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

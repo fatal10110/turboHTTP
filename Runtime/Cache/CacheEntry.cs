@@ -34,7 +34,11 @@ namespace TurboHTTP.Cache
         public string VaryKey { get; }
         /// <summary> Gets the duration this entry can be served stale while revalidating in the background. </summary>
         public TimeSpan? StaleWhileRevalidate { get; }
-        /// <summary> Gets a value indicating whether this entry must be revalidated with the origin. </summary>
+        /// <summary>
+        /// Gets a value indicating whether this entry must be revalidated with the origin before every reuse
+        /// (<c>must-revalidate</c> or <c>no-cache</c>, RFC 9111 section 5.2.2). When true the entry is never served fresh and
+        /// <see cref="StaleWhileRevalidate"/> does not apply.
+        /// </summary>
         public bool MustRevalidate { get; }
         /// <summary>
         /// Gets the response trailer fields, kept apart from <see cref="Headers"/> (RFC 9111 section 3.1) and replayed on
@@ -167,6 +171,10 @@ namespace TurboHTTP.Cache
             return now < CacheDeltaSeconds.AddClamped(ExpiresAtUtc.Value, window);
         }
 
+        /// <summary>
+        /// Creates a copy that shares no mutable state with this entry (headers, trailers and the body bytes are copied).
+        /// <see cref="ICacheStorage"/> implementations use it to hand out and keep independent snapshots.
+        /// </summary>
         public CacheEntry Clone()
         {
             return new CacheEntry(

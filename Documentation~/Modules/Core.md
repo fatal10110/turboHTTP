@@ -23,7 +23,7 @@ var myClient = new UHttpClient(options);
 
 ### Lifecycle
 
-Dispose the `UHttpClient` when you are done, to release the connection pool and other resources it owns.
+Dispose the `UHttpClient` when you are done. It releases what the client owns: its interceptors if `DisposeInterceptors` is set, and the transport, but only if the client created it (a non-default `TlsBackend`, `ConnectionPool`, `Http2` or `Streaming` option) or you set `DisposeTransport` for your own `Transport`. A client with default options uses the shared default transport: disposing it closes no connection and cancels no in-flight request, and idle sockets close after the pool idle timeout (`ConnectionPoolOptions.ConnectionIdleTimeout`, 2 minutes on desktop, 45 seconds on mobile). Stop in-flight requests with their `CancellationToken`.
 
 <!-- snippet: with UHttpClient myClient = new UHttpClient(); -->
 ```csharp
@@ -61,7 +61,7 @@ using var response = await client.Post("/users")
 
 `MyDto` here and below is a `[Serializable]` class with public fields; see [JSON serializers](../APIReference.md#json-serializers) for the shapes the default serializer reads and how to register another one.
 
-A request is single-use: sending it (or calling `Dispose()`) ends its lease, and any further use throws `ObjectDisposedException`. A relative URL is resolved against `UHttpClientOptions.BaseUrl`.
+A request is single-use: sending it (or calling `Dispose()`) ends its lease, and any further use throws `ObjectDisposedException`. A relative URL is appended to `UHttpClientOptions.BaseUrl` as a prefix, not resolved as an RFC 3986 reference: leading slashes are stripped, so with `BaseUrl = "https://host/api/v1"` both `/users` and `users` give `https://host/api/v1/users`, and `//other/x` stays on `host`. Put the version segment in `BaseUrl`.
 
 ### Request bodies
 
@@ -93,7 +93,7 @@ if (response.IsSuccessStatusCode)
 }
 ```
 
-**Streaming:** `SendStreamingAsync()` returns a `UHttpStreamingResponse` as soon as the status and headers have arrived. Read `Body` (a `Stream`) at your own pace, so a large download never sits in memory. The response owns the connection until you dispose it; always dispose it, also when you stop reading early (disposing aborts the rest of the transfer).
+**Streaming:** `SendStreamingAsync()` returns a `UHttpStreamingResponse` as soon as the status and headers have arrived. Read `Body` (a `Stream`) at your own pace with `ReadAsync` or `CopyToAsync` (a synchronous `Read` blocks the thread and cannot be cancelled), so a large download never sits in memory. The response owns the connection until you dispose it; always dispose it, also when you stop reading early (disposing aborts the rest of the transfer).
 
 <!-- snippet: with UHttpClient client = null; CancellationToken ct = default; -->
 ```csharp
@@ -107,6 +107,22 @@ while ((read = await streaming.Body.ReadAsync(buffer, 0, buffer.Length, ct)) > 0
 }
 HttpHeaders trailers = await streaming.GetTrailersAsync(ct); // available after the body reached its end
 ```
+
+The request timeout does not cover the body: for `SendStreamingAsync` it ends when the response headers arrive, and a stalled body read waits until the OS drops the connection unless you cancel it. Bound the transfer with a token, for example an overall limit:
+
+<!-- snippet: with UHttpClient client = null; CancellationToken ct = default; -->
+```csharp
+using var cts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+cts.CancelAfter(TimeSpan.FromMinutes(5)); // overall limit for headers and body
+await using var bounded = await client.Get("https://example.com/big.bin").SendStreamingAsync(cts.Token);
+var chunk = new byte[16 * 1024];
+while (await bounded.Body.ReadAsync(chunk, 0, chunk.Length, cts.Token) > 0)
+{
+    // consume chunk
+}
+```
+
+For an idle-read timeout, keep a second `CancellationTokenSource` linked to the overall one and call `CancelAfter` on it before each read; re-arming the overall source itself would replace the overall limit.
 
 Body ownership in short: whoever holds a `UHttpResponse` or `UHttpStreamingResponse` disposes it exactly once; extension methods such as `AsJson<T>()` read from the response and leave the disposal to you.
 
@@ -127,4 +143,4 @@ catch (UHttpException ex)
 }
 ```
 
-Timeouts are enforced by the transport: `WithTimeout` (or `DefaultTimeout`) covers each request, and an expired request throws `UHttpException` with `UHttpErrorType.Timeout`.
+Timeouts are enforced by the transport: `WithTimeout` (or `DefaultTimeout`) covers each buffered request (for a streaming response it ends when the headers arrive, see Streaming), and an expired request throws `UHttpException` with `UHttpErrorType.Timeout`.

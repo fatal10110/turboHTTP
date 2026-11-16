@@ -36,6 +36,8 @@ namespace TurboHTTP.Core
         /// <summary>
         /// Default timeout for requests. Defaults to <see cref="PlatformConfig.RecommendedTimeout"/>.
         /// Can be overridden per-request via <see cref="UHttpRequest.WithTimeout(TimeSpan)"/>.
+        /// For streaming responses the timeout ends when the response headers arrive; body reads are
+        /// not bounded, so pass a <see cref="System.Threading.CancellationToken"/> to bound them.
         /// </summary>
         public TimeSpan DefaultTimeout { get; set; } = PlatformConfig.RecommendedTimeout;
 
@@ -165,8 +167,8 @@ namespace TurboHTTP.Core
         ///   TLS connection fails with a <see cref="UHttpException"/> whose inner exception is an
         ///   <see cref="System.InvalidOperationException"/> naming the define.
         /// 
-        /// Note: Advanced security features (certificate pinning, custom validation callbacks)
-        /// are planned for Phase 6 (Advanced Middleware) and not yet available.
+        /// Neither backend can be used to accept a certificate the platform would reject; certificate
+        /// pinning and custom validation callbacks are not part of this option.
         /// </remarks>
         public TlsBackend TlsBackend { get; set; } = TlsBackend.Auto;
 

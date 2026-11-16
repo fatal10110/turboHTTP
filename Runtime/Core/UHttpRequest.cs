@@ -70,7 +70,7 @@ namespace TurboHTTP.Core
         public IReadOnlyDictionary<string, object> Metadata => _metadata;
 
         /// <summary>
-        /// Optional buffered-body preview for callers that can use the 22a content model.
+        /// Optional buffered-body preview for callers that can read the body without copying it from a stream.
         /// </summary>
         public bool TryGetBufferedContent(out ReadOnlyMemory<byte> data)
         {
