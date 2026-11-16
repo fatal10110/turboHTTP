@@ -51,8 +51,8 @@ namespace TurboHTTP.Transport
         /// <summary>
         /// Creates a transport with explicit HTTP/2 options and default <see cref="StreamingOptions"/>.
         /// </summary>
-        /// <param name="pool">Connection pool; null creates one. A pool you pass stays yours to dispose
-        /// only if you keep using it elsewhere; the transport disposes the pool it uses.</param>
+        /// <param name="pool">Connection pool; null creates one. The transport takes ownership of the
+        /// pool, including one you pass, and disposes it in <c>Dispose</c>; do not share it with another owner.</param>
         /// <param name="tlsBackend">TLS backend selection.</param>
         /// <param name="http2Options">HTTP/2 settings; must not be null.</param>
         /// <exception cref="ArgumentNullException"><paramref name="http2Options"/> is null.</exception>
