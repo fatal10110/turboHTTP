@@ -26,18 +26,27 @@ namespace TurboHTTP.Core
         private int _expectContinueTimeoutMs = DefaultExpectContinueTimeoutMsValue;
         private long? _autoExpectContinueThresholdBytes;
 
+        /// <summary>
+        /// Gets or sets the size in bytes up to which a buffered request body is sent in a single write. Must be positive. Default 32 KiB.
+        /// </summary>
         public int SmallBufferedRequestThresholdBytes
         {
             get => _smallBufferedRequestThresholdBytes;
             set => _smallBufferedRequestThresholdBytes = ValidatePositive(value, nameof(SmallBufferedRequestThresholdBytes));
         }
 
+        /// <summary>
+        /// Gets or sets the buffer size in bytes used when sending a streamed request body. Must be positive. Default 32 KiB.
+        /// </summary>
         public int DefaultStreamingSendBufferBytes
         {
             get => _defaultStreamingSendBufferBytes;
             set => _defaultStreamingSendBufferBytes = ValidatePositive(value, nameof(DefaultStreamingSendBufferBytes));
         }
 
+        /// <summary>
+        /// Gets or sets the buffer size in bytes used when receiving a streamed response body. Must be positive. Default 64 KiB.
+        /// </summary>
         public int DefaultStreamingReceiveBufferBytes
         {
             get => _defaultStreamingReceiveBufferBytes;
@@ -55,12 +64,19 @@ namespace TurboHTTP.Core
             set => _defaultHttp2PerStreamReceiveBufferBytes = ValidatePositive(value, nameof(DefaultHttp2PerStreamReceiveBufferBytes));
         }
 
+        /// <summary>
+        /// Gets or sets the largest unread response remainder in bytes the transport drains to keep the connection reusable;
+        /// more than that and the connection is closed. Must be positive. Default 64 KiB.
+        /// </summary>
         public int BufferedDrainReuseThresholdBytes
         {
             get => _bufferedDrainReuseThresholdBytes;
             set => _bufferedDrainReuseThresholdBytes = ValidatePositive(value, nameof(BufferedDrainReuseThresholdBytes));
         }
 
+        /// <summary>
+        /// Gets or sets the upper bound in bytes of response data buffered per connection. Must be positive. Default 8 MiB.
+        /// </summary>
         public int MaxConnectionBufferedBytes
         {
             get => _maxConnectionBufferedBytes;
@@ -80,7 +96,8 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Timeout in milliseconds to wait for a 100 Continue response before proceeding
-        /// with request body transmission.
+        /// with request body transmission (RFC 9110 section 10.1.1: a client does not wait indefinitely).
+        /// Applies to requests carrying <c>Expect: 100-continue</c>, see <see cref="UHttpRequest.WithExpectContinue"/>.
         /// </summary>
         public int ExpectContinueTimeoutMs
         {
@@ -101,6 +118,9 @@ namespace TurboHTTP.Core
                 nameof(AutoExpectContinueThresholdBytes));
         }
 
+        /// <summary>
+        /// Creates a copy of these options.
+        /// </summary>
         public StreamingOptions Clone()
         {
             return new StreamingOptions

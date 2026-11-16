@@ -23,6 +23,11 @@ namespace TurboHTTP.Core
         private readonly OwnershipState _ownerState;
         private readonly bool _hasSequence;
 
+        /// <summary>
+        /// Wraps a contiguous body.
+        /// </summary>
+        /// <param name="body">The body bytes.</param>
+        /// <param name="owner">Optional owner of the underlying buffers, disposed with the response that receives this body.</param>
         public DetachedBufferedBody(ReadOnlyMemory<byte> body, IDisposable owner = null)
         {
             _memory = body;
@@ -31,6 +36,11 @@ namespace TurboHTTP.Core
             _hasSequence = false;
         }
 
+        /// <summary>
+        /// Wraps a segmented body.
+        /// </summary>
+        /// <param name="body">The body bytes.</param>
+        /// <param name="owner">Optional owner of the underlying buffers, disposed with the response that receives this body.</param>
         public DetachedBufferedBody(ReadOnlySequence<byte> body, IDisposable owner = null)
         {
             _memory = default;

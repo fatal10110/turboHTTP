@@ -52,11 +52,9 @@ namespace TurboHTTP.Core
         /// The original request that generated this response.
         /// </summary>
         /// <remarks>
-        /// For requests created via <see cref="UHttpClient.CreateRequest"/> (pooled requests),
-        /// this property is only valid while the response is alive (before <see cref="Dispose"/>
-        /// is called). Accessing it after disposing the response returns a request object that
-        /// may have already been re-leased to a different caller with different state.
-        /// Do not cache this reference beyond the response lifetime.
+        /// A request is never reused after its lease ends (see <see cref="UHttpRequest"/>), so the reference
+        /// is safe to read for diagnostics after the response is disposed. Its lease has ended, so
+        /// mutating or sending it throws <see cref="ObjectDisposedException"/>; build a new request to resend.
         /// </remarks>
         public UHttpRequest Request
         {

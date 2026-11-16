@@ -339,7 +339,20 @@ using var response = await request.SendBufferedAsync();
 
 ### Plugins
 
-An `IHttpPlugin` is an extension module that can contribute interceptors when it is registered.
+An `IHttpPlugin` is an extension module that can contribute interceptors when it is registered. A plugin declares what it
+may do in `Capabilities`; the client enforces it. `RegisterInterceptor` throws a `PluginException` (reported as a plugin
+initialization failure) when the plugin declares `PluginCapabilities.None` or only `Diagnostics`/`AllowRedispatch`.
+
+| Flag | Allows |
+| --- | --- |
+| `None` | Nothing: no interceptors, no diagnostics. |
+| `ObserveRequests` | Register interceptors that only observe requests, responses and errors. |
+| `ReadOnlyMonitoring` | Observe, and call `PluginContext.LogDiagnostic`. |
+| `MutateRequests` | Interceptors may change the request before dispatch. |
+| `MutateResponses` | Interceptors may replace or change the response. |
+| `HandleErrors` | Interceptors may translate or suppress errors from later stages. |
+| `Diagnostics` | Call `PluginContext.LogDiagnostic` (does not allow registering interceptors by itself). |
+| `AllowRedispatch` | Interceptors may dispatch the request again (retry, fallback). |
 
 ```csharp
 using System.Threading;
@@ -351,7 +364,7 @@ public class CustomLoggerPlugin : IHttpPlugin
 {
     public string Name => "CustomLogger";
     public string Version => "1.0.0";
-    public PluginCapabilities Capabilities => PluginCapabilities.None;
+    public PluginCapabilities Capabilities => PluginCapabilities.ObserveRequests;
 
     public ValueTask InitializeAsync(PluginContext context, CancellationToken cancellationToken)
     {
