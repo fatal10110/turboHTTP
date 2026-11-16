@@ -17,7 +17,8 @@ concurrency:
 jobs:
   # Repo invariants (.meta, asmdef graph, JSON), whitespace format, shadow build of every
   # asmdef for the Editor/iOS/Android define sets with analyzers + banned APIs (ratchet
-  # baseline) and the compile-only opt-in define variant (#898), the fuzz corpus replay of every
+  # baseline), the compile-only define variants (with the opt-in test defines, #898; without the
+  # package's opt-in defines, #870), the fuzz corpus replay of every
   # target (#880; fuzz.yml itself is advisory), actionlint, shellcheck and the Python tool tests.
   # Same as Tools~/ci/check.sh --full.
   lint:

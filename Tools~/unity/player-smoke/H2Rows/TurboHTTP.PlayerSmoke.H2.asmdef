@@ -1,0 +1,14 @@
+{
+  "name": "TurboHTTP.PlayerSmoke.H2",
+  "rootNamespace": "TurboHTTP.PlayerSmoke",
+  "references": ["TurboHTTP.Core", "TurboHTTP.Transport"],
+  "includePlatforms": [],
+  "excludePlatforms": ["WebGL"],
+  "allowUnsafeCode": false,
+  "overrideReferences": false,
+  "precompiledReferences": [],
+  "autoReferenced": true,
+  "defineConstraints": [],
+  "versionDefines": [],
+  "noEngineReferences": true
+}
