@@ -60,6 +60,8 @@ namespace TurboHTTP.Samples.JsonApi
             }
             catch (UHttpException ex)
             {
+                // The JSON helpers throw HttpError on a non-2xx status and do not expose the error body.
+                // To read it, use SendBufferedAsync and check response.IsSuccessStatusCode first.
                 Debug.LogError($"Request failed: {ex.HttpError.Type} - {ex.Message}");
             }
             catch (OperationCanceledException)

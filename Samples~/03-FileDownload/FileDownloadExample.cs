@@ -41,6 +41,8 @@ namespace TurboHTTP.Samples.FileDownload
 
             try
             {
+                // The request timeout ends when the response headers arrive; bound the whole transfer with a token
+                // (for example _cts.CancelAfter(TimeSpan.FromMinutes(10))).
                 var result = await _downloader.DownloadFileAsync(url, savePath, options, _cts.Token);
 
                 Debug.Log($"Downloaded {result.FileSize} bytes in {result.ElapsedTime.TotalSeconds:F1}s");

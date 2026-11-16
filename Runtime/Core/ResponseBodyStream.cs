@@ -5,6 +5,11 @@ using System.Threading.Tasks;
 
 namespace TurboHTTP.Core
 {
+    /// <summary>
+    /// Read-only, non-seekable stream over a streaming response body. Read it with
+    /// <c>ReadAsync</c> or <c>CopyToAsync</c>: the synchronous <see cref="Read(byte[], int, int)"/>
+    /// blocks the calling thread until data arrives, cannot be cancelled and has no deadline.
+    /// </summary>
     public sealed class ResponseBodyStream : Stream
     {
         private readonly UHttpStreamingResponse _owner;
@@ -55,6 +60,10 @@ namespace TurboHTTP.Core
             return Task.CompletedTask;
         }
 
+        /// <summary>
+        /// Blocks until data arrives (sync-over-async with no cancellation token and no deadline);
+        /// prefer <see cref="ReadAsync(byte[], int, int, CancellationToken)"/>.
+        /// </summary>
         public override int Read(byte[] buffer, int offset, int count)
         {
             ValidateReadArguments(buffer, offset, count);
