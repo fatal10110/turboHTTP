@@ -26,14 +26,14 @@ First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); t
 
 ### Modules
 Assemblies shipped in this package: `TurboHTTP.Core`, `TurboHTTP.Transport` (raw-socket HTTP/1.1 and
-HTTP/2 over `SslStream`), `TurboHTTP.Transport.BouncyCastle` (opt-in TLS fallback over the vendored `TurboHTTP.SecureProtocol`
-library, compiled with the `TURBOHTTP_BOUNCYCASTLE` scripting symbol), `TurboHTTP.Middleware` (redirect, cookie, decompression and
+HTTP/1.1 over `SslStream`; HTTP/2 needs the BouncyCastle backend), `TurboHTTP.Transport.BouncyCastle` (opt-in TLS fallback over the vendored `TurboHTTP.SecureProtocol`
+library, compiled with the `TURBOHTTP_BOUNCYCASTLE` scripting symbol; the vendored `TurboHTTP.SecureProtocol` assembly itself is always compiled), `TurboHTTP.Middleware` (redirect, cookie, decompression and
 default-header interceptors), `TurboHTTP.Auth` (OAuth 2.0, OIDC, PKCE), `TurboHTTP.Retry`,
 `TurboHTTP.Cache`, `TurboHTTP.RateLimit`, `TurboHTTP.Observability`, `TurboHTTP.Files`, `TurboHTTP.JSON`
 (with a built-in LiteJson reader/writer), `TurboHTTP.Testing` (`MockTransport`, `RecordReplayTransport`),
 `TurboHTTP.Unity` (asset handlers, decoders, mobile networking), `TurboHTTP.WebSocket`,
-`TurboHTTP.WebSocket.Transport`, `TurboHTTP.Unity.WebSocket`, `TurboHTTP.UniTask` (needs the UniTask
-package), `TurboHTTP.Complete` (startup registration) and the Editor HTTP Monitor window. Retry, cache,
+`TurboHTTP.WebSocket.Transport`, `TurboHTTP.Unity.WebSocket`, `TurboHTTP.UniTask` and
+`TurboHTTP.UniTask.WebSocket` (both need the UniTask package), `TurboHTTP.Complete` (startup registration) and the Editor HTTP Monitor window. Retry, cache,
 authentication and rate limiting are interceptors on `UHttpClientOptions.Interceptors`.
 
 
@@ -107,7 +107,7 @@ authentication and rate limiting are interceptors on `UHttpClientOptions.Interce
   Player Settings > Scripting Define Symbols to compile the `TurboHTTP.Transport.BouncyCastle`
   glue. Without the define, TLS connections with `TlsBackend.BouncyCastle` fail (the provider
   lookup throws `InvalidOperationException`, the inner exception of the request's
-  `UHttpException`) and the BouncyCastle assemblies are not linked into player builds. `TlsBackend.Auto` is unchanged
+  `UHttpException`) and nothing roots the BouncyCastle library, so IL2CPP builds and Mono builds with managed stripping enabled leave `TurboHTTP.SecureProtocol` out (recorded at stripping High; a Mono build with stripping Disabled ships it). `TlsBackend.Auto` is unchanged
   (it never selects BouncyCastle).
 
 Core public surface reduced before the API freeze (#77, #156). Moved types keep their names; add

@@ -34,7 +34,7 @@ recorded in the PR and in this table.
 - String references in asmdefs, never GUIDs. Namespaces are `TurboHTTP.<Module>`.
 - Modules reach `Core.Internal` through `InternalsVisibleTo` in `Runtime/Core/AssemblyInfo.cs`; third-party
   interceptors cannot (#76). Do not widen that list casually.
-- Auth reaches JSON through reflection (`ProjectJsonBridge`), a hidden dependency (#67).
+- Auth reaches JSON through a registration slot (`ProjectJsonBridge` in Core: `TurboHTTP.JSON` registers itself at startup, `Runtime/JSON/link.xml`), a hidden dependency without reflection (#67): without registration, JSON calls fail.
 
 ## Request pipeline
 

@@ -177,7 +177,7 @@ namespace TurboHTTP.Transport.Tls
             ex = UnwrapPlatformException(ex);
 
             // NotSupportedException is a supertype of PlatformNotSupportedException; it is included
-            // because some Unity/Mono runtimes throw the base type from ALPN reflection paths.
+            // because some Unity/Mono runtimes throw the base type when ALPN options are unsupported.
             // Known false-positive risk: NotSupportedException from half-closed stream writes is
             // also matched. This only affects the diagnostic label, never provider routing.
             return ex is PlatformNotSupportedException
@@ -192,7 +192,7 @@ namespace TurboHTTP.Transport.Tls
 
         private static Exception UnwrapPlatformException(Exception ex)
         {
-            // Reflection-invoked calls (MethodInfo.Invoke) wrap the real exception; a single-task
+            // A TargetInvocationException (from a reflection-invoked call) wraps the real exception; a single-task
             // AggregateException does the same for Task-based handshakes.
             if (ex is System.Reflection.TargetInvocationException tie && tie.InnerException != null)
                 return tie.InnerException;

@@ -26,7 +26,20 @@ namespace TurboHTTP.Core
         /// </summary>
         public IReadOnlyList<string> BypassList { get; set; } = Array.Empty<string>();
         public bool UseEnvironmentVariables { get; set; } = true;
+
+        /// <summary>
+        /// Default <c>false</c>. Only affects environment-variable proxies: an <c>https://</c> target
+        /// reads <c>HTTPS_PROXY</c> alone, so without it the request connects directly. When
+        /// <c>true</c>, the target falls back to <c>HTTP_PROXY</c> (reached through a CONNECT tunnel).
+        /// Has no effect when <see cref="Address"/> is set.
+        /// </summary>
         public bool AllowHttpProxyFallbackForHttps { get; set; }
+
+        /// <summary>
+        /// Default <c>false</c>. <see cref="Credentials"/> are sent as <c>Proxy-Authorization: Basic</c>
+        /// (RFC 7617 section 4) only when this is <c>true</c>, because the proxy leg is cleartext and
+        /// the password is readable on the wire.
+        /// </summary>
         public bool AllowPlaintextProxyAuth { get; set; }
 
         public ProxySettings Clone()
