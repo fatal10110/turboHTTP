@@ -23,7 +23,7 @@ By default, `UHttpClient` uses the `RawSocketTransport`. It handles:
 
 The platform validates certificates with `SslStream`; TurboHTTP never accepts a certificate the platform would reject, and no option disables validation. BouncyCastle is a transport fallback, never a way around certificate checks.
 
-BouncyCastle is compiled only when `TURBOHTTP_BOUNCYCASTLE` is added to Player Settings > Scripting Define Symbols (for every build target that uses it); the `TurboHTTP.Transport.BouncyCastle` assembly then registers its provider at startup (`BouncyCastleModuleRegistration.EnsureRegistered()` does the same by hand). Without the define, selecting `TlsBackend.BouncyCastle` fails with an `InvalidOperationException` naming the define, the glue is not compiled, and nothing roots the vendored BouncyCastle library, so IL2CPP builds and Mono builds with managed code stripping enabled leave `TurboHTTP.SecureProtocol` out (recorded at stripping High on Windows Mono and on Android IL2CPP; a Mono build with stripping Disabled copies every assembly, so `TurboHTTP.SecureProtocol.dll` ships even without the define). When enabled, it validates the certificate chain and host name with the operating system's verifier and trust store: on Windows (Editor and player) with crypt32's SSL chain policy, on macOS (Editor and player) and iOS with the system SecTrust policy, and on Android with the platform trust manager (the app's network security configuration applies). The verifiers never fetch from the network (no revocation check, no intermediate or root download) and reject the certificate on any failure. **Linux is not supported: there is no platform verifier, so `TlsBackend.BouncyCastle` rejects every server certificate there; use `Auto`/`SslStream`.** **Validation of the macOS, iOS and Android verifiers on real hardware is pending (#33), so treat `BouncyCastle` as unvalidated there.**
+BouncyCastle is compiled only when `TURBOHTTP_BOUNCYCASTLE` is added to Player Settings > Scripting Define Symbols (for every build target that uses it); the `TurboHTTP.Transport.BouncyCastle` assembly then registers its provider at startup (`BouncyCastleModuleRegistration.EnsureRegistered()` does the same by hand). Without the define, selecting `TlsBackend.BouncyCastle` fails with an `InvalidOperationException` naming the define, and neither the glue nor the vendored BouncyCastle library (`TurboHTTP.SecureProtocol`) is compiled, so no build contains them, whatever the scripting backend and managed stripping level. When enabled, it validates the certificate chain and host name with the operating system's verifier and trust store: on Windows (Editor and player) with crypt32's SSL chain policy, on macOS (Editor and player) and iOS with the system SecTrust policy, and on Android with the platform trust manager (the app's network security configuration applies). The verifiers never fetch from the network (no revocation check, no intermediate or root download) and reject the certificate on any failure. **Linux is not supported: there is no platform verifier, so `TlsBackend.BouncyCastle` rejects every server certificate there; use `Auto`/`SslStream`.** **Validation of the macOS, iOS and Android verifiers on real hardware is pending (#33), so treat `BouncyCastle` as unvalidated there.**
 
 ```csharp
 var options = new UHttpClientOptions { TlsBackend = TlsBackend.BouncyCastle };
@@ -84,46 +84,13 @@ options.Http2.ReuseProbeIdleThreshold = TimeSpan.FromSeconds(60);   // default T
 
 Every peer-controlled size (header bytes and lines, frames, CONTINUATION blocks, decompressed bodies, queues) is bounded.
 
-## Custom transports
+## Supported transports
 
-Implement `IHttpTransport` to override how requests hit the network. This is how the `Testing` module provides `MockTransport` and `RecordReplayTransport`. A transport reports the response to the `IHttpHandler` it is given.
+TurboHTTP 1.0 supports only its own transports as `UHttpClientOptions.Transport` (or as the `HttpTransportFactory` default):
 
-```csharp
-using System.Threading;
-using System.Threading.Tasks;
-using TurboHTTP.Core;
-using TurboHTTP.Transport;
+| Transport | Module | Use |
+| --- | --- | --- |
+| `RawSocketTransport` | `TurboHTTP.Transport` | The default network transport (used when `Transport` is not set). |
+| `MockTransport`, `MockHttpServer.CreateTransport()`, `RecordReplayTransport` | `TurboHTTP.Testing` | Tests without the network; see [Testing](Testing.md). |
 
-// Counts requests and delegates to another transport.
-public sealed class CountingTransport : IHttpTransport
-{
-    private readonly IHttpTransport _inner;
-    private int _count;
-
-    public CountingTransport(IHttpTransport inner) => _inner = inner;
-
-    public int Count => Volatile.Read(ref _count);
-
-    public Task DispatchAsync(UHttpRequest request, IHttpHandler handler, RequestContext context,
-        CancellationToken cancellationToken = default)
-    {
-        Interlocked.Increment(ref _count);
-        return _inner.DispatchAsync(request, handler, context, cancellationToken);
-    }
-
-    public void Dispose() => _inner.Dispose();
-}
-
-public static class CustomTransportExample
-{
-    public static UHttpClient Create()
-    {
-        var options = new UHttpClientOptions
-        {
-            Transport = new CountingTransport(new RawSocketTransport()),
-            DisposeTransport = true // the client disposes the transport with itself
-        };
-        return new UHttpClient(options);
-    }
-}
-```
+Third-party `IHttpTransport` implementations are not supported in 1.0. A transport needs contracts that are still internal (reading stream and factory request bodies, request trailers, the transport behavior flags), so a custom transport cannot send `WithStreamBody` or `WithBodyFactory` uploads, and members may be added to `IHttpTransport` in a minor release until custom transports are supported. Public custom transport support is planned (#1237). To count, log, change or short-circuit requests, write an interceptor instead ([Interceptors](Interceptors.md)).

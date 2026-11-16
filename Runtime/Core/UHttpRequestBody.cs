@@ -15,6 +15,12 @@ namespace TurboHTTP.Core
     /// the read session ends. Implementations are <see cref="EmptyRequestBody"/>, <see cref="BufferedRequestBody"/>,
     /// <see cref="OwnedMemoryRequestBody"/>, <see cref="StreamRequestBody"/> and <see cref="FactoryRequestBody"/>.
     /// </summary>
+    /// <remarks>
+    /// The hierarchy is closed: only TurboHTTP assemblies derive request bodies (the constructor is
+    /// <c>private protected</c>, and the read session a transport uses is internal). To send your own
+    /// content, use <see cref="StreamRequestBody"/> or <see cref="FactoryRequestBody"/>
+    /// (<c>WithStreamBody</c>, <c>WithBodyFactory</c>). A public body and transport contract is planned (#1237).
+    /// </remarks>
     public abstract class UHttpRequestBody : IDisposable
     {
         private static readonly string[] EmptyDeclaredTrailerNames = Array.Empty<string>();
@@ -26,6 +32,14 @@ namespace TurboHTTP.Core
         private Task _abandonedBufferedWrite;
         private Func<HttpHeaders> _trailerProvider;
         private string[] _declaredTrailerNames = EmptyDeclaredTrailerNames;
+
+        /// <summary>
+        /// Creates a body. Only TurboHTTP assemblies derive request bodies (see the remarks on
+        /// <see cref="UHttpRequestBody"/>).
+        /// </summary>
+        private protected UHttpRequestBody()
+        {
+        }
 
         /// <summary>Whether the body has no content (a zero-length body, or no body at all).</summary>
         public abstract bool IsEmpty { get; }

@@ -39,6 +39,20 @@ PASS_LOG = [
     "TURBOHTTP_SMOKE PASS http=TurboHTTP.Transport.RawSocketTransport ws=x json=ok bc=absent alpn=true rows=6 skipped=2",
 ]
 
+# #1210: the HTTP/2-over-TLS rows --network requires per TLS provider when an h2 row server is in play. The tests
+# name one with TURBOHTTP_H2_ROWS_URL/_ROOT (h2_server) so build-player.sh never starts Tools~/h2-interop/run.sh.
+H2_ROWS = ("download", "upload", "concurrent", "stream-cancel")
+H2_URL = "https://127.0.0.1:8443"
+H2_ROOT_DER = b"\x30\x03\x02\x01\x01"
+H2_ROOT_B64 = "MAMCAQE="
+
+
+def h2_log(provider, protocol="h2"):
+    backend = "BouncyCastle" if provider == "bouncycastle" else "SslStream"
+    return [f"TURBOHTTP_SMOKE ROW h2-{row}-{provider} PASS #1210 backend={backend} protocol={protocol} ms=1"
+            for row in H2_ROWS]
+
+
 REPO = wsl.REPO
 SMOKE_ROWS = REPO / "Tools~" / "unity" / "player-smoke" / "TurboHttpSmokeRows.cs"
 # The link.xml files whose assemblies every smoke build contains, and the one only --bouncycastle adds.
@@ -62,6 +76,17 @@ class AndroidPlayerRunTests(unittest.TestCase):
         self.apk.parent.mkdir()
         self.apk.write_bytes(b"PK fake apk")
         self.env.update(TURBOHTTP_SMOKE_POLL_S="0", TURBOHTTP_SMOKE_WAIT_S="20")
+        for name in ("TURBOHTTP_H2_ROWS_URL", "TURBOHTTP_H2_ROWS_ROOT"):
+            self.env.pop(name, None)
+
+    def h2_server(self, url=H2_URL, root=True):
+        """Env naming a running h2 row server (what Tools~/h2-interop/run.sh --serve prints) and its test root."""
+        env = {"TURBOHTTP_H2_ROWS_URL": url}
+        if root:
+            path = self.root / "h2-root.der"
+            path.write_bytes(H2_ROOT_DER)
+            env["TURBOHTTP_H2_ROWS_ROOT"] = str(path)
+        return env
 
     def logcat(self, lines):
         pathlib.Path(f"{self.state}.logcat").write_text("".join(UNITY_LINE + line + "\n" for line in lines))
@@ -169,12 +194,73 @@ class AndroidPlayerRunTests(unittest.TestCase):
         self.assertIn("BouncyCastle provider not found", result.stdout)
         bc_log = PASS_LOG[:2] + ["TURBOHTTP_SMOKE ROW tls-sslstream PASS #141 status=200",
                                  PASS_LOG[3].replace("bc=absent", "bc=present")]
-        self.logcat(bc_log)
-        result = self.run_apk("--bouncycastle", "--network")
+        # --bouncycastle --network also requires the h2 rows (#1210); a given server keeps the run hermetic.
+        h2 = self.h2_server()
+        self.logcat(bc_log + h2_log("bouncycastle"))
+        result = self.run_apk("--bouncycastle", "--network", **h2)
         self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
         self.assertIn("no 'TURBOHTTP_SMOKE ROW tls-bouncycastle PASS'", result.stdout)
-        self.logcat(bc_log + ["TURBOHTTP_SMOKE ROW tls-bouncycastle PASS #258 status=200"])
-        self.assertEqual(self.run_apk("--bouncycastle", "--network").returncode, 0)
+        self.logcat(bc_log + ["TURBOHTTP_SMOKE ROW tls-bouncycastle PASS #258 status=200"] + h2_log("bouncycastle"))
+        result = self.run_apk("--bouncycastle", "--network", **h2)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_bouncycastle_network_requires_the_h2_rows_over_http2(self):
+        # #1210: with --bouncycastle the four h2-*-bouncycastle rows must PASS with protocol=h2; with a test root the
+        # SslStream h2 rows are not required (SslStream trusts the platform store only).
+        tls = (PASS_LOG[:2] + ["TURBOHTTP_SMOKE ROW tls-sslstream PASS #141 status=200",
+                               "TURBOHTTP_SMOKE ROW tls-bouncycastle PASS #258 status=200",
+                               PASS_LOG[3].replace("bc=absent", "bc=present")])
+        h2 = self.h2_server()
+        self.logcat(tls)
+        result = self.run_apk("--bouncycastle", "--network", **h2)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        for row in H2_ROWS:
+            self.assertIn(f"no 'TURBOHTTP_SMOKE ROW h2-{row}-bouncycastle PASS'", result.stdout)
+        self.assertNotIn("-sslstream", result.stdout.replace("tls-sslstream", ""))
+        calls = self.calls("adb")
+        [start] = [c for c in calls if "am start" in c]
+        self.assertIn(f"--es turbohttp_smoke_h2_url {H2_URL}", start)
+        self.assertIn(f"--es turbohttp_smoke_h2_root {H2_ROOT_B64}", start)
+        # The loopback server is the host's: the device port is reversed to it for the run and removed after.
+        self.assertIn("reverse tcp:8443 tcp:8443", calls)
+        self.assertIn("reverse --remove tcp:8443", calls)
+        self.assertLess(calls.index("reverse tcp:8443 tcp:8443"), calls.index(start))
+
+        self.logcat(tls + h2_log("bouncycastle", protocol="http/1.1"))
+        result = self.run_apk("--bouncycastle", "--network", **h2)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("h2-upload-bouncycastle did not run over HTTP/2", result.stdout)
+
+        self.logcat(tls + h2_log("bouncycastle"))
+        result = self.run_apk("--bouncycastle", "--network", **h2)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+
+    def test_h2_rows_without_a_test_root_require_sslstream_and_none_runs_without_a_server(self):
+        tls = (PASS_LOG[:2] + ["TURBOHTTP_SMOKE ROW tls-sslstream PASS #141 status=200"] + PASS_LOG[3:])
+        # A publicly trusted server (no root): the SslStream h2 rows must PASS; no adb reverse off loopback.
+        public = self.h2_server(url="https://h2.example.test/", root=False)
+        self.logcat(tls)
+        result = self.run_apk("--network", **public)
+        self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+        self.assertIn("no 'TURBOHTTP_SMOKE ROW h2-download-sslstream PASS'", result.stdout)
+        self.logcat(tls + h2_log("sslstream"))
+        result = self.run_apk("--network", **public)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        calls = self.calls("adb")
+        self.assertFalse([c for c in calls if "reverse" in c], calls)
+        self.assertNotIn("turbohttp_smoke_h2_root", [c for c in calls if "am start" in c][-1])
+        # No --bouncycastle and no server: no provider can trust a test root, so the rows are neither run nor required.
+        self.logcat(tls)
+        result = self.run_apk("--network")
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("HTTP/2 rows not run", result.stdout)
+        self.assertNotIn("turbohttp_smoke_h2_url", [c for c in self.calls("adb") if "am start" in c][-1])
+
+    def test_h2_row_server_url_must_be_https(self):
+        self.logcat(PASS_LOG)
+        result = self.run_apk("--bouncycastle", "--network", **self.h2_server(url="http://127.0.0.1:8080", root=False))
+        self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+        self.assertIn("must be an https URL", result.stderr)
 
     def test_usage_errors(self):
         for args in (["--target", "win64-mono", "--run"], ["--target", "android-il2cpp", "--arch", "armv7"],

@@ -1,6 +1,7 @@
 # Maximum skipped/ignored tests in an unfiltered run, per run target (#151, #341). The key is chosen by
 # the script that runs the suite: EditMode and PlayMode by run-tests.sh (host editor), Player-Android by
-# run-device-tests.sh (and run-emulator-tests.sh through it). A player skips more platform-scoped [env]
+# run-device-tests.sh (and run-emulator-tests.sh through it), Player-StandaloneWindows64 by run-tests.sh
+# --platform StandaloneWindows64 (the Win64 test player, either backend). A player skips more platform-scoped [env]
 # tests than the host editor, so each target has its own number and a player-only skip never raises the
 # host numbers. An unfiltered run that skips more than its entry exits 4. Each counted skip is listed
 # below with its issue or platform reason; any other skip means a test silently stopped executing, so
@@ -41,6 +42,18 @@
 # Raised from 16 to 17 (#881): 17 is a new test that checks the committed baseline JSON, not a test that
 # stopped running.
 #
+# Player-StandaloneWindows64 5, Mono player on the Windows host (Unity 2021.3.45f2, Stripping Disabled, #1219):
+#   1-2  SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName("127.0.0.1", "[::1]")
+#        [env] UnityTls sends an IP literal as server_name (#46)
+#   3    VerificationFailClosedTests.Linux_ProductionConfiguration_RejectsWithNoVerifier  [env] Linux only
+#   4    Phase19AllocationGateTests.AllocationScenarios_RespectBaselineBudget  [env] Editor allocation baselines
+#   5    Phase19AllocationGateTests.CommittedBaselines_LeaveNoRoomForA4KiBPerOperationRegression
+#        [env] baseline JSON is read from Tests/Benchmarks, which a player does not ship
+# The Player-Android items 4-15 (desktop verifier, test-anchor chains, Windows file locking) run and pass here.
+# Recorded on main 5ab19c6 (2026-11-16): 3602 cases, 5 skipped, exactly 1-5 (plus the two not-counted EXPLICIT
+# Loop384 cases). Run record: Development~/docs/implementation-journal/2026-11-host-run-win64-standalone.md. The IL2CPP backend is not recorded yet: this host has no Windows 10 SDK or MSVC (#1225); its
+# first complete run checks these numbers and, if it differs, keeps the larger skip count and the smaller total.
+#
 # Player-iOS 22: no script reads this key yet (the iOS simulator handoff summarises its own results);
 # recorded from iOS simulator run 7 (#99: main 2ec74e2, iOS 26.4, Unity 6000.3.26f1, IL2CPP High), all 21
 # skips [env] (22 with item 17 from #881). The Player-Android list plus 5 [env] cases where the runtime reports no unobserved faulted
@@ -73,6 +86,7 @@
 EditMode 0
 PlayMode 3
 Player-Android 17
+Player-StandaloneWindows64 5
 Player-iOS 22
 Player-iOS-2021.3 34
 
@@ -84,9 +98,12 @@ Player-iOS-2021.3 34
 #   EditMode 71        periodic host-editor run w1110 (main 77ebc04, 2026-11-08, Unity 2021.3.45f2, Mono)
 #   PlayMode 2923      the same run
 #   Player-Android 2628  #365 run on main e0a5bf7 (API 29 x86_64 emulator, Stripping High, 2026-11-04)
-# Player-iOS, Player-iOS-2021.3 and Player-StandaloneWindows64 have no entry yet (no complete unfiltered run of
-# them is recorded), so an unfiltered run of them fails until its total is recorded here (Win64: #1219).
+#   Player-StandaloneWindows64 3603  Win64 Mono player, main 5ab19c6 plus #1219's TestTempPath fix and its
+#                        new test (3602 on 5ab19c6 itself), 2026-11-16, Unity 2021.3.45f2
+# Player-iOS and Player-iOS-2021.3 have no entry yet (no complete unfiltered run of them is recorded), so an
+# unfiltered run of them fails until its total is recorded here.
 # min-total <run target> <min cases>
 min-total EditMode 71
 min-total PlayMode 2923
 min-total Player-Android 2628
+min-total Player-StandaloneWindows64 3603

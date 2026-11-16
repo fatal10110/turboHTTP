@@ -41,7 +41,7 @@ Main HTTP client class. Thread-safe and reusable. **Create one instance per appl
 
 `UHttpClient` is sealed and implements `IDisposable` and `IAsyncDisposable`. Prefer `await client.DisposeAsync()`: it waits for every plugin's `ShutdownAsync` (each bounded by `PluginShutdownTimeout`) before it disposes owned interceptors and the owned transport. `Dispose()` never blocks: it starts plugin shutdown without waiting and disposes the owned components at once.
 
-**What the client owns.** A client created with default options (no `Transport`, and no `TlsBackend`, `ConnectionPool`, `Http2` or `Streaming` override) uses the shared `HttpTransportFactory.Default` transport and does **not** own it: disposing the client closes no connection and cancels no in-flight request, and idle pooled sockets stay open until the pool idle timeout (`ConnectionPoolOptions.ConnectionIdleTimeout`: 2 minutes in the Editor and on desktop, 45 seconds on iOS/Android). A client with a non-default `TlsBackend`, `ConnectionPool`, `Http2` or `Streaming` option owns the transport it created and disposes it. A custom `Transport` is disposed only when `DisposeTransport` is `true`. To stop in-flight requests, cancel the `CancellationToken` you passed to them.
+**What the client owns.** A client created with default options (no `Transport`, and no `TlsBackend`, `ConnectionPool`, `Http2` or `Streaming` override) uses the shared `HttpTransportFactory.Default` transport and does **not** own it: disposing the client closes no connection and cancels no in-flight request, and idle pooled sockets stay open until the pool idle timeout (`ConnectionPoolOptions.ConnectionIdleTimeout`: 2 minutes in the Editor and on desktop, 45 seconds on iOS/Android). A client with a non-default `TlsBackend`, `ConnectionPool`, `Http2` or `Streaming` option owns the transport it created and disposes it. A `Transport` you set yourself is disposed only when `DisposeTransport` is `true`. To stop in-flight requests, cancel the `CancellationToken` you passed to them.
 
 **Constructor:**
 
@@ -140,8 +140,8 @@ Configuration options for `UHttpClient`.
 | `BaseUrl` | `string` | Prefix that relative request URLs are appended to (leading slashes stripped): `https://host/api/v1` + `/users` gives `https://host/api/v1/users` |
 | `DefaultTimeout` | `TimeSpan` | Default timeout (default: 30s). For streaming responses it ends when the response headers arrive; body reads are not bounded |
 | `DefaultHeaders` | `HttpHeaders` | Headers applied to every request |
-| `Transport` | `IHttpTransport` | Custom HTTP transport implementation |
-| `DisposeTransport` | `bool` | Dispose a custom `Transport` together with the client |
+| `Transport` | `IHttpTransport` | Transport to use instead of the shared default: a `RawSocketTransport` or a `TurboHTTP.Testing` transport (`MockTransport`, `MockHttpServer.CreateTransport()`, `RecordReplayTransport`). Third-party `IHttpTransport` implementations are not supported in 1.0 ([Supported transports](Modules/Transport.md#supported-transports)) |
+| `DisposeTransport` | `bool` | Dispose the `Transport` you set together with the client |
 | `DisposeInterceptors` | `bool` | Dispose the `IDisposable` interceptors in `Interceptors` together with the client (default `false`: the creator owns them, and `Clone()` shares them between clients) |
 | `Interceptors` | `List<IHttpInterceptor>` | Interceptor pipeline, outermost first; see [Interceptors](Modules/Interceptors.md) for the required order |
 | `FollowRedirects` / `MaxRedirects` | `bool` / `int` | Redirect policy (default `true` / `10`); applied only when a `RedirectInterceptor` is configured |

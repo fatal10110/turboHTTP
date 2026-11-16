@@ -13,7 +13,7 @@ Scoped guides (bottom table) are loaded only when the task needs them.
 | Path | What it is | Agent may write? |
 | --- | --- | --- |
 | `Runtime/`, `Editor/`, `Tests/` | package code and tests (Unity imports these) | yes, through a worktree |
-| `Runtime/Transport/BouncyCastle/Lib/` | vendored BouncyCastle (re-namespaced) | never |
+| `Runtime/Transport/BouncyCastle/Lib/` | vendored BouncyCastle (re-namespaced) | never, except `Lib/TurboHTTP.SecureProtocol.asmdef` (+ `.meta`): TurboHTTP-owned, kept by the re-vendor sync |
 | `Samples~/`, `Documentation~/` | customer samples and docs | yes, through a worktree |
 | `Development~/docs/` | phase plans, implementation journal, agent guides, reviews | yes |
 | `Tools~/`, `.github/`, `.githooks/`, `.claude/` | dev tooling, CI, agent skills (Unity ignores `~`/hidden folders) | yes |
@@ -47,7 +47,7 @@ with an RFC, follow the RFC and record the conflict in the PR.
 - The main transport never uses `UnityWebRequest`, `HttpClient` or other HTTP stacks.
 - Error model: network/protocol failures are `UHttpException(UHttpError)`; HTTP 4xx/5xx are normal
   responses with bodies. Timeouts are enforced by transport cancellation, not by an interceptor.
-- Never edit vendored code; never commit secrets, tokens or license files.
+- Never edit vendored code (the `Lib/` asmdef is ours, section 1); never commit secrets, tokens or license files.
 
 ## 4. Engineering rules
 

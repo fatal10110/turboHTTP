@@ -51,6 +51,13 @@ namespace TurboHTTP.Core
         /// Transport implementation to use. When null, falls back to
         /// <see cref="HttpTransportFactory.Default"/>.
         /// </summary>
+        /// <remarks>
+        /// Supported values in 1.0 are TurboHTTP's own transports: a <c>RawSocketTransport</c>
+        /// (TurboHTTP.Transport) and the TurboHTTP.Testing transports (<c>MockTransport</c>,
+        /// <c>MockHttpServer.CreateTransport()</c>, <c>RecordReplayTransport</c>). Third-party
+        /// <see cref="IHttpTransport"/> implementations are not supported in 1.0 (see
+        /// <see cref="IHttpTransport"/>).
+        /// </remarks>
         public IHttpTransport Transport { get; set; }
 
         /// <summary>
