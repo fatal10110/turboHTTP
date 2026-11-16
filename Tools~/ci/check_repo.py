@@ -279,7 +279,8 @@ def check_json(files):
                     top = re.search(r"^## \[([^\]]+)\]", cl.read(), re.M)
             except OSError:
                 top = None
-            if top and top.group(1) != data.get("version"):
+            # "Unreleased" is the Keep a Changelog heading for changes after the packaged version.
+            if top and top.group(1).lower() != "unreleased" and top.group(1) != data.get("version"):
                 errors.append(
                     f"json: package.json version {data.get('version')} differs from the top CHANGELOG entry {top.group(1)}")
     return errors
