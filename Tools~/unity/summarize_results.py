@@ -5,6 +5,11 @@ Prints the totals, the failed cases and every skipped/ignored case with its reas
 skip gates:
   * every skipped case must carry a reason with an issue reference (#123) or the [env] marker that
     TestRequirements.IgnoreEnvironment adds; anything else is an unexplained skip;
+  * a not-selected [Explicit] test (result="Skipped" with label="Explicit") is listed as EXPLICIT and neither
+    gated nor counted: it is opt-in by design (stress and device loops such as #384), so it never "stopped
+    running", and counting it would fail every target's baseline for each new one (#1235). runstate="Explicit"
+    alone does not mark it: Unity keeps that runstate on a filter-selected [Explicit] test that runs, so a
+    selected one that skips (label="Ignored") is gated and counted like any other skip;
   * an unfiltered run (the whole suite) may not skip more cases than the run target's entry in the
     baseline file (Tools~/unity/skip-baseline.txt). A filtered run covers part of the suite, so the
     count is only listed.
@@ -69,10 +74,26 @@ def total_cases(run):
         return sum(1 for _ in run.iter("test-case"))
 
 
+def is_explicit_not_run(case):
+    """True for an [Explicit] test-case that was not selected, which NUnit reports as Skipped with label Explicit.
+    The label decides: a selected [Explicit] test keeps runstate="Explicit" and reports its own result."""
+    return case.get("result") == "Skipped" and case.get("label") == "Explicit"
+
+
+def explicit_cases(root):
+    """(fullname, reason) of every [Explicit] test-case that did not run (not counted against the baseline)."""
+    return [(case.get("fullname") or case.get("name") or "?",
+             " ".join((case.findtext("reason/message") or "").split()))
+            for case in root.iter("test-case") if is_explicit_not_run(case)]
+
+
 def skipped_cases(root):
-    """(fullname, reason) of every skipped, ignored or inconclusive test-case (a failed Assume.That is Inconclusive)."""
+    """(fullname, reason) of every skipped, ignored or inconclusive test-case (a failed Assume.That is Inconclusive),
+    except a not-selected [Explicit] test (explicit_cases)."""
     cases = []
     for case in root.iter("test-case"):
+        if is_explicit_not_run(case):
+            continue
         if case.get("result") in ("Skipped", "Ignored", "Inconclusive") or case.get("label") == "Ignored":
             reason = (case.findtext("reason/message") or case.findtext("failure/message") or "").strip()
             cases.append((case.get("fullname") or case.get("name") or "?", " ".join(reason.split())))
@@ -88,6 +109,10 @@ def summarize(xml_path, platform, filtered, baseline_path, out=sys.stdout):
         if case.get("result") == "Failed":
             msg = (case.findtext("failure/message") or "").strip().splitlines()
             print(f"  FAIL {case.get('fullname')}: {msg[0] if msg else ''}", file=out)
+
+    explicit = explicit_cases(run)
+    for name, reason in explicit:
+        print(f"  EXPLICIT {name}: {reason or '(no reason)'} (not selected; not counted as a skip)", file=out)
 
     skipped = skipped_cases(run)
     gate_failed = False
@@ -109,7 +134,8 @@ def summarize(xml_path, platform, filtered, baseline_path, out=sys.stdout):
               f"({baseline_path}); fix the skip, or raise the baseline with the reason in the PR", file=out)
         gate_failed = True
     else:
-        print(f"run-tests: skipped={len(skipped)} within baseline {baseline} for {platform}", file=out)
+        not_counted = f" ({len(explicit)} not-selected [Explicit] not counted)" if explicit else ""
+        print(f"run-tests: skipped={len(skipped)} within baseline {baseline} for {platform}{not_counted}", file=out)
 
     total = total_cases(run)
     minimum = read_min_total(baseline_path, platform)

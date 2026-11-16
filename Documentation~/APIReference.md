@@ -354,6 +354,11 @@ initialization failure) when the plugin declares `PluginCapabilities.None` or on
 | `Diagnostics` | Call `PluginContext.LogDiagnostic` (does not allow registering interceptors by itself). |
 | `AllowRedispatch` | Interceptors may dispatch the request again (retry, fallback). |
 
+The client checks what an interceptor forwards against what it received. The `TurboHTTP.Observability`
+interceptors (`LoggingInterceptor`, `MetricsInterceptor`, `MonitorInterceptor`) only observe, so `ObserveRequests` is
+enough for them. A custom handler that wraps, reads or replaces the response body, or changes the status or headers,
+needs `MutateResponses`.
+
 ```csharp
 using System.Threading;
 using System.Threading.Tasks;

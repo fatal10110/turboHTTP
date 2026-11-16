@@ -772,6 +772,8 @@ namespace TurboHTTP.Core
 
                 private readonly struct ResponseEventSignature
                 {
+                    private const int MaxPassThroughDepth = 16;
+
                     private readonly int _kind;
                     private readonly int _arg0;
                     private readonly int _arg1;
@@ -811,6 +813,7 @@ namespace TurboHTTP.Core
                         HttpHeaders headers,
                         IResponseBodySource body)
                     {
+                        body = UnwrapPassThrough(body);
                         return new ResponseEventSignature(
                             ResponseEventKind.ResponseStart,
                             statusCode,
@@ -860,6 +863,24 @@ namespace TurboHTTP.Core
 
                             return hash;
                         }
+                    }
+
+                    // A Core-trusted pass-through wrapper (the Observability handlers' ObservedResponseBodySource)
+                    // forwards its inner body unchanged, so the forwarded body is compared by what it wraps (#1235).
+                    // A replaced, read or otherwise changed inner body still differs from the recorded one. The
+                    // depth bound only guards a pathological chain; a body still wrapped past it keeps the
+                    // wrapper's type, which does not match and is rejected.
+                    private static IResponseBodySource UnwrapPassThrough(IResponseBodySource body)
+                    {
+                        for (int depth = 0; depth < MaxPassThroughDepth; depth++)
+                        {
+                            if (!(body is Internal.IPassThroughResponseBodySource passThrough))
+                                return body;
+
+                            body = passThrough.Inner;
+                        }
+
+                        return body;
                     }
 
                     private static int ComputeBodyTypeHash(IResponseBodySource body)

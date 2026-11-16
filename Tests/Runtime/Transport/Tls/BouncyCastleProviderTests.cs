@@ -211,17 +211,22 @@ namespace TurboHTTP.Tests.Transport.Tls
             CancellationToken ct)
         {
             using var socket = new Socket(SocketType.Stream, ProtocolType.Tcp);
+            // A host this environment cannot reach (connect timeout, DNS or socket failure) has sent no TLS byte,
+            // so it says nothing about BouncyCastle: skip with [env] as SslStreamProviderTests does (#1235). Once
+            // connected, every TLS outcome (no failure, the wrong failure, a handshake that hangs) still fails.
             try
             {
                 ConnectWithTimeout(socket, tcpHost, 443, 8000);
             }
             catch (TimeoutException)
             {
-                Assert.Fail($"TCP connect to {tcpHost}:443 timed out in this environment.");
+                TestRequirements.IgnoreEnvironment($"TCP connect to {tcpHost}:443 timed out in this environment.");
+                throw;
             }
             catch (SocketException ex)
             {
-                Assert.Fail($"TCP connect to {tcpHost}:443 failed ({ex.SocketErrorCode}) in this environment.");
+                TestRequirements.IgnoreEnvironment($"TCP connect to {tcpHost}:443 failed ({ex.SocketErrorCode}) in this environment.");
+                throw;
             }
 
             using var stream = new NetworkStream(socket, true);
