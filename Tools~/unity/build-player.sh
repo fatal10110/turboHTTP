@@ -23,11 +23,11 @@
 # WorkManager dependency reached the APK without any Gradle template edit (#89).
 #
 # Checks: TurboHTTP.Core/Transport/WebSocket.Transport/Complete/JSON/Retry/Auth are in every build.
-# Without --bouncycastle, TurboHTTP.Transport.BouncyCastle is absent from every build and, at Stripping
-# High (IL2CPP: the linker output, Library/Bee/artifacts/*/ManagedStripped; Mono: <name>_Data/Managed),
-# TurboHTTP.SecureProtocol too (#8 AC2, #196 AC1); with it, both are present. Below High its
-# SecureProtocol presence is reported, not asserted (Mono Disabled copies every compiled assembly). Every
-# build that runs UnityLinker (any level but Disabled) must have received TurboHTTP.link.xml. Mono at
+# Without --bouncycastle, TurboHTTP.Transport.BouncyCastle and TurboHTTP.SecureProtocol are absent from
+# every build at every stripping level (IL2CPP: the linker output, Library/Bee/artifacts/*/ManagedStripped;
+# Mono: <name>_Data/Managed; #8 AC2, #196 AC1): both asmdefs are constrained by TURBOHTTP_BOUNCYCASTLE, so
+# neither is compiled, which Mono at Disabled (it copies every compiled assembly) depends on (#870); with
+# it, both are present. Every build that runs UnityLinker (any level but Disabled) must have received TurboHTTP.link.xml. Mono at
 # High with --network is the #450 gate: its tls-sslstream row fails when the linker strips what
 # SslStream's configuration init creates by reflection. Windows players are started
 # with -batchmode -nographics. Android --run (#325) checks that one device is on adb before the build
@@ -483,14 +483,9 @@ if [ "$bouncycastle" = 1 ]; then
     has "$asm" || { echo "build-player: FAIL $asm.dll missing with TURBOHTTP_BOUNCYCASTLE"; fail=1; }
   done
 else
-  has TurboHTTP.Transport.BouncyCastle && { echo "build-player: FAIL TurboHTTP.Transport.BouncyCastle.dll present without TURBOHTTP_BOUNCYCASTLE"; fail=1; }
-  if has TurboHTTP.SecureProtocol; then
-    if [ "$stripping" != High ]; then
-      echo "build-player: note TurboHTTP.SecureProtocol.dll present (stripping $stripping; asserted absent at High only)"
-    else
-      echo "build-player: FAIL TurboHTTP.SecureProtocol.dll survived Stripping High without TURBOHTTP_BOUNCYCASTLE"; fail=1
-    fi
-  fi
+  for asm in TurboHTTP.Transport.BouncyCastle TurboHTTP.SecureProtocol; do
+    has "$asm" && { echo "build-player: FAIL $asm.dll present without TURBOHTTP_BOUNCYCASTLE (stripping $stripping)"; fail=1; }
+  done
 fi
 if [ -f "$out/TurboHTTP.link.xml" ]; then
   echo "build-player: UnityLinker received $out/TurboHTTP.link.xml (assemblies: $(grep -oE '<assembly fullname="[^"]+"' "$out/TurboHTTP.link.xml" | sed 's/.*="//;s/"$//' | sort -u | tr '\n' ' '))"

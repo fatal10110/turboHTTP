@@ -82,7 +82,7 @@ Every change answers three questions in the PR body, from evidence:
    cores, no unsafe code outside Transport, no new public API unless the issue asks for it (then
    XML-document it). Keep hot paths allocation-free where they already are (pooled buffers,
    `ValueTask`, no LINQ/closures in per-frame code). Never edit
-   `Runtime/Transport/BouncyCastle/Lib/` (vendored).
+   `Runtime/Transport/BouncyCastle/Lib/` (vendored; only its TurboHTTP-owned asmdef may change, CLAUDE.md section 1).
 7. **Gates.**
 
    ```bash

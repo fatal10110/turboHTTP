@@ -69,18 +69,22 @@ namespace TurboHTTP.Tests.Editor
 
         [TestCase("Testing/TurboHTTP.Testing.asmdef")]
         [TestCase("Transport/BouncyCastle/TurboHTTP.Transport.BouncyCastle.asmdef")]
+        [TestCase("Transport/BouncyCastle/Lib/TurboHTTP.SecureProtocol.asmdef")]
         public void OptInModule_StaysExplicit(string relativePath)
         {
             Assert.That(Read(relativePath).autoReferenced, Is.False, relativePath);
         }
 
-        [Test]
-        public void BouncyCastleGlue_CompilesOnlyWhenTheProjectOptsIn()
+        [TestCase("Transport/BouncyCastle/TurboHTTP.Transport.BouncyCastle.asmdef")]
+        [TestCase("Transport/BouncyCastle/Lib/TurboHTTP.SecureProtocol.asmdef")]
+        public void BouncyCastleAssemblies_CompileOnlyWhenTheProjectOptsIn(string relativePath)
         {
-            // Without TURBOHTTP_BOUNCYCASTLE the glue is not compiled, so nothing references the
-            // vendored library and neither assembly reaches a player's linker output (#196).
-            var fields = Read("Transport/BouncyCastle/TurboHTTP.Transport.BouncyCastle.asmdef");
-            Assert.That(fields.defineConstraints, Is.EquivalentTo(new[] { "TURBOHTTP_BOUNCYCASTLE" }));
+            // Without TURBOHTTP_BOUNCYCASTLE neither the glue (#196) nor the vendored library (#870) is
+            // compiled, so neither can reach a player. Not compiling the library matters on Mono: at
+            // Managed Stripping Level Disabled UnityLinker does not run and every compiled assembly is
+            // copied to the player, referenced or not.
+            Assert.That(Read(relativePath).defineConstraints, Is.EquivalentTo(new[] { "TURBOHTTP_BOUNCYCASTLE" }),
+                relativePath);
         }
 
         [TestCase("UniTask/TurboHTTP.UniTask.asmdef", new[] { "TurboHTTP.Core", "UniTask" })]
