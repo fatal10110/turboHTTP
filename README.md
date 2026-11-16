@@ -13,10 +13,10 @@
 *   **Resilience & Routing:** Happy Eyeballs dual-stack, HTTP proxy support (CONNECT tunnels, environment variables), and adaptive timeouts based on network quality (`TurboHTTP.Unity`).
 *   **Authentication:** OAuth 2.0 & OIDC support with PKCE and automated token refresh.
 *   **Mobile Readiness:** IL2CPP-safe on iOS and Android; experimental, opt-in background networking.
-*   **Observability:** Detailed timeline traces for every request (DNS, Connect, SSL, TTFB).
+*   **Observability:** Request phase events (transport start, connecting, sending, receiving, redirects, retries) in the Editor HTTP Monitor and through `RequestContext.Timeline` for interceptors.
 *   **Reliability:** Interceptors for retries with idempotency awareness, RFC 9111 caching, redirects, cookies and concurrency limits.
 *   **Performance:** Zero-allocation focused design with memory pooling and native `ValueTask` / `UniTask` support.
-*   **Unity Integration:** `Texture2D`, `Sprite` and `AudioClip` decoding (optionally off the main thread), downloads to Unity paths, coroutine helpers.
+*   **Unity Integration:** `Texture2D`, `Sprite` and `AudioClip` decoding, downloads to Unity paths, coroutine helpers.
 *   **WebSockets:** RFC 6455 compliant WebSocket client with automatic reconnection and framing.
 *   **Testing:** Record/Replay mode and `MockTransport` for deterministic testing.
 
@@ -147,7 +147,7 @@ Retries, caching, redirects, cookies and authentication are interceptors you add
 *   **Supported:** Editor, Windows, macOS, Linux, iOS and Android (Mono and IL2CPP). See [Platform Notes](Documentation~/PlatformNotes.md).
 *   **WebGL: unsupported in v1.0.** Browsers provide no raw sockets, so a WebGL player build fails at build time with an explanatory error.
 
-The default HTTP and WebSocket transports register themselves at startup; no initialization code is needed.
+The default HTTP and WebSocket transports register themselves at startup; no initialization code is needed (see [Modules and manual registration](Documentation~/Modules/ModulesAndRegistration.md) if you do not use `TurboHTTP.Complete`).
 
 ## Assembly References
 
@@ -161,7 +161,7 @@ Comprehensive documentation is available in the `Documentation~` folder (visible
 *   [**API Reference**](Documentation~/APIReference.md): Detailed API usage.
 *   **Module Deep Dives**:
     *   [Core](Documentation~/Modules/Core.md), [Transport](Documentation~/Modules/Transport.md), [WebSocket](Documentation~/Modules/WebSocket.md)
-    *   [Unity Integration](Documentation~/Modules/Unity.md), [UniTask Support](Documentation~/Modules/UniTask.md)
+    *   [Unity Integration](Documentation~/Modules/Unity.md), [Modules and manual registration](Documentation~/Modules/ModulesAndRegistration.md), [UniTask Support](Documentation~/Modules/UniTask.md)
     *   [Auth](Documentation~/Modules/Auth.md), [Interceptors](Documentation~/Modules/Interceptors.md), [Testing](Documentation~/Modules/Testing.md)
 *   [**Platform Notes**](Documentation~/PlatformNotes.md): Platform-specific configuration (iOS, Android, IL2CPP).
 *   [**Troubleshooting**](Documentation~/Troubleshooting.md): Common issues and solutions.
