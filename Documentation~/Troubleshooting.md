@@ -54,6 +54,7 @@ Common issues and solutions for TurboHTTP.
 If the HTTP Monitor (Window -> TurboHTTP -> Monitor) is empty:
 1.  Ensure **Enable HTTP Monitor** is checked in Preferences -> TurboHTTP.
 2.  Ensure you have `include HTTP Monitor` defined in your build settings/defines if using custom defines.
+3.  Create your `UHttpClient` in `Awake` or `Start`, not in a field initializer or constructor of a `MonoBehaviour`. The client decides whether to install the monitor interceptor when it is constructed, and it can only do that while `Application.isPlaying` is true. Unity can construct a component outside play mode and during deserialization, so a client built there is created without the monitor interceptor and the requests you watch are sent by a different, unmonitored client.
 
 ### Logging
 Enable detailed logging to debug issues:

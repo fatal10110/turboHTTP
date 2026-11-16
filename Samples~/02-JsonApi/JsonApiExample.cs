@@ -1,4 +1,5 @@
 using System;
+using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
@@ -32,6 +33,7 @@ namespace TurboHTTP.Samples.JsonApi
     public class JsonApiExample : MonoBehaviour
     {
         private UHttpClient _client;
+        private CancellationTokenSource _cts;
 
         void Start()
         {
@@ -40,10 +42,12 @@ namespace TurboHTTP.Samples.JsonApi
                 BaseUrl = "https://jsonplaceholder.typicode.com"
             };
             _client = new UHttpClient(options);
+            _cts = new CancellationTokenSource();
 
             RunExamples();
         }
 
+        // async void is only the Unity entry point: everything that can throw is caught here.
         async void RunExamples()
         {
             try
@@ -58,7 +62,19 @@ namespace TurboHTTP.Samples.JsonApi
             {
                 // The JSON helpers throw HttpError on a non-2xx status and do not expose the error body.
                 // To read it, use SendBufferedAsync and check response.IsSuccessStatusCode first.
-                Debug.LogError($"Request failed: {ex.HttpError.Type} {ex.HttpError.Message}");
+                Debug.LogError($"Request failed: {ex.HttpError.Type} - {ex.Message}");
+            }
+            catch (OperationCanceledException)
+            {
+                // Destroyed while a request was in flight.
+            }
+            finally
+            {
+                // The entry point owns disposal, so no continuation can touch a disposed client.
+                _cts?.Dispose();
+                _cts = null;
+                _client?.Dispose();
+                _client = null;
             }
         }
 
@@ -66,7 +82,7 @@ namespace TurboHTTP.Samples.JsonApi
         {
             Debug.Log("=== Get All Posts ===");
 
-            var posts = await _client.GetJsonAsync<Post[]>("/posts");
+            var posts = await _client.GetJsonAsync<Post[]>("/posts", _cts.Token);
 
             Debug.Log($"Fetched {posts.Length} posts");
             if (posts.Length > 0)
@@ -79,7 +95,7 @@ namespace TurboHTTP.Samples.JsonApi
         {
             Debug.Log("=== Get Single Post ===");
 
-            var post = await _client.GetJsonAsync<Post>("/posts/1");
+            var post = await _client.GetJsonAsync<Post>("/posts/1", _cts.Token);
 
             Debug.Log($"Post {post.id}: {post.title}");
             Debug.Log($"Body: {post.body}");
@@ -96,7 +112,7 @@ namespace TurboHTTP.Samples.JsonApi
                 body = "This is the content of my post"
             };
 
-            var created = await _client.PostJsonAsync<Post, Post>("/posts", newPost);
+            var created = await _client.PostJsonAsync<Post, Post>("/posts", newPost, _cts.Token);
 
             Debug.Log($"Created post with ID: {created.id}");
         }
@@ -113,7 +129,7 @@ namespace TurboHTTP.Samples.JsonApi
                 body = "Updated content"
             };
 
-            var result = await _client.PutJsonAsync<Post, Post>("/posts/1", updatedPost);
+            var result = await _client.PutJsonAsync<Post, Post>("/posts/1", updatedPost, _cts.Token);
 
             Debug.Log($"Updated post: {result.title}");
         }
@@ -122,14 +138,14 @@ namespace TurboHTTP.Samples.JsonApi
         {
             Debug.Log("=== Delete Post ===");
 
-            using var response = await _client.Delete("/posts/1").SendBufferedAsync();
+            using var response = await _client.Delete("/posts/1").SendBufferedAsync(_cts.Token);
 
             Debug.Log($"Delete status: {response.StatusCode}");
         }
 
         void OnDestroy()
         {
-            _client?.Dispose();
+            _cts?.Cancel();
         }
     }
 }

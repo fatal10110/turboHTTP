@@ -16,7 +16,9 @@ namespace TurboHTTP.Transport.BouncyCastle
 {
     /// <summary>
     /// TLS provider using BouncyCastle pure C# implementation.
-    /// Guaranteed to work on all platforms, including IL2CPP/AOT builds.
+    /// Pure managed code, so it needs no platform TLS or ALPN support and compiles for IL2CPP/AOT.
+    /// Certificate validation uses the platform verifier: it rejects every certificate on Linux, and
+    /// the macOS, iOS and Android verifiers are not device-validated (iOS IL2CPP stalls: #447).
     /// </summary>
     [Preserve]  // Registered with TlsProviderSelector by BouncyCastleModuleRegistration at startup
     internal sealed class BouncyCastleTlsProvider : ITlsProvider

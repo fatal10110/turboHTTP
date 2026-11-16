@@ -28,10 +28,29 @@ using var response = await client.Get("https://api.example.com").SendBufferedAsy
 ```
 
 ### Key Differences
-*   **Async/Await:** TurboHTTP uses `async/await` natively. No Coroutines.
+*   **Async/Await:** TurboHTTP uses `async/await` natively. Coroutine wrappers exist for code that still needs them (`SendCoroutine`, `GetJsonCoroutine`; see [Unity Integration](Modules/Unity.md)).
 *   **Headers:** Use fluent `.WithHeader()` instead of `SetRequestHeader`.
 *   **JSON:** Built-in JSON serialization helpers.
 *   **Keep-Alive:** TurboHTTP pools connections by default; UnityWebRequest behavior varies by version.
+
+### Behavior differences: what a default client does not do
+A `new UHttpClient()` has no interceptors. `UnityWebRequest` follows redirects, negotiates compression and (on some platforms) keeps cookies on its own; TurboHTTP does none of that until you add the interceptors from `TurboHTTP.Middleware`:
+
+| Behavior | Default client | To get it |
+| :--- | :--- | :--- |
+| Redirects | A 3xx response is returned as is (`FollowRedirects` is `true` but only `RedirectInterceptor` acts on it; construction logs a one-time warning without it) | `RedirectInterceptor`, or `FollowRedirects = false` to silence the warning |
+| Compression | No `Accept-Encoding` is sent and a `Content-Encoding` body is not decoded | `DecompressionInterceptor` |
+| Cookies | `Set-Cookie` is ignored, no `Cookie` header is sent | `CookieInterceptor` |
+| Relative URLs | `BaseUrl` is a prefix: `/users` and `users` are appended to `https://host/api` | include the version segment in `BaseUrl` |
+
+<!-- snippet: with UHttpClientOptions options = new UHttpClientOptions(); -->
+```csharp
+using TurboHTTP.Middleware;
+
+options.Interceptors.Add(new RedirectInterceptor());
+options.Interceptors.Add(new CookieInterceptor());
+options.Interceptors.Add(new DecompressionInterceptor());
+```
 
 ## From BestHTTP
 

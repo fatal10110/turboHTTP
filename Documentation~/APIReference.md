@@ -137,7 +137,7 @@ Configuration options for `UHttpClient`.
 
 | Property | Type | Description |
 | :--- | :--- | :--- |
-| `BaseUrl` | `string` | Base URL that relative request URLs are resolved against |
+| `BaseUrl` | `string` | Prefix that relative request URLs are appended to (leading slashes stripped): `https://host/api/v1` + `/users` gives `https://host/api/v1/users` |
 | `DefaultTimeout` | `TimeSpan` | Default timeout (default: 30s). For streaming responses it ends when the response headers arrive; body reads are not bounded |
 | `DefaultHeaders` | `HttpHeaders` | Headers applied to every request |
 | `Transport` | `IHttpTransport` | Custom HTTP transport implementation |

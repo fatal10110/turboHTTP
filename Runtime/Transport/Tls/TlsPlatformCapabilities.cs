@@ -17,7 +17,8 @@ namespace TurboHTTP.Transport.Tls
 
         /// <summary>
         /// <see cref="TlsBackend.SslStream"/> when system TLS is usable, otherwise
-        /// <see cref="TlsBackend.Auto"/>. Never a provider without full certificate chain validation.
+        /// <see cref="TlsBackend.Auto"/>. Never BouncyCastle: it is explicit opt-in only (its macOS, iOS and
+        /// Android verifiers are not device-validated and Linux has none, #33, #239, #447).
         /// </summary>
         public readonly TlsBackend RecommendedBackend;
 
@@ -164,9 +165,10 @@ namespace TurboHTTP.Transport.Tls
             if (systemTlsAvailable && !systemTlsKnownBroken)
                 return TlsBackend.SslStream;
 
-            // No validated backend confirmed. Never recommend a provider without full certificate
-            // chain validation (BouncyCastle today): return Auto, which fails closed with a
-            // PlatformNotSupportedException instead of silently using an unvalidated provider.
+            // No usable system TLS. Never recommend BouncyCastle (explicit opt-in only: its macOS, iOS
+            // and Android verifiers are not device-validated and Linux has none, #33, #239, #447):
+            // return Auto, which fails closed with a PlatformNotSupportedException instead of
+            // silently using it.
             return TlsBackend.Auto;
         }
     }
