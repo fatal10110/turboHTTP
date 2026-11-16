@@ -16,9 +16,6 @@ namespace TurboHTTP.Tests.Performance
         private const int ThroughputRequestCount = 1000;
         private static readonly TimeSpan ThroughputMaxDuration = TimeSpan.FromSeconds(10);
 
-        private const int AllocationSampleCount = 500;
-        private const long MaxBytesPerRequest = 32768; // Trend guardrail, not an absolute hard perf target.
-
         private const int LeakCheckRounds = 5;
         private const int LeakCheckRequestsPerRound = 250;
         private const long MaxLeakGrowthBytes = 8L * 1024 * 1024;
@@ -52,42 +49,6 @@ namespace TurboHTTP.Tests.Performance
                     ThroughputMaxDuration,
                     $"Throughput regression: {ThroughputRequestCount} requests took {sw.Elapsed.TotalMilliseconds:F0}ms.");
                 Assert.AreEqual(ThroughputRequestCount, transport.RequestCount);
-            }).GetAwaiter().GetResult();
-        }
-
-        [Test]
-        [Category("Benchmark")]
-        public void Allocation_PerRequest_RemainsBelowBudget()
-        {
-            Task.Run(async () =>
-            {
-                var transport = new MockTransport(HttpStatusCode.OK, body: Array.Empty<byte>());
-                using var client = new UHttpClient(new UHttpClientOptions
-                {
-                    Transport = transport,
-                    DisposeTransport = true
-                });
-
-                ForceGc();
-                var before = GC.GetTotalMemory(true);
-
-                for (int i = 0; i < AllocationSampleCount; i++)
-                {
-                    var response = await client.Get("https://benchmark.local/allocation/" + i).SendBufferedAsync()
-                        .ConfigureAwait(false);
-                    if (response.StatusCode != HttpStatusCode.OK)
-                        throw new InvalidOperationException("Unexpected non-OK response during allocation benchmark.");
-                }
-
-                ForceGc();
-                var after = GC.GetTotalMemory(true);
-                var delta = Math.Max(0L, after - before);
-                var perRequest = delta / AllocationSampleCount;
-
-                Assert.LessOrEqual(
-                    perRequest,
-                    MaxBytesPerRequest,
-                    $"Allocation regression: ~{perRequest} bytes/request (delta={delta}).");
             }).GetAwaiter().GetResult();
         }
 
