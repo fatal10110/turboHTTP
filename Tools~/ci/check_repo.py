@@ -276,12 +276,15 @@ def check_json(files):
                     errors.append(f"json: package.json still has the placeholder '{placeholder}'")
             try:
                 with open(os.path.join(ROOT, "CHANGELOG.md"), encoding="utf-8") as cl:
-                    top = re.search(r"^## \[([^\]]+)\]", cl.read(), re.M)
+                    headings = re.findall(r"^## \[([^\]]+)\]", cl.read(), re.M)
             except OSError:
-                top = None
-            if top and top.group(1) != data.get("version"):
+                headings = []
+            # "Unreleased" is the Keep a Changelog heading for changes after the packaged version; the
+            # first versioned heading must still match package.json.
+            versioned = [h for h in headings if h.lower() != "unreleased"]
+            if versioned and versioned[0] != data.get("version"):
                 errors.append(
-                    f"json: package.json version {data.get('version')} differs from the top CHANGELOG entry {top.group(1)}")
+                    f"json: package.json version {data.get('version')} differs from the top versioned CHANGELOG entry {versioned[0]}")
     return errors
 
 

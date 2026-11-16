@@ -5,6 +5,104 @@ All notable changes to TurboHTTP will be documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.0.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+User-visible changes merged since 1.0.0-pre.1 (2026-11-03 onward). Feature freeze still applies: these are
+fixes, hardening, validation and documentation.
+
+### Added
+- `Http2Options.EnableHttp2ThroughConnectTunnels` (default false): HTTP/2 inside CONNECT proxy tunnels is
+  opt-in (#382, #103). `Http2Options` also gained optional extra connections per origin and an idle-reuse
+  PING probe (#238, #396).
+- The HTTP/2 response handler chain runs off the read loop (#29, #393).
+- `UHttpClient.DisposeAsync` awaits plugin shutdown before disposing interceptors and the transport (#385).
+- Public API reference documentation: the public Core, Transport, proxy, middleware, auth, cache, retry,
+  WebSocket and Unity surfaces carry XML docs, and CS1591 is enforced for Core and Transport
+  (#1228-#1233).
+
+### Changed
+- `WebSocket` `DisposeAsync` sends a Close frame (1000) instead of aborting (#301, #390).
+- `LiteJson` follows the RFC 8259 grammar strictly (invalid JSON that parsed before now throws), accepts a
+  BOM, reads UTC timestamps, has `MaxInputBytes` and throws `NotSupportedException` for POCOs (#75, #395).
+- Download verification runs whenever an expected hash is set, not only with `VerifyChecksum` (#1201).
+- Unity texture and audio decodes are bounded by default and fail closed on unreadable image headers (#1200).
+- `SslStream` connections request ALPN through the netstandard2.1 API without reflection, and report no
+  ALPN or HTTP/2 where the runtime cannot negotiate it (#303, #381, #418, #430).
+- The wire host is checked as an RFC 3986 host before any socket opens (#340, #358); `localhost` names
+  resolve to loopback without the platform resolver (#322, #351).
+- Happy Eyeballs interleaves address families (#361, #362, #373).
+- WebSocket sends the A-label wire host in the `Host` header and CONNECT authority (#309, #371).
+- Decompression is bounded: chain cap, per-layer work budget and all `Content-Encoding` lines are
+  honored (#1162); Range requests skip content coding and 206 passes through undecoded (#1172).
+- HTTP/1.1: empty POST/PUT/PATCH are framed, request `Connection: close` is honored (#1165); response field
+  values with control characters are rejected and only SP/HTAB are trimmed (#1186); one stale-connection
+  retry for direct and proxied requests (#1193).
+- Proxy decision is made per dispatch and request-level `ProxySettings` are validated (#1196); the wire
+  (A-label) host is used for proxy bypass, cleartext policy, pool and DNS (#378, #368).
+- `'/path'` requests resolve against `BaseUrl` on every runtime and client policy applies to standalone
+  requests (#563, #564).
+- Cache: sits inside Redirect and Cookie and guards stores on the request as sent (#1198); Vary variants
+  are bounded per key and stale entries that can be revalidated are kept (#1179); delta-seconds clamp to
+  2^31 and responses without freshness are stale (#1175); only complete streamed bodies are stored
+  (#1191); `response_delay` is added to the stored Age (#306, #383).
+- Redirects: credential defaults are origin-bound, hops dispatch after the previous hop (#1189).
+- OAuth: `redirect_uri` is sent as registered, one refresh is shared per key and rejected tokens recover
+  (#1185); `AuthInterceptor` scopes tokens to allowed origins and keeps a caller-set `Authorization` (#1182).
+- Cookies: `CookieJar` rejects control characters, parses RFC 6265 cookie-date `Expires` and a
+  trailing-dot `Domain` (#1178).
+- HTTP/2: stream lifecycle hardening (late signals, upload failure after response start, `:status` rules)
+  (#1170); trailers kept on buffered responses (#539, #1188); one dial for a cold origin (#736, #1181);
+  consumed-chunk `WINDOW_UPDATE` sent under the connection token (#687, #689); a request deadline after
+  response start reports `Timeout` (#409, #420).
+- WebSocket: connect failures are classified by cause, `MaxFragmentCount` raised, transport TLS backend
+  honored (#1194); keep-alive is correct under backpressure and suspension (#1190); the resilient
+  reconnect stops on `CloseAsync`/`Abort` (#1168); `client.WebSocket(url)` holds early messages, inherits
+  only safe headers and applies the client proxy (#1199).
+- Observability: URLs are redacted in timeline events, errors, URL-valued headers and Monitor exports
+  (#1203); compressed bodies are decoded before redaction (#1187).
+- Happy Eyeballs keeps racing at the attempt cap and after a failure (#814, #815, #1197).
+- Android: deferred-work jobs end on their first run and orphans are cleared at startup (#1211); the
+  cleartext policy is rooted in the Complete bootstrap (#1214).
+- Tooling: `Tools~/ci/check.sh` gates compile the opt-in define code, replay the fuzz corpus and pin
+  asmdef settings (#1224); allocation gates use counted bytes with measured baselines (#881).
+
+### Fixed
+- HTTP/1.1 repeats a request once without `Expect: 100-continue` after an early 417 (#214, #392).
+- WebSocket: a disconnect of the replacement connection is never lost during a reconnect (#427).
+- Socket channels: cancellation wins over any I/O error (#410, #415, #425); no new socket is opened while
+  an abandoned socket read is pending (IL2CPP descriptor reuse, #369, #377); `PollSelect` `SendAsync` no
+  longer blocks on a full send buffer (#329, #339).
+- The HTTP/1.1 head read and the CONNECT reply read race the cancellation token (#293, #346).
+- IL2CPP: exceptions thrown in catch clauses stay out of sibling clauses and the HTTP/2 stream is claimed
+  before cancel (#318, #320, #334).
+- Android: JNI calls run on one attached thread (#328, #335).
+- Apple TLS: "no chain to a trusted anchor" (-25318) is reported as `UntrustedRoot` (#333).
+- Managed Stripping Medium/High keeps Mono's configuration init (#453).
+- HPACK: the `{` Huffman code and the encoder dynamic table cap (#1161).
+- HTTP/1.1 body, 407-drain and WebSocket handshake reads race their token (#345, #226, #1204); pending body
+  reads fail on Abort/Dispose and a connection with unread bytes is never pooled (#1174).
+- Socket channels: abandoned-read descriptors are held until the read ends (#384, #448, #455); the
+  PollSelect poll thread owns the socket close (#1206).
+- BouncyCastle TLS: the subject CN is never used as a server identity (#929, #1208); Dispose never blocks
+  on a write and data survives a failed reply write (#910, #912); the handshake returns at its deadline
+  or cancel (#344).
+- Dropped response bodies keep their buffers off the pool and an abandoned streaming body aborts
+  (#582, #583, #1183).
+- Unity: coroutine requests clean up outside the iterator (#1205); Metrics and Monitor capture request
+  data before a streamed body disposes the request (#1171).
+- WebSocket user handlers are guarded, connect cancels on Abort and `Create()` works without a transport
+  (#1177).
+
+### Breaking
+- WebSocket plumbing types are now `internal` (#1145, #1215): `WebSocketFrameReader`,
+  `WebSocketFrameReadLease`, `WebSocketFrameWriter`, `WebSocketFrame`, `WebSocketCloseStatus`,
+  `MessageAssembler`, `WebSocketAssembledMessage`, `WebSocketHandshakeRequest`, `WebSocketHandshake`,
+  `WebSocketHandshakeResult`, `WebSocketHandshakeException`, `WebSocketHandshakeValidator`,
+  `WebSocketExtensionNegotiator`, `WebSocketExtensionNegotiationResult`, `WebSocketConstants`,
+  `WebSocketProtocolException` and `WebSocketConnection`. `WebSocketClient` is now `sealed`.
+- HTTP/2 inside CONNECT tunnels is off by default (#382); set
+  `Http2Options.EnableHttp2ThroughConnectTunnels` to opt in.
+
 ## [1.0.0-pre.1] - 2026-11-02
 
 First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); third-party notices are in
@@ -13,10 +111,10 @@ First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); t
 ### Release status
 - Feature freeze until 1.0.0 GA: bug fixes, validation and docs only (#10). Phases 16, 19c, 22d, 23, 24
   (except decompression, already shipped) and 25 are post-1.0 and not in this package.
-- Gated in 1.0: HTTP/2 through a CONNECT proxy tunnel is negotiated today (ALPN `h2, http/1.1` inside tunnels);
-  it must ship off by default until device validation (#103, required before 1.0.0);
+- Gated in 1.0: HTTP/2 through a CONNECT proxy tunnel is opt-in and off by default
+  (`Http2Options.EnableHttp2ThroughConnectTunnels`, #382); device validation (#103) is required before 1.0.0;
   WebSocket permessage-deflate is experimental until its verification gates close (#104); background
-  networking is experimental and opt-in (#265); BouncyCastle TLS is opt-in (`TURBOHTTP_BOUNCYCASTLE`, #259).
+  networking is experimental and opt-in (#266); BouncyCastle TLS is opt-in (`TURBOHTTP_BOUNCYCASTLE`, #259).
 - `1.0.0-pre.N` tags are cut from `main` while the physical-device matrix (#99) waits for hardware;
   `1.0.0` follows #99 and a green full host-editor run. Unity tests run only in the host editor (#188).
 - Distribution: Git URL with a release tag (`https://github.com/fatal10110/turboHTTP.git#v1.0.0-pre.1`) and
@@ -26,7 +124,8 @@ First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); t
 
 ### Modules
 Assemblies shipped in this package: `TurboHTTP.Core`, `TurboHTTP.Transport` (raw-socket HTTP/1.1 and
-HTTP/1.1 over `SslStream`; HTTP/2 needs the BouncyCastle backend), `TurboHTTP.Transport.BouncyCastle` (opt-in TLS fallback over the vendored `TurboHTTP.SecureProtocol`
+HTTP/1.1 over `SslStream`; Unity's `SslStream` sends no ALPN, so HTTP/2 over TLS needs the BouncyCastle backend,
+see `Documentation~/PlatformNotes.md`), `TurboHTTP.Transport.BouncyCastle` (opt-in TLS fallback over the vendored `TurboHTTP.SecureProtocol`
 library, compiled with the `TURBOHTTP_BOUNCYCASTLE` scripting symbol; the vendored `TurboHTTP.SecureProtocol` assembly itself is always compiled), `TurboHTTP.Middleware` (redirect, cookie, decompression and
 default-header interceptors), `TurboHTTP.Auth` (OAuth 2.0, OIDC, PKCE), `TurboHTTP.Retry`,
 `TurboHTTP.Cache`, `TurboHTTP.RateLimit`, `TurboHTTP.Observability`, `TurboHTTP.Files`, `TurboHTTP.JSON`
@@ -42,11 +141,12 @@ authentication and rate limiting are interceptors on `UHttpClientOptions.Interce
   since an earlier one):
   - Happy Eyeballs (RFC 8305) dual-stack connection racing (`HappyEyeballsOptions`).
   - Proxy support: HTTP/HTTPS proxies with `Proxy-Authorization` and CONNECT tunnels; HTTP/2 through
-    CONNECT is negotiated today; the default-off option is tracked in #103 (required before 1.0.0).
+    CONNECT is opt-in via `Http2Options.EnableHttp2ThroughConnectTunnels` (default false, #382); device
+    validation is tracked in #103 (required before 1.0.0).
   - Adaptive networking (`UseAdaptiveNetworking`): timeouts adapted to measured network quality
     (`TurboHTTP.Unity`).
   - Background networking (`UseBackgroundNetworking`): experimental and opt-in with
-    `TURBOHTTP_BACKGROUND_NETWORKING`; iOS and Android device validation is pending (#99, #265).
+    `TURBOHTTP_BACKGROUND_NETWORKING`; iOS and Android device validation is pending (#99, #266).
   - OAuth 2.0 and OIDC token acquisition and refresh with PKCE (`TurboHTTP.Auth`).
   - Interceptor pipeline (`IHttpInterceptor`) for request and response mutation.
   - `MockTransport` and `RecordReplayTransport` for offline unit and integration testing.
