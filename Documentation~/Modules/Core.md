@@ -118,9 +118,11 @@ await using var bounded = await client.Get("https://example.com/big.bin").SendSt
 var chunk = new byte[16 * 1024];
 while (await bounded.Body.ReadAsync(chunk, 0, chunk.Length, cts.Token) > 0)
 {
-    cts.CancelAfter(TimeSpan.FromSeconds(30)); // optional: restart the limit after every read for an idle-read timeout
+    // consume chunk
 }
 ```
+
+For an idle-read timeout, keep a second `CancellationTokenSource` linked to the overall one and call `CancelAfter` on it before each read; re-arming the overall source itself would replace the overall limit.
 
 Body ownership in short: whoever holds a `UHttpResponse` or `UHttpStreamingResponse` disposes it exactly once; extension methods such as `AsJson<T>()` read from the response and leave the disposal to you.
 

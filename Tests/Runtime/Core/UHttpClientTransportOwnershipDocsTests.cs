@@ -71,10 +71,11 @@ namespace TurboHTTP.Tests.Core
                 client.Dispose();
 
                 var other = new UHttpClient(new UHttpClientOptions { Transport = transport, FollowRedirects = false });
-                AssertAsync.ThrowsAsync<ObjectDisposedException>(async () =>
+                var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                 {
                     using var r = await other.Get("https://example.test/").SendBufferedAsync();
                 });
+                Assert.IsInstanceOf<ObjectDisposedException>(ex.HttpError.InnerException);
                 other.Dispose();
             });
         }

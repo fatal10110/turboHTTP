@@ -67,7 +67,7 @@ var configured = new UHttpClient(options);
 | `RegisterPluginAsync(plugin, ct)` | Register an `IHttpPlugin` (see Plugins) |
 | `GetOptionsSnapshot()` | A copy of the options the client runs with |
 | `DisposeAsync()` | Wait for plugin shutdown (bounded by `PluginShutdownTimeout`), then release owned interceptors and the owned transport (not the shared default transport; see above) |
-| `Dispose()` | Same release without waiting: plugin shutdown is started but not awaited. Cancels no in-flight request |
+| `Dispose()` | Same release without waiting: plugin shutdown is started but not awaited. Does not cancel in-flight requests itself; with an owned transport they fail once it is disposed |
 
 ### UHttpRequest
 
