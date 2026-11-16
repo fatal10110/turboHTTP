@@ -149,7 +149,8 @@ namespace TurboHTTP.Core
         public bool IsError => Error != null;
 
         /// <summary>
-        /// Get the response body as a UTF-8 string.
+        /// Get the response body as a UTF-8 string. Always decodes UTF-8 and ignores the charset of
+        /// <c>Content-Type</c>; use <c>GetBodyAsString(GetContentEncoding())</c> for other charsets.
         /// Returns null if body is empty.
         /// </summary>
         public string GetBodyAsString()

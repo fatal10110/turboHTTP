@@ -79,6 +79,6 @@ using var response = await client.Get("https://api.example.com").SendBufferedAsy
 ## Checklist for Migration
 
 1.  [ ] **Instantiation**: Create a single `UHttpClient` instance for your game/service lifetime.
-2.  [ ] **Disposal**: Ensure you call `client.Dispose()` when the application quits or the service is destroyed to free up sockets.
+2.  [ ] **Disposal**: Ensure you call `client.Dispose()` when the application quits or the service is destroyed. This stops plugins and disposes what the client owns; with default options the shared transport stays open and idle sockets close after the pool idle timeout, and in-flight requests stop only through their `CancellationToken`.
 3.  [ ] **Error Handling**: Switch from checking `.isNetworkError` strings to checking `response.IsSuccessStatusCode` or catching `UHttpException` for network and protocol failures (and for HTTP errors if you call `EnsureSuccessStatusCode`).
 4.  [ ] **Response disposal**: dispose every `UHttpResponse` (`using var`), like a `UnityWebRequest`.
