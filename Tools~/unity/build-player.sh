@@ -9,11 +9,11 @@
 #     Tools~/unity/build-player.sh --target android-il2cpp [--bouncycastle] --run [--serial <adb serial>] [--arch arm64|x86_64] [--network]
 #     Tools~/unity/build-player.sh --target android-il2cpp [--bouncycastle] --apk <built APK> [--serial <adb serial>] [--network]
 #
-# The project gets Tools~/unity/player-smoke/ as Assets/TurboHttpSmoke/ with no .asmdef:
-# TurboHttpPlayerSmoke.cs runs the rows of TurboHttpSmokeRows.cs WITHOUT any EnsureRegistered() call
+# The project gets Tools~/unity/player-smoke/ as Assets/TurboHttpSmoke/; the smoke itself has no .asmdef
+# (it compiles into Assembly-CSharp) and only H2Rows/ is its own assembly. TurboHttpPlayerSmoke.cs runs the rows of TurboHttpSmokeRows.cs WITHOUT any EnsureRegistered() call
 # (#1 AC1, #7 AC1): transport registration, the link.xml reflection targets (#8), WebSocket JSON (#192),
 # OAuth refresh (#67) and GetJsonCoroutine<T> (#95) offline, and with --network one HTTPS request per
-# TLS provider (#141, #258 AC2). It logs one "TURBOHTTP_SMOKE ROW <id> PASS|FAIL|SKIP" line per row and
+# TLS provider (#141, #258 AC2) and the HTTP/2-over-TLS rows (#1210, H2Rows/: its own assembly). It logs one "TURBOHTTP_SMOKE ROW <id> PASS|FAIL|SKIP" line per row and
 # one aggregate "TURBOHTTP_SMOKE PASS|FAIL" line, which this script requires to be PASS;
 # Editor/TurboHttpPlayerBuild.cs sets the backend and the Managed Stripping Level (--stripping; default
 # High for IL2CPP targets and Unity's default Disabled for Mono; IL2CPP takes Low|Medium|High) and calls
@@ -39,8 +39,19 @@
 # call is bounded and retried (an interop outage from WSL as in wsl-interop.sh). --network asks the
 # player for the TLS rows (Windows: -turbohttpSmokeNetwork; Android: intent extra
 # turbohttp_smoke_network=1) and requires their PASS rows; without it they are SKIP and the run stays
-# offline. CI never builds players (no Unity license, #188, #100): this script, run in a host editor, is
-# the player-build gate (testing.md, "Host-editor gates").
+# offline. --network also runs the HTTP/2-over-TLS rows (#1210: 2 MiB download, 1 MiB echoed upload, 100
+# concurrent streams after a warm-up, a streaming read cancelled mid-body then a second 2 MiB download) per
+# TLS provider against an h2-interop file server: TURBOHTTP_H2_ROWS_URL and TURBOHTTP_H2_ROWS_ROOT (what
+# Tools~/h2-interop/run.sh --serve prints; ROOT may be unset for a publicly trusted server), else this script
+# starts run.sh --serve 0 itself when --bouncycastle is given (needs dotnet; stopped on exit). Without
+# --bouncycastle and without TURBOHTTP_H2_ROWS_URL no provider can run them (SslStream rejects the test root),
+# so no server is started and the rows are SKIP and not required. The player gets the URL and the root as
+# base64 DER (Windows: -turbohttpSmokeH2Url/-turbohttpSmokeH2Root; Android: intent extras
+# turbohttp_smoke_h2_url/_root, and adb reverse for a loopback URL). With --bouncycastle the four
+# h2-*-bouncycastle rows must PASS over HTTP/2 (protocol=h2); the h2-*-sslstream rows must PASS when no root
+# is given and are SKIP with one (SslStream trusts the platform store only). CI never builds players (no Unity license, #188, #100): this script, run in a host editor, is
+# the player-build gate (testing.md, "Host-editor gates"). TURBOHTTP_SMOKE_WAIT_S (default 300 s, 900 s with
+# --network) also bounds the Windows player run.
 #
 # Exit codes: 0 pass, 1 build, check or smoke failure (FAIL row, or no marker), 2 usage/setup error (no
 # device, lock screen, install or launch failed), 3 Unity, a build module or the
@@ -134,6 +145,8 @@ esac
 topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi; }
 
 fail=0
+smoke_wait_s="${TURBOHTTP_SMOKE_WAIT_S:-$([ "$network" = 1 ] && echo 900 || echo 300)}"
+h2_port=""
 # Prints the player's row lines and aggregate marker from log $1 and sets fail=1 unless the aggregate is
 # PASS, with --bouncycastle reports bc=present, and with --network has a PASS row per TLS provider built in.
 check_smoke_log() {
@@ -150,11 +163,80 @@ check_smoke_log() {
     case "$marker" in *"bc=present"*) ;; *) echo "build-player: FAIL BouncyCastle provider not found in the player"; fail=1 ;; esac
   fi
   if [ "$network" = 1 ]; then
+    for row in $h2_rows; do
+      [ -z "$h2_url" ] && break
+      [ -z "$h2_root_b64" ] && rows="$rows $row-sslstream"
+      [ "$bouncycastle" = 1 ] && rows="$rows $row-bouncycastle"
+    done
     for row in $rows; do
       grep -qE "TURBOHTTP_SMOKE ROW $row PASS" "$plog" 2>/dev/null ||
         { echo "build-player: FAIL --network: no 'TURBOHTTP_SMOKE ROW $row PASS'"; fail=1; }
+      case "$row" in
+        h2-*-bouncycastle)
+          grep -qE "TURBOHTTP_SMOKE ROW $row PASS .*protocol=h2( |$)" "$plog" 2>/dev/null ||
+            { echo "build-player: FAIL --network: $row did not run over HTTP/2"; fail=1; } ;;
+      esac
     done
   fi
+}
+
+# #1210: the HTTP/2-over-TLS row server. h2_prepare (before the player starts) waits for a server this
+# script started, then sets h2_url and h2_root_b64 (the root as base64 DER, empty without a root).
+h2_rows="h2-download h2-upload h2-concurrent h2-stream-cancel"
+h2_url="${TURBOHTTP_H2_ROWS_URL:-}"; h2_root="${TURBOHTTP_H2_ROWS_ROOT:-}"; h2_root_b64=""; h2_pid=""; h2_log=""
+h2_stop() { if [ -n "$h2_pid" ]; then kill "$h2_pid" 2>/dev/null || true; fi; }
+# The rows need a server a built-in provider can trust: a given URL, or the started one (test root) with
+# --bouncycastle. Otherwise (the plain --network TLS run, #450) they are not run.
+h2_on=0
+if [ "$network" = 1 ] && { [ -n "$h2_url" ] || [ "$bouncycastle" = 1 ]; }; then h2_on=1; fi
+if [ "$h2_on" = 1 ] && [ -z "$h2_url" ]; then
+  command -v dotnet >/dev/null || {
+    echo "TOOLCHAIN_UNAVAILABLE: --network starts the HTTP/2 row server (Tools~/h2-interop/run.sh --serve), which needs dotnet;" \
+      "or set TURBOHTTP_H2_ROWS_URL/_ROOT to a running one"; exit 3; }
+  h2_log="$(mktemp "${TMPDIR:-/tmp}/turbohttp-h2-serve.XXXXXX")"
+  "$repo/Tools~/h2-interop/run.sh" --serve 0 >"$h2_log" 2>&1 &
+  h2_pid=$!
+  trap h2_stop EXIT
+fi
+h2_prepared=0
+h2_prepare() {
+  { [ "$network" = 1 ] && [ "$h2_prepared" = 0 ]; } || return 0
+  h2_prepared=1
+  if [ "$h2_on" = 0 ]; then
+    echo "build-player: HTTP/2 rows not run (no --bouncycastle and no TURBOHTTP_H2_ROWS_URL; SslStream cannot trust the test root)"
+    return 0
+  fi
+  if [ -n "$h2_pid" ]; then
+    local deadline=$(( $(date +%s) + ${TURBOHTTP_H2_SERVE_WAIT_S:-900} ))
+    until grep -q '^serving until' "$h2_log"; do
+      if ! kill -0 "$h2_pid" 2>/dev/null; then
+        echo "build-player: the HTTP/2 row server (Tools~/h2-interop/run.sh --serve) exited:" >&2; tail -20 "$h2_log" >&2; exit 2
+      fi
+      if [ "$(date +%s)" -ge "$deadline" ]; then
+        echo "build-player: the HTTP/2 row server did not start within ${TURBOHTTP_H2_SERVE_WAIT_S:-900} s; see $h2_log" >&2; exit 2
+      fi
+      sleep 2
+    done
+    h2_url="$(sed -n 's/^TURBOHTTP_H2_ROWS_URL=//p' "$h2_log" | head -1)"
+    h2_root="$(sed -n 's/^TURBOHTTP_H2_ROWS_ROOT=//p' "$h2_log" | head -1)"
+  fi
+  case "$h2_url" in https://*) ;; *) echo "build-player: TURBOHTTP_H2_ROWS_URL must be an https URL, got '$h2_url'" >&2; exit 2 ;; esac
+  if [ -n "$h2_root" ]; then
+    h2_root_b64="$(python3 -I -c '
+import base64, sys
+data = open(sys.argv[1], "rb").read()
+begin, end = b"-----BEGIN CERTIFICATE-----", b"-----END CERTIFICATE-----"
+if begin in data:
+    body = data.split(begin, 1)[1]
+    if end not in body:
+        sys.exit(1)
+    data = base64.b64decode(b"".join(body.split(end, 1)[0].split()))
+if not data.startswith(b"\x30"):
+    sys.exit(1)
+print(base64.b64encode(data).decode("ascii"))
+' "$h2_root")" || { echo "build-player: TURBOHTTP_H2_ROWS_ROOT '$h2_root' is not a PEM or DER certificate" >&2; exit 2; }
+  fi
+  echo "build-player: HTTP/2 rows against $h2_url (test root: ${h2_root:-none, a publicly trusted server})"
 }
 
 if [ "$run" = 1 ]; then
@@ -228,12 +310,24 @@ if [ "$run" = 1 ]; then
       exit 2
     fi
     adbr logcat -c >/dev/null || adb_failed "$?" "logcat -c"
-    if [ "$network" = 1 ]; then extra=(--es turbohttp_smoke_network 1); fi
+    if [ "$network" = 1 ]; then
+      h2_prepare
+      extra=(--es turbohttp_smoke_network 1)
+      [ -n "$h2_url" ] && extra+=(--es turbohttp_smoke_h2_url "$h2_url")
+      [ -n "$h2_root_b64" ] && extra+=(--es turbohttp_smoke_h2_root "$h2_root_b64")
+      # A loopback row server is the host's: adb reverse maps the device's port to it.
+      local hostport="${h2_url#https://}"; hostport="${hostport%%/*}"
+      case "$hostport" in
+        127.0.0.1:*|localhost:*)
+          h2_port="${hostport##*:}"
+          adbr reverse "tcp:$h2_port" "tcp:$h2_port" >/dev/null || adb_failed "$?" "reverse tcp:$h2_port" ;;
+      esac
+    fi
     out="$(adbr shell am start -W -n "$pkg_id/com.unity3d.player.UnityPlayerActivity" ${extra[@]+"${extra[@]}"})" ||
       adb_failed "$?" "am start"
     case "$out" in *Error*) echo "build-player: am start failed: $out" >&2; exit 2 ;; esac
     echo "build-player: installed and launched $pkg_id on ${serial:-the adb device}; waiting for TURBOHTTP_SMOKE"
-    deadline=$(( $(date +%s) + ${TURBOHTTP_SMOKE_WAIT_S:-300} ))
+    deadline=$(( $(date +%s) + smoke_wait_s ))
     while :; do
       rc=0
       adbr logcat -d -s Unity:V AndroidRuntime:E DEBUG:V > "$logcat" || rc=$?
@@ -250,12 +344,13 @@ if [ "$run" = 1 ]; then
         break
       fi
       if [ "$(date +%s)" -ge "$deadline" ]; then
-        echo "build-player: no marker within ${TURBOHTTP_SMOKE_WAIT_S:-300} s; see $logcat"
+        echo "build-player: no marker within $smoke_wait_s s; see $logcat"
         break
       fi
       sleep "${TURBOHTTP_SMOKE_POLL_S:-3}"
     done
     adbr shell am force-stop "$pkg_id" >/dev/null || true
+    if [ -n "$h2_port" ]; then adbr reverse --remove "tcp:$h2_port" >/dev/null || true; fi
     check_smoke_log "$logcat"
   }
 
@@ -434,10 +529,15 @@ if [ "$target" != android-il2cpp ]; then
   plog="$out/player.log"
   pcode=0
   player_args=(-batchmode -nographics)
-  if [ "$network" = 1 ]; then player_args+=(-turbohttpSmokeNetwork); fi
+  if [ "$network" = 1 ]; then
+    h2_prepare
+    player_args+=(-turbohttpSmokeNetwork)
+    [ -n "$h2_url" ] && player_args+=(-turbohttpSmokeH2Url "$h2_url")
+    [ -n "$h2_root_b64" ] && player_args+=(-turbohttpSmokeH2Root "$h2_root_b64")
+  fi
   for _ in 1 2 3; do
     set +e
-    (cd "$out" && timeout 300 "./$product" "${player_args[@]}" -logFile "$(topath "$plog")" >/dev/null 2>&1)
+    (cd "$out" && timeout "$smoke_wait_s" "./$product" "${player_args[@]}" -logFile "$(topath "$plog")" >/dev/null 2>&1)
     pcode=$?
     set -e
     [ -f "$plog" ] && break

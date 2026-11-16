@@ -169,8 +169,11 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    player logs one `TURBOHTTP_SMOKE ROW <id> PASS|FAIL|SKIP <issue> <detail>` line per row (transport
    registration #1, link.xml reflection targets #8, WebSocket JSON DTO with a nested list and dictionary
    #192, OAuth refresh #67, `GetJsonCoroutine<T>` for a class and a struct #95, offline through an
-   in-process transport; with `--network` one HTTPS request per TLS provider, #141/#258) and one aggregate
-   `TURBOHTTP_SMOKE PASS|FAIL` line the script requires. Mono at `--stripping High --network` is a
+   in-process transport; with `--network` one HTTPS request per TLS provider, #141/#258, and the four
+   HTTP/2-over-TLS rows per provider, #1210: 2 MiB down, 1 MiB echoed up, 100 concurrent streams, a
+   cancelled streaming read then 2 MiB down, against `Tools~/h2-interop/run.sh --serve`, which the script
+   starts unless `TURBOHTTP_H2_ROWS_URL`/`_ROOT` name a running server; BouncyCastle must PASS over h2,
+   SslStream is SKIP with a test root) and one aggregate `TURBOHTTP_SMOKE PASS|FAIL` line the script requires. Mono at `--stripping High --network` is a
    required release-candidate row (#450): the offline `net-config` row runs `ServicePointManager`'s
    configuration init and `tls-sslstream` must complete a handshake with a 200, both of which fail when
    UnityLinker strips what that init creates by reflection (`Runtime/Transport/link.xml` keeps it).
@@ -207,9 +210,9 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    to its ABI, so an emulator serial gets an x86_64 APK), builds, installs (`adb install -r`),
    force-stops, wakes the screen (exit 2 on a lock screen it cannot dismiss), launches
    `UnityPlayerActivity` and polls logcat for the aggregate marker (`TURBOHTTP_SMOKE_WAIT_S`, default
-   300 s); exit 1 on FAIL or no marker, logcat kept as `logcat.txt` in the build folder. `--apk <file>`
-   reruns a built APK without Unity; `--network` (opt-in, needs the internet) adds the TLS rows and
-   requires their PASS. Quote the row lines in the #99 journal. Never
+   300 s, 900 s with `--network`); exit 1 on FAIL or no marker, logcat kept as `logcat.txt` in the build folder. `--apk <file>`
+   reruns a built APK without Unity; `--network` (opt-in, needs the internet) adds the TLS and HTTP/2 rows
+   and requires their PASS (a loopback row server is reached through `adb reverse`). Quote the row lines in the #99 journal. Never
    stop a running device run from the shell: killing Unity's process tree also kills its adb server.
    With the phone and an emulator (or several) attached, pass `--serial <id>`: Unity only builds the APK
    and the script installs and launches it on that device; `--skip-build` reinstalls the last such APK.

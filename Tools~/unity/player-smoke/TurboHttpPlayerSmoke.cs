@@ -18,6 +18,11 @@
 // ALPN on this runtime and the selection is not h2, #413; Unity's SslStream cannot, #418), only when the
 // run asks for the network (Windows: the -turbohttpSmokeNetwork argument; Android: the turbohttp_smoke_network=1 intent
 // extra that build-player.sh --network passes to am start); otherwise they are SKIP.
+// With the network, the HTTP/2-over-TLS rows h2-<download|upload|concurrent|stream-cancel>-<sslstream|bouncycastle>
+// (#1210, H2Rows/TurboHttpH2Rows.cs) run against the h2-interop file server build-player.sh names (Windows: the
+// -turbohttpSmokeH2Url <url> and -turbohttpSmokeH2Root <base64 DER> arguments; Android: the turbohttp_smoke_h2_url and
+// turbohttp_smoke_h2_root intent extras). The BouncyCastle rows trust that root and require HTTP/2; the SslStream rows
+// are SKIP with a root (SslStream trusts the platform store only) and run against a publicly trusted server without one.
 // QuickStartExample is compiled, never attached to a scene.
 using System;
 using System.Collections;
@@ -25,6 +30,7 @@ using System.Collections.Generic;
 using System.Threading;
 using System.Threading.Tasks;
 using TurboHTTP.Core;
+using TurboHTTP.PlayerSmoke;
 using TurboHTTP.Unity;
 using UnityEngine;
 using UnityEngine.Scripting;
@@ -34,9 +40,16 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
     public const string Marker = "TURBOHTTP_SMOKE";
     public const string NetworkArgument = "-turbohttpSmokeNetwork";
     public const string NetworkExtra = "turbohttp_smoke_network";
+    public const string H2UrlArgument = "-turbohttpSmokeH2Url";
+    public const string H2UrlExtra = "turbohttp_smoke_h2_url";
+    public const string H2RootArgument = "-turbohttpSmokeH2Root";
+    public const string H2RootExtra = "turbohttp_smoke_h2_root";
 
     // Bound per row: the offline rows finish in milliseconds; the TLS rows include DNS, TCP and a handshake.
     private const float RowTimeoutSeconds = 60f;
+
+    // The HTTP/2 rows move up to 4 MiB or 101 requests; each request has its own 60 s timeout.
+    private const float H2RowTimeoutSeconds = 120f;
 
     private readonly List<string> _failed = new List<string>();
     private int _passed;
@@ -74,7 +87,8 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
         yield return JsonCoroutineRow<TurboHttpSmokeRows.StructPayload>(
             "json-coroutine-struct", TurboHttpSmokeRows.StructPath, TurboHttpSmokeRows.VerifyStructPayload);
 
-        if (!NetworkRequested())
+        var network = NetworkRequested();
+        if (!network)
         {
             Skip("tls-sslstream", "#141", "network off (build-player.sh --network)");
             Skip("tls-bouncycastle", "#258", "network off (build-player.sh --network)");
@@ -94,12 +108,46 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
             }
         }
 
+        yield return H2Rows(network);
+
         if (_failed.Count == 0 && summary != null)
             Debug.Log(Marker + " PASS " + summary + " rows=" + _passed + " skipped=" + _skipped);
         else
             Debug.Log(Marker + " FAIL rows=" + string.Join(",", _failed));
 
         Application.Quit(_failed.Count == 0 ? 0 : 1);
+    }
+
+    // #1210: the four HTTP/2-over-TLS rows per TLS provider, one after another.
+    private IEnumerator H2Rows(bool network)
+    {
+        var url = network ? Option(H2UrlArgument, H2UrlExtra) : null;
+        var root = network ? Option(H2RootArgument, H2RootExtra) : null;
+        foreach (var backend in new[] { TlsBackend.SslStream, TlsBackend.BouncyCastle })
+        {
+            string skip = null;
+            if (!network)
+                skip = "network off (build-player.sh --network)";
+            else if (string.IsNullOrEmpty(url))
+                skip = "no HTTP/2 row server (" + H2UrlArgument + " / " + H2UrlExtra + ")";
+            else if (backend == TlsBackend.BouncyCastle && !TurboHttpSmokeRows.BouncyCastlePresent)
+                skip = "BouncyCastle not in this build (build-player.sh --bouncycastle)";
+            else if (backend == TlsBackend.SslStream && !string.IsNullOrEmpty(root))
+                skip = "SslStream trusts the platform store only, not the row server's test root (needs a publicly trusted server)";
+
+            foreach (var row in TurboHttpH2Rows.Rows)
+            {
+                var id = TurboHttpH2Rows.RowId(row, backend);
+                if (skip != null)
+                {
+                    Skip(id, TurboHttpH2Rows.Issue, skip);
+                    continue;
+                }
+
+                yield return AsyncRow(id, TurboHttpH2Rows.Issue,
+                    ct => TurboHttpH2Rows.RunAsync(row, backend, url, root, ct), H2RowTimeoutSeconds);
+            }
+        }
     }
 
     private void Row(string id, string issue, Func<string> check)
@@ -115,19 +163,23 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
     }
 
     // The row's task reports through Outcome; this coroutine owns it and waits on the main thread, bounded.
-    private IEnumerator AsyncRow(string id, string issue, Func<CancellationToken, Task<string>> check)
+    private IEnumerator AsyncRow(
+        string id,
+        string issue,
+        Func<CancellationToken, Task<string>> check,
+        float timeoutSeconds = RowTimeoutSeconds)
     {
         var outcome = new Outcome();
-        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(RowTimeoutSeconds));
+        var cts = new CancellationTokenSource(TimeSpan.FromSeconds(timeoutSeconds));
         _ = Capture(check, cts.Token, outcome);
-        var deadline = Time.realtimeSinceStartup + RowTimeoutSeconds + 5f;
+        var deadline = Time.realtimeSinceStartup + timeoutSeconds + 5f;
         while (!outcome.Done && Time.realtimeSinceStartup < deadline)
             yield return null;
 
         if (!outcome.Done)
         {
             // The task still holds the token: the source is left to the process exit that follows.
-            Fail(id, issue, "no result in " + (RowTimeoutSeconds + 5f) + " s");
+            Fail(id, issue, "no result in " + (timeoutSeconds + 5f) + " s");
             yield break;
         }
 
@@ -256,6 +308,36 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
         }
 #else
         return false;
+#endif
+    }
+
+    // The value of "<argument> <value>" on the command line, else (Android) the string intent extra, else null.
+    private static string Option(string argument, string extra)
+    {
+        var args = Environment.GetCommandLineArgs();
+        for (var i = 0; i + 1 < args.Length; i++)
+        {
+            if (args[i] == argument)
+                return args[i + 1];
+        }
+
+#if UNITY_ANDROID && !UNITY_EDITOR
+        try
+        {
+            using (var player = new AndroidJavaClass("com.unity3d.player.UnityPlayer"))
+            using (var activity = player.GetStatic<AndroidJavaObject>("currentActivity"))
+            using (var intent = activity.Call<AndroidJavaObject>("getIntent"))
+            {
+                return intent.Call<string>("getStringExtra", extra);
+            }
+        }
+        catch (Exception)
+        {
+            // Extra not readable: the rows are SKIP, and build-player.sh --network fails on the missing PASS rows.
+            return null;
+        }
+#else
+        return null;
 #endif
     }
 

@@ -65,6 +65,8 @@ ALLOWED_REFS = {
     "TurboHTTP.Tests.Runtime": None,
     "TurboHTTP.Tests.Editor": None,
     "TurboHTTP.Tests.UniTask": None,  # compiled only with com.cysharp.unitask installed
+    # The player smoke's HTTP/2 rows (Tools~/unity/player-smoke/H2Rows, never shipped), #1210.
+    "TurboHTTP.PlayerSmoke.H2": {"TurboHTTP.Core", "TurboHTTP.Transport"},
 }
 # TurboHTTP.Complete's exact references (architecture.md, TurboHTTP.Complete row): every runtime module
 # except the opt-in Transport.BouncyCastle, UniTask and UniTask.WebSocket (#877).
@@ -86,6 +88,7 @@ _WEBGL = ["WebGL"]
 ASMDEF_EXPECTED = {
     "TurboHTTP.Core": (True, [], [], []),
     "TurboHTTP.Transport": (True, [], [], _WEBGL),
+    "TurboHTTP.PlayerSmoke.H2": (True, [], [], _WEBGL),  # player smoke only (Tools~/unity/player-smoke/H2Rows)
     "TurboHTTP.Transport.BouncyCastle": (False, ["TURBOHTTP_BOUNCYCASTLE"], [], _WEBGL),
     "TurboHTTP.SecureProtocol": (False, ["TURBOHTTP_BOUNCYCASTLE"], [], _WEBGL),
     "TurboHTTP.WebSocket": (True, [], [], []),
