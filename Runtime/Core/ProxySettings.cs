@@ -6,9 +6,18 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
+    /// <summary>
+    /// Proxy configuration for a client (<see cref="UHttpClientOptions"/>) or a single request.
+    /// </summary>
     public sealed class ProxySettings
     {
+        /// <summary>
+        /// Gets or sets the proxy URI (<c>http://host:port</c>). When null, <see cref="UseEnvironmentVariables"/> decides.
+        /// </summary>
         public Uri Address { get; set; }
+        /// <summary>
+        /// Gets or sets proxy credentials, sent as <c>Proxy-Authorization</c> to the proxy only, never to the origin. See <see cref="AllowPlaintextProxyAuth"/>.
+        /// </summary>
         public NetworkCredential Credentials { get; set; }
         /// <summary>
         /// Hosts that skip the proxy. Rules (case-insensitive, optional <c>:port</c> suffix):
@@ -25,6 +34,9 @@ namespace TurboHTTP.Core
         /// the target. <c>NO_PROXY</c>/<c>no_proxy</c> entries (comma-separated) use the same rules.
         /// </summary>
         public IReadOnlyList<string> BypassList { get; set; } = Array.Empty<string>();
+        /// <summary>
+        /// Gets or sets whether <c>HTTP_PROXY</c>, <c>HTTPS_PROXY</c> and <c>NO_PROXY</c> are consulted when <see cref="Address"/> is not set. Default <c>true</c>.
+        /// </summary>
         public bool UseEnvironmentVariables { get; set; } = true;
 
         /// <summary>
@@ -42,6 +54,9 @@ namespace TurboHTTP.Core
         /// </summary>
         public bool AllowPlaintextProxyAuth { get; set; }
 
+        /// <summary>
+        /// Creates a deep copy, including the credentials and bypass list.
+        /// </summary>
         public ProxySettings Clone()
         {
             return new ProxySettings
@@ -57,6 +72,9 @@ namespace TurboHTTP.Core
             };
         }
 
+        /// <summary>
+        /// Throws <see cref="ArgumentException"/> when the combination of settings is invalid (for example credentials without an address).
+        /// </summary>
         public void Validate()
         {
             if (Address == null)
@@ -78,6 +96,9 @@ namespace TurboHTTP.Core
         }
     }
 
+    /// <summary>
+    /// Matches a target host against proxy bypass rules (see <see cref="ProxySettings.BypassList"/>).
+    /// </summary>
     public static class ProxyBypassMatcher
     {
         /// <summary>
@@ -336,8 +357,16 @@ namespace TurboHTTP.Core
         }
     }
 
+    /// <summary>
+    /// Resolves the proxy for a target from <c>HTTP_PROXY</c>, <c>HTTPS_PROXY</c> and <c>NO_PROXY</c>.
+    /// </summary>
     public static class ProxyEnvironmentResolver
     {
+        /// <summary>
+        /// Gets the proxy to use for <paramref name="targetUri"/>, or null when it connects directly.
+        /// </summary>
+        /// <param name="targetUri">The request target.</param>
+        /// <param name="configured">The configured settings, or null to use the environment only.</param>
         public static ProxySettings Resolve(Uri targetUri, ProxySettings configured)
         {
             if (targetUri == null)

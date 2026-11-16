@@ -45,6 +45,12 @@ namespace TurboHTTP.RateLimit
             _ownsLimiter = true;
         }
 
+        /// <summary>
+        /// Wraps <paramref name="next"/> so each request holds a per-host and a global slot until its response completes.
+        /// </summary>
+        /// <param name="next">The next pipeline stage.</param>
+        /// <returns>The limiting dispatch delegate.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="next"/> is null.</exception>
         public DispatchFunc Wrap(DispatchFunc next)
         {
             if (next == null)
@@ -71,6 +77,9 @@ namespace TurboHTTP.RateLimit
             };
         }
 
+        /// <summary>
+        /// Disposes the limiter when this interceptor created it; a limiter passed to the constructor is owned by the caller.
+        /// </summary>
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

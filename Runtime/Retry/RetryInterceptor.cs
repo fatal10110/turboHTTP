@@ -20,14 +20,23 @@ namespace TurboHTTP.Retry
         private readonly RetryPolicy _policy;
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="RetryInterceptor"/> class.
+        /// Creates a retry interceptor.
         /// </summary>
+        /// <param name="policy">The retry policy; null uses <see cref="RetryPolicy.Default"/>. The policy is copied.</param>
+        /// <param name="log">Receives one-line retry diagnostics (attempt number, delay); null disables logging.</param>
         public RetryInterceptor(RetryPolicy policy = null, Action<string> log = null)
         {
             _policy = policy != null ? new RetryPolicy(policy) : RetryPolicy.Default;
             _log = log ?? (_ => { });
         }
 
+        /// <summary>
+        /// Wraps <paramref name="next"/> with retries per the policy. Requests are not retried when the policy allows zero retries, the body is
+        /// non-replayable, or the method is not idempotent and the policy retries only idempotent methods.
+        /// </summary>
+        /// <param name="next">The next pipeline stage.</param>
+        /// <returns>The retrying dispatch delegate.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="next"/> is null.</exception>
         public DispatchFunc Wrap(DispatchFunc next)
         {
             if (next == null)

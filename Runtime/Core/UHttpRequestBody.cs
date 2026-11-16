@@ -9,6 +9,11 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
+    /// <summary>
+    /// Content of a request. Use <see cref="EmptyRequestBody"/>, <see cref="BufferedRequestBody"/>, <see cref="OwnedMemoryRequestBody"/>,
+    /// <see cref="StreamRequestBody"/> or <see cref="FactoryRequestBody"/>. The request owns its body and disposes it once;
+    /// a body that can be read only once is <see cref="RequestBodyReplayability.NonReplayable"/> and is not retried.
+    /// </summary>
     public abstract class UHttpRequestBody : IDisposable
     {
         private static readonly string[] EmptyDeclaredTrailerNames = Array.Empty<string>();
@@ -21,12 +26,25 @@ namespace TurboHTTP.Core
         private Func<HttpHeaders> _trailerProvider;
         private string[] _declaredTrailerNames = EmptyDeclaredTrailerNames;
 
+        /// <summary>
+        /// Gets whether the body has no content.
+        /// </summary>
         public abstract bool IsEmpty { get; }
 
+        /// <summary>
+        /// Gets the body length in bytes, or null when unknown.
+        /// </summary>
         public abstract long? Length { get; }
 
+        /// <summary>
+        /// Gets whether the body can be sent again (retry, redirect, authentication challenge).
+        /// </summary>
         public abstract RequestBodyReplayability Replayability { get; }
 
+        /// <summary>
+        /// Returns the body without copying when it is held in memory.
+        /// </summary>
+        /// <param name="data">The body bytes when this returns <c>true</c>.</param>
         public abstract bool TryGetBufferedData(out ReadOnlyMemory<byte> data);
 
         internal Func<HttpHeaders> TrailerProvider => Volatile.Read(ref _trailerProvider);
@@ -171,6 +189,9 @@ namespace TurboHTTP.Core
                 FailSession);
         }
 
+        /// <summary>
+        /// Releases the body. If a send is still using it, release happens when that send ends. Safe to call more than once.
+        /// </summary>
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -180,16 +201,25 @@ namespace TurboHTTP.Core
                 DisposeCoreOnce();
         }
 
+        /// <summary>
+        /// Releases resources owned by the body. Called once.
+        /// </summary>
         protected virtual void DisposeCore()
         {
         }
 
+        /// <summary>
+        /// Throws <see cref="ObjectDisposedException"/> when the body is disposed.
+        /// </summary>
         protected void ThrowIfDisposed()
         {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(GetType().Name);
         }
 
+        /// <summary>
+        /// Releases resources from a finalizer for a body that was never disposed.
+        /// </summary>
         protected void DisposeCoreFromFinalizer()
         {
             DisposeCoreOnce();
@@ -306,6 +336,9 @@ namespace TurboHTTP.Core
         }
     }
 
+    /// <summary>
+    /// A request without content.
+    /// </summary>
     public sealed class EmptyRequestBody : UHttpRequestBody
     {
         public override bool IsEmpty => true;
@@ -340,10 +373,17 @@ namespace TurboHTTP.Core
         }
     }
 
+    /// <summary>
+    /// Request body backed by an in-memory buffer the caller keeps alive and unchanged until the request completes. Replayable.
+    /// </summary>
     public sealed class BufferedRequestBody : UHttpRequestBody
     {
         private readonly ReadOnlyMemory<byte> _data;
 
+        /// <summary>
+        /// Creates the body.
+        /// </summary>
+        /// <param name="data">The bytes to send.</param>
         public BufferedRequestBody(ReadOnlyMemory<byte> data)
         {
             _data = data;
@@ -383,11 +423,21 @@ namespace TurboHTTP.Core
         }
     }
 
+    /// <summary>
+    /// Request body backed by pooled or owned memory. The body disposes the <see cref="IMemoryOwner{T}"/> when it is disposed.
+    /// </summary>
     public sealed class OwnedMemoryRequestBody : UHttpRequestBody
     {
         private IMemoryOwner<byte> _owner;
         private readonly int _length;
 
+        /// <summary>
+        /// Creates the body and takes ownership of <paramref name="owner"/>.
+        /// </summary>
+        /// <param name="owner">The memory owner; disposed with this body.</param>
+        /// <param name="length">Number of valid bytes at the start of the memory.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="owner"/> is null.</exception>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="length"/> is negative or exceeds the memory length.</exception>
         public OwnedMemoryRequestBody(IMemoryOwner<byte> owner, int length)
         {
             if (owner == null)
@@ -451,10 +501,11 @@ namespace TurboHTTP.Core
 
     /// <summary>
     /// Request body backed by a caller-provided <see cref="Stream"/>.
-    /// <para><b>22a limitation:</b> TurboHTTP does not yet implement <c>Expect: 100-continue</c>.
-    /// Servers may therefore reject the request only after the body has already started sending.
-    /// For non-replayable streams, prefer <see cref="FactoryRequestBody"/> when the upload may be
-    /// rejected and the body must be recreated safely.</para>
+    /// <para>By default the body starts sending right after the headers, so a server may reject the
+    /// request only after the upload has begun. To let the server decide first, opt in to
+    /// <c>Expect: 100-continue</c> (RFC 9110 section 10.1.1) with <see cref="UHttpRequest.WithExpectContinue"/>
+    /// and tune it through <see cref="StreamingOptions"/>. A non-replayable stream is consumed by a
+    /// rejected attempt; prefer <see cref="FactoryRequestBody"/> when the body must be recreated safely.</para>
     /// </summary>
     public sealed class StreamRequestBody : UHttpRequestBody
     {
@@ -463,6 +514,13 @@ namespace TurboHTTP.Core
         private readonly bool _leaveOpen;
         private readonly long _startPosition;
 
+        /// <summary>
+        /// Creates the body.
+        /// </summary>
+        /// <param name="stream">The stream to read the content from.</param>
+        /// <param name="contentLength">Length in bytes when known; null when unknown.</param>
+        /// <param name="leaveOpen">True to keep <paramref name="stream"/> open when the body is disposed.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="stream"/> is null.</exception>
         public StreamRequestBody(Stream stream, long? contentLength = null, bool leaveOpen = false)
         {
             if (stream == null)
@@ -525,8 +583,9 @@ namespace TurboHTTP.Core
 
     /// <summary>
     /// Request body backed by a factory that creates a new <see cref="Stream"/> per read session.
-    /// <para><b>22a limitation:</b> TurboHTTP does not yet implement <c>Expect: 100-continue</c>.
-    /// The client may begin sending the request body before the server confirms acceptance.
+    /// <para>By default the body starts sending right after the headers, before the server confirms
+    /// acceptance. Opt in to <c>Expect: 100-continue</c> (RFC 9110 section 10.1.1) with
+    /// <see cref="UHttpRequest.WithExpectContinue"/> and tune it through <see cref="StreamingOptions"/>.
     /// Factory-backed bodies remain the recommended choice when uploads may need replay after a
     /// server-side rejection.</para>
     /// </summary>
@@ -535,6 +594,13 @@ namespace TurboHTTP.Core
         private readonly Func<CancellationToken, ValueTask<Stream>> _factory;
         private readonly long? _contentLength;
 
+        /// <summary>
+        /// Creates the body.
+        /// </summary>
+        /// <param name="factory">Creates a fresh stream for each send attempt.</param>
+        /// <param name="contentLength">Length in bytes when known; null when unknown.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="factory"/> is null.</exception>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="contentLength"/> is negative.</exception>
         public FactoryRequestBody(
             Func<CancellationToken, ValueTask<Stream>> factory,
             long? contentLength = null)

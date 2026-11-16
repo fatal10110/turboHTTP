@@ -24,11 +24,21 @@ namespace TurboHTTP.Cache
         public bool CacheHeadRequests { get; set; }
         /// <summary> Gets or sets whether to revalidate stale entries. Default true. </summary>
         public bool EnableRevalidation { get; set; } = true;
-        /// <summary> Gets or sets whether to require explicit freshness (e.g. max-age). Default true. </summary>
+        /// <summary>
+        /// Gets or sets whether a response without explicit freshness (<c>max-age</c>, <c>s-maxage</c>, <c>Expires</c>) is
+        /// not stored. Default true. While true it is checked first, so <see cref="EnableHeuristicFreshness"/> has no
+        /// effect: set this to false as well to store such responses. A response with <c>no-cache</c>/<c>must-revalidate</c>
+        /// and a validator is stored regardless and revalidated before every use.
+        /// </summary>
         public bool DoNotCacheWithoutFreshness { get; set; } = true;
-        /// <summary> Gets or sets whether to enable heuristic freshness for responses without explicit expiration. </summary>
+        /// <summary>
+        /// Gets or sets whether a response without explicit freshness is stored with <see cref="HeuristicFreshnessLifetime"/>
+        /// (RFC 9111 section 4.2.2). Default false. Only takes effect when <see cref="DoNotCacheWithoutFreshness"/> is false.
+        /// With both false the response is stored only if it has a validator (<c>ETag</c> or <c>Last-Modified</c>), as
+        /// already stale, and revalidated before every reuse.
+        /// </summary>
         public bool EnableHeuristicFreshness { get; set; }
-        /// <summary> Default lifetime for conditionally cacheable responses using heuristic freshness. </summary>
+        /// <summary> Gets or sets the fixed freshness lifetime applied when <see cref="EnableHeuristicFreshness"/> is used. Default one minute. </summary>
         public TimeSpan HeuristicFreshnessLifetime { get; set; } = TimeSpan.FromMinutes(1);
         /// <summary> Gets or sets whether private responses can be cached. Default true. </summary>
         public bool AllowPrivateResponses { get; set; } = true;
@@ -304,6 +314,12 @@ namespace TurboHTTP.Cache
                 : DefaultVariantIndexCapacity;
         }
 
+        /// <summary>
+        /// Wraps <paramref name="next"/> with cache lookup, conditional revalidation and storage of cacheable responses.
+        /// </summary>
+        /// <param name="next">The next pipeline stage.</param>
+        /// <returns>The caching dispatch delegate.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="next"/> is null.</exception>
         public DispatchFunc Wrap(DispatchFunc next)
         {
             if (next == null)
@@ -881,6 +897,10 @@ namespace TurboHTTP.Cache
             return source.ToArray();
         }
 
+        /// <summary>
+        /// Cancels background revalidation work and disposes the storage when this interceptor created it.
+        /// A storage supplied through <see cref="CachePolicy.Storage"/> is owned by the caller.
+        /// </summary>
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

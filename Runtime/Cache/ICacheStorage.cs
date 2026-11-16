@@ -4,14 +4,26 @@ using System.Threading.Tasks;
 namespace TurboHTTP.Cache
 {
     /// <summary>
-    /// Cache storage abstraction used by cache middleware.
-    /// Implementations must be thread-safe.
+    /// Storage backend for <see cref="CacheInterceptor"/> (see <see cref="CachePolicy.Storage"/>).
     /// </summary>
+    /// <remarks>
+    /// <para><b>Thread safety:</b> the interceptor calls the methods concurrently from several requests, so
+    /// implementations must be thread-safe.</para>
+    /// <para><b>Ownership:</b> a <see cref="CacheEntry"/> passed to <see cref="SetAsync"/> or returned from
+    /// <see cref="GetAsync"/> must not be shared mutably with the other side. Clone with
+    /// <see cref="CacheEntry.Clone"/> on the way in and out (<see cref="MemoryCacheStorage"/> does both), or
+    /// store immutable data. A storage the caller passes in is owned by the caller; the interceptor disposes
+    /// only a storage it created.</para>
+    /// <para><b>Expiry:</b> the storage does not evict by freshness. A stale entry that has a validator is kept for
+    /// conditional revalidation (RFC 9111 section 4.3); the interceptor decides freshness and removes entries it can
+    /// no longer use. Storages evict only to honour their own bounds.</para>
+    /// </remarks>
     public interface ICacheStorage
     {
         /// <summary>
         /// Gets an entry by key. Returns null when key is missing.
-        /// Expiry/revalidation decisions are handled by cache middleware.
+        /// Freshness and revalidation decisions belong to <see cref="CacheInterceptor"/>, so an expired entry is
+        /// still returned.
         /// </summary>
         Task<CacheEntry> GetAsync(string key, CancellationToken cancellationToken = default);
 

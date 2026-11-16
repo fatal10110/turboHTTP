@@ -167,8 +167,8 @@ namespace TurboHTTP.Core
         ///   TLS connection fails with a <see cref="UHttpException"/> whose inner exception is an
         ///   <see cref="System.InvalidOperationException"/> naming the define.
         /// 
-        /// Note: Advanced security features (certificate pinning, custom validation callbacks)
-        /// are planned for Phase 6 (Advanced Middleware) and not yet available.
+        /// Neither backend can be used to accept a certificate the platform would reject; certificate
+        /// pinning and custom validation callbacks are not part of this option.
         /// </remarks>
         public TlsBackend TlsBackend { get; set; } = TlsBackend.Auto;
 
