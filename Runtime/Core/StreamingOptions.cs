@@ -75,7 +75,7 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
-        /// Gets or sets the upper bound in bytes of response data buffered per connection. Must be positive. Default 8 MiB.
+        /// Gets or sets the upper bound in bytes of response data buffered per HTTP/2 connection (HTTP/1.1 does not read it). Must be positive. Default 8 MiB.
         /// </summary>
         public int MaxConnectionBufferedBytes
         {

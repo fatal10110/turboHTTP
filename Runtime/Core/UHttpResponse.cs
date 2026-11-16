@@ -52,9 +52,11 @@ namespace TurboHTTP.Core
         /// The original request that generated this response.
         /// </summary>
         /// <remarks>
-        /// A request is never reused after its lease ends (see <see cref="UHttpRequest"/>), so the reference
-        /// is safe to read for diagnostics after the response is disposed. Its lease has ended, so
-        /// mutating or sending it throws <see cref="ObjectDisposedException"/>; build a new request to resend.
+        /// Readable only while the response is alive: the getter throws <see cref="ObjectDisposedException"/> after
+        /// the response is disposed. A request is never reused after its lease ends (see <see cref="UHttpRequest"/>),
+        /// so a reference taken earlier is never handed to another caller. Once the lease has ended,
+        /// <c>Method</c>, <c>Uri</c> and <c>Headers</c> can still be read, while <c>Content</c>, mutation and sending
+        /// throw <see cref="ObjectDisposedException"/>; build a new request to resend.
         /// </remarks>
         public UHttpRequest Request
         {

@@ -20,9 +20,6 @@ namespace TurboHTTP.Retry
         private readonly RetryPolicy _policy;
 
         /// <summary>
-        /// Initializes a new instance of the <see cref="RetryInterceptor"/> class.
-        /// </summary>
-        /// <summary>
         /// Creates a retry interceptor.
         /// </summary>
         /// <param name="policy">The retry policy; null uses <see cref="RetryPolicy.Default"/>. The policy is copied.</param>

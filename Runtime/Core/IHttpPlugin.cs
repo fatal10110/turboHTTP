@@ -32,7 +32,7 @@ namespace TurboHTTP.Core
         /// <param name="cancellationToken">Cancels initialization.</param>
         ValueTask InitializeAsync(PluginContext context, CancellationToken cancellationToken);
         /// <summary>
-        /// Called when the client shuts the plugin down (client disposal). Release anything acquired in <see cref="InitializeAsync"/>.
+        /// Called when the client shuts the plugin down (client disposal or <see cref="UHttpClient.UnregisterPluginAsync"/>). Release anything acquired in <see cref="InitializeAsync"/>.
         /// </summary>
         /// <param name="cancellationToken">Cancels shutdown.</param>
         ValueTask ShutdownAsync(CancellationToken cancellationToken);

@@ -22,7 +22,7 @@ namespace TurboHTTP.Core
         /// </summary>
         public const string AllowHttpsToHttpDowngrade = "turbohttp.allow_https_to_http_downgrade";
         /// <summary>
-        /// <see cref="bool"/>: when <c>true</c>, the request timeout bounds the whole redirect chain instead of each hop.
+        /// <see cref="bool"/>: when <c>true</c>, the request timeout bounds the whole redirect chain instead of each hop. Default: <c>true</c> (enforced); <c>false</c> gives each hop its own timeout.
         /// </summary>
         public const string EnforceRedirectTotalTimeout = "turbohttp.enforce_redirect_total_timeout";
         /// <summary>
