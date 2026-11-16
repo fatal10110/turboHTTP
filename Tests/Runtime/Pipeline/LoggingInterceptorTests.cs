@@ -92,8 +92,9 @@ namespace TurboHTTP.Tests.Pipeline
             var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.com"));
             var context = new RequestContext(request);
 
-            AssertAsync.ThrowsAsync<UHttpException, UHttpResponse>(
+            var ex = AssertAsync.ThrowsAsync<UHttpException, UHttpResponse>(
                 () => pipeline.ExecuteAsync(request, context));
+            Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
 
             Assert.AreEqual(2, logs.Count); // Request log + error log
             Assert.That(logs[1], Does.Contain("[ERROR]"));

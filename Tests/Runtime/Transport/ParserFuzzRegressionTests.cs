@@ -218,9 +218,11 @@ namespace TurboHTTP.Tests.Transport
                 }
                 catch (IOException)
                 {
+                    // Accepted failure: a truncated mutated stream ends in EOF.
                 }
                 catch (Http2ProtocolException)
                 {
+                    // Accepted failure: a mutated frame header or payload is rejected as a protocol error.
                 }
             }));
         }

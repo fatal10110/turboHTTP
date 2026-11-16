@@ -286,7 +286,7 @@ namespace TurboHTTP.Tests.Files
         [Test]
         public void Download_HttpError_Throws()
         {
-            AssertAsync.ThrowsAsync<UHttpException>(() =>
+            var ex = AssertAsync.ThrowsAsync<UHttpException>(() =>
             {
                 return Task.Run(async () =>
                 {
@@ -299,6 +299,7 @@ namespace TurboHTTP.Tests.Files
                         "https://test.com/missing", dest);
                 });
             });
+            Assert.AreEqual(UHttpErrorType.HttpError, ex.HttpError.Type);
         }
 
         [Test]

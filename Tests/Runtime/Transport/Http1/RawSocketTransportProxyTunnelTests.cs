@@ -824,10 +824,11 @@ namespace TurboHTTP.Tests.Transport.Http1
                         }
                     });
 
-                    AssertAsync.ThrowsAsync<UHttpException>(async () =>
+                    var ex = AssertAsync.ThrowsAsync<UHttpException>(async () =>
                         await client.Get("https://example.com/reroute")
                             .WithTimeout(TimeSpan.FromSeconds(5))
                             .SendBufferedAsync());
+                    Assert.AreEqual(UHttpErrorType.NetworkError, ex.HttpError.Type);
 
                     Assert.AreEqual("CONNECT example.com:443 HTTP/1.1", await proxyTask,
                         "the retry must open a new proxy connection and send CONNECT on it");
