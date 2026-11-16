@@ -6,7 +6,7 @@ namespace TurboHTTP.Core
     /// <summary>
     /// Thread-safe factory for HTTP transport instances.
     /// Uses Lazy&lt;T&gt; for lock-free singleton reads after initialization.
-    /// Register a factory via <see cref="Register"/>. The default raw-socket transport is
+    /// Register a factory via <c>Register</c>. The default raw-socket transport is
     /// registered by TurboHTTP's startup bootstrap (a RuntimeInitializeOnLoadMethod in the
     /// TurboHTTP.Complete assembly) through <c>RawSocketTransport.EnsureRegistered()</c>.
     /// </summary>

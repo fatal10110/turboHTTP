@@ -11,15 +11,17 @@ namespace TurboHTTP.Auth
     /// For sensitive tokens (OAuth access tokens, session tokens), prefer implementing
     /// <see cref="IAuthTokenProvider"/> with on-demand token fetching to minimize credential retention.</para>
     /// </summary>
-    public class StaticTokenProvider : IAuthTokenProvider
+    public sealed class StaticTokenProvider : IAuthTokenProvider
     {
         private readonly string _token;
 
+        /// <summary>Creates a provider that always returns <paramref name="token"/>.</summary>
         public StaticTokenProvider(string token)
         {
             _token = token;
         }
 
+        /// <summary>Returns the fixed token; completes synchronously. Thread-safe.</summary>
         public Task<string> GetTokenAsync(CancellationToken cancellationToken = default)
         {
             return Task.FromResult(_token);

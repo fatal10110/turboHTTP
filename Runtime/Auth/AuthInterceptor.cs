@@ -128,6 +128,8 @@ namespace TurboHTTP.Auth
                               Interlocked.Increment(ref s_nextInstanceId).ToString(CultureInfo.InvariantCulture);
         }
 
+        /// <summary>Adds the token of the configured provider to requests as an <c>Authorization</c> header, only for the origins the interceptor allows (see the class remarks). Thread-safe.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="next"/> is null.</exception>
         public DispatchFunc Wrap(DispatchFunc next)
         {
             if (next == null)

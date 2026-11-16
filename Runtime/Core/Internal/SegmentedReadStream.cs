@@ -7,7 +7,7 @@ using System.Threading.Tasks;
 namespace TurboHTTP.Core.Internal
 {
     /// <summary>
-    /// A read-only <see cref="Stream"/> adapter over a <see cref="ReadOnlySequence{byte}"/>.
+    /// A read-only <see cref="Stream"/> adapter over a <see cref="ReadOnlySequence{T}"/>.
     /// Reads cross segment boundaries correctly without flattening the entire sequence.
     /// </summary>
     /// <remarks>
@@ -16,7 +16,7 @@ namespace TurboHTTP.Core.Internal
     /// Callers must ensure the sequence remains valid for the lifetime of this stream.
     /// </para>
     /// <para>
-    /// <see cref="ReadAsync"/> completes synchronously for in-memory data (returns a
+    /// <c>ReadAsync</c> completes synchronously for in-memory data (returns a
     /// completed <see cref="ValueTask{T}"/>), since the sequence is already in memory.
     /// </para>
     /// <para>

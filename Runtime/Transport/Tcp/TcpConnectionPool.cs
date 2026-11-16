@@ -91,6 +91,12 @@ namespace TurboHTTP.Transport.Tcp
             }
         }
 
+        /// <summary>Wraps a connected socket and its (possibly TLS) stream; the connection owns both.</summary>
+        /// <param name="socket">The connected socket.</param>
+        /// <param name="stream">The stream over <paramref name="socket"/>; disposing it closes the socket.</param>
+        /// <param name="host">Target host name.</param>
+        /// <param name="port">Target port.</param>
+        /// <param name="isSecure">Whether <paramref name="stream"/> is a TLS stream.</param>
         public PooledConnection(Socket socket, Stream stream, string host, int port, bool isSecure)
         {
             Socket = socket ?? throw new ArgumentNullException(nameof(socket));
@@ -234,6 +240,11 @@ namespace TurboHTTP.Transport.Tcp
             }
         }
 
+        /// <summary>
+        /// Releases the lease: unless ownership moved (<c>TransferOwnership</c>) or the connection was
+        /// returned to the pool, the connection is closed, and the per-host permit is given back
+        /// exactly once. Idempotent and thread-safe.
+        /// </summary>
         public void Dispose()
         {
             lock (_lock)
@@ -322,6 +333,7 @@ namespace TurboHTTP.Transport.Tcp
         /// <param name="connectionIdleTimeout">How long idle connections remain pooled (default 45 s on iOS/Android players, 2 minutes elsewhere).</param>
         /// <param name="tlsBackend">TLS backend selection strategy (default Auto).</param>
         /// <param name="dnsTimeout">Timeout for DNS lookups. Default 10 seconds.</param>
+        /// <param name="happyEyeballsOptions">Address-racing options (RFC 8305); null uses the defaults.</param>
         /// <param name="socketIoMode">Socket I/O implementation (default NetworkStream).</param>
         /// <param name="connectTimeout">
         /// Wall-clock deadline for the TCP connect to one host (all address attempts). Default 10 seconds;
@@ -429,6 +441,18 @@ namespace TurboHTTP.Transport.Tcp
             return GetConnectionAsync(host, port, secure, poolKeyOverride: null, ct);
         }
 
+        /// <summary>
+        /// As <see cref="GetConnectionAsync(string, int, bool, CancellationToken)"/>, with an explicit pool
+        /// key: connections are pooled, and the per-host permit is counted, under
+        /// <paramref name="poolKeyOverride"/> instead of the host and port. Used for proxy connections and CONNECT tunnels, which must not share idle connections with
+        /// direct connections to the same host. Dispose the lease to give the permit back.
+        /// </summary>
+        /// <param name="host">Host to connect to (the proxy host for a proxy leg).</param>
+        /// <param name="port">TCP port.</param>
+        /// <param name="secure">Whether to negotiate TLS after connecting.</param>
+        /// <param name="poolKeyOverride">Pool key replacing the default one; null uses the default.</param>
+        /// <param name="ct">Cancels the wait for a permit and the connect.</param>
+        /// <returns>A lease the caller owns and must dispose exactly once.</returns>
         public ValueTask<ConnectionLease> GetConnectionAsync(
             string host,
             int port,
@@ -981,6 +1005,10 @@ namespace TurboHTTP.Transport.Tcp
             return true;
         }
 
+        /// <summary>
+        /// Stops the idle-connection scavenger and closes every idle pooled connection. Leases still
+        /// outstanding keep their connection until they are disposed. Idempotent.
+        /// </summary>
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

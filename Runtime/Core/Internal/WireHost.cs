@@ -93,7 +93,7 @@ namespace TurboHTTP.Core.Internal
         /// <summary>
         /// A non-ASCII name in A-label form (RFC 5890 Section 2.3.2.1); anything else (ASCII, or a
         /// name without a valid A-label form, which then matches only its own spelling) unchanged.
-        /// Used to compare user-written host rules with <see cref="LookupHost"/>. Allocation-free
+        /// Used to compare user-written host rules with <c>LookupHost</c>. Allocation-free
         /// for ASCII input.
         /// </summary>
         internal static string ToALabel(string name)

@@ -24,6 +24,7 @@ namespace TurboHTTP.Auth
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, OAuthToken> _tokens
             = new System.Collections.Concurrent.ConcurrentDictionary<string, OAuthToken>(System.StringComparer.Ordinal);
 
+        /// <summary>Returns the token under <paramref name="key"/>, or <c>null</c>.</summary>
         public Task<OAuthToken> GetAsync(string key, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
@@ -31,6 +32,7 @@ namespace TurboHTTP.Auth
             return Task.FromResult(token);
         }
 
+        /// <summary>Stores or replaces the token; a <c>null</c> token removes it.</summary>
         public Task SetAsync(string key, OAuthToken token, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
@@ -47,6 +49,7 @@ namespace TurboHTTP.Auth
             return Task.CompletedTask;
         }
 
+        /// <summary>Removes the token; a missing key is not an error.</summary>
         public Task RemoveAsync(string key, CancellationToken ct)
         {
             ct.ThrowIfCancellationRequested();
@@ -54,11 +57,13 @@ namespace TurboHTTP.Auth
             return Task.CompletedTask;
         }
 
+        /// <summary>Removes every token.</summary>
         public void Clear()
         {
             _tokens.Clear();
         }
 
+        /// <summary>Removes every token. Idempotent.</summary>
         public void Dispose()
         {
             Clear();

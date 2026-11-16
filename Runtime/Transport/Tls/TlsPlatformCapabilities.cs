@@ -9,10 +9,15 @@ namespace TurboHTTP.Transport.Tls
     /// </summary>
     public readonly struct TlsPlatformCapabilitySummary
     {
+        /// <summary>Whether <c>SslStream</c> TLS is usable on this platform.</summary>
         public readonly bool IsSystemTlsAvailable;
+        /// <summary>Name of the system TLS provider; <c>Unavailable</c> when there is none.</summary>
         public readonly string SystemProviderDescription;
+        /// <summary>Whether the system TLS stack is expected to negotiate ALPN (needed for HTTP/2).</summary>
         public readonly bool IsSystemAlpnExpected;
+        /// <summary>Whether the bundled BouncyCastle TLS provider is present in the build.</summary>
         public readonly bool IsBouncyCastleAvailable;
+        /// <summary>Whether the system TLS stack is known not to work on this platform.</summary>
         public readonly bool IsSystemTlsKnownBroken;
 
         /// <summary>
@@ -38,6 +43,7 @@ namespace TurboHTTP.Transport.Tls
             RecommendedBackend = recommendedBackend;
         }
 
+        /// <inheritdoc/>
         public override string ToString() =>
             $"TLS Capabilities - SystemAvailable={IsSystemTlsAvailable}, " +
             $"SystemProvider={SystemProviderDescription}, " +

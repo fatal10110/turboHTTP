@@ -7,11 +7,16 @@ using TurboHTTP.Core;
 
 namespace TurboHTTP.Middleware
 {
+    /// <summary>The <c>SameSite</c> cookie attribute (RFC 6265bis section 5.5): when a cookie is sent on cross-site requests.</summary>
     public enum CookieSameSite
     {
+        /// <summary>No <c>SameSite</c> attribute (or an unknown value); the jar sends the cookie on cross-site requests too.</summary>
         Unspecified,
+        /// <summary>Sent on same-site requests, and on cross-site requests only when the method is GET, HEAD or OPTIONS.</summary>
         Lax,
+        /// <summary>Sent on same-site requests only.</summary>
         Strict,
+        /// <summary>Sent on cross-site requests too.</summary>
         None
     }
 
@@ -167,6 +172,8 @@ namespace TurboHTTP.Middleware
             _isPublicSuffix = isPublicSuffix;
         }
 
+        /// <summary>Number of stored cookies. May include expired cookies that have not been swept yet. Thread-safe.</summary>
+        /// <exception cref="ObjectDisposedException">The jar is disposed.</exception>
         public int Count
         {
             get
@@ -184,6 +191,7 @@ namespace TurboHTTP.Middleware
             }
         }
 
+        /// <summary>Number of stored cookies whose domain equals <paramref name="domain"/> (compared case-insensitively, leading dot ignored); 0 for a null or blank domain. Thread-safe.</summary>
         public int GetDomainCount(string domain)
         {
             ThrowIfDisposed();
@@ -259,6 +267,12 @@ namespace TurboHTTP.Middleware
             }
         }
 
+        /// <summary>Stores the cookies of <c>Set-Cookie</c> header values received from <paramref name="requestUri"/> (RFC 6265 section 5.3). A header that is malformed, over the size limits, names a public suffix or a domain that does not match the request host, or would shadow a Secure cookie from an insecure origin is silently ignored; an already expired cookie deletes the stored one. Oldest cookies are evicted at the per-domain and total limits. Thread-safe.</summary>
+        /// <param name="requestUri">The URI of the request the response answered; supplies the default domain, path and secure flag.</param>
+        /// <param name="setCookieHeaders">Raw header values, one per <c>Set-Cookie</c> line; null or empty is a no-op.</param>
+        /// <param name="utcNowOverride">Clock for tests; null uses the current UTC time.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="requestUri"/> is null.</exception>
+        /// <exception cref="ObjectDisposedException">The jar is disposed.</exception>
         public void StoreFromSetCookieHeaders(
             Uri requestUri,
             IReadOnlyList<string> setCookieHeaders,
@@ -311,6 +325,14 @@ namespace TurboHTTP.Middleware
             }
         }
 
+        /// <summary>Builds the <c>Cookie</c> header value for a request to <paramref name="requestUri"/> (RFC 6265 section 5.4): unexpired cookies whose domain, path, scheme and <c>SameSite</c> setting match, longest path first. Thread-safe.</summary>
+        /// <param name="requestUri">The request URI.</param>
+        /// <param name="method">The request method, for <c>SameSite</c> decisions.</param>
+        /// <param name="isCrossSiteRequest">Whether the request is cross-site (<see cref="RequestMetadataKeys.IsCrossSiteRequest"/>).</param>
+        /// <param name="utcNowOverride">Clock for tests; null uses the current UTC time.</param>
+        /// <returns>The header value, or <c>null</c> when no cookie applies.</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="requestUri"/> is null.</exception>
+        /// <exception cref="ObjectDisposedException">The jar is disposed.</exception>
         public string GetCookieHeader(
             Uri requestUri,
             HttpMethod method,
@@ -401,6 +423,7 @@ namespace TurboHTTP.Middleware
             return header;
         }
 
+        /// <summary>Disposes the jar's lock. Idempotent; the jar must not be used afterwards, and calls racing with disposal may throw <see cref="ObjectDisposedException"/>.</summary>
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

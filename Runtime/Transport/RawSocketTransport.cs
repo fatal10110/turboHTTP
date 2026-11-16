@@ -48,6 +48,14 @@ namespace TurboHTTP.Transport
         {
         }
 
+        /// <summary>
+        /// Creates a transport with explicit HTTP/2 options and default <see cref="StreamingOptions"/>.
+        /// </summary>
+        /// <param name="pool">Connection pool; null creates one. The transport takes ownership of the
+        /// pool, including one you pass, and disposes it in <c>Dispose</c>; do not share it with another owner.</param>
+        /// <param name="tlsBackend">TLS backend selection.</param>
+        /// <param name="http2Options">HTTP/2 settings; must not be null.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="http2Options"/> is null.</exception>
         public RawSocketTransport(
             TcpConnectionPool pool,
             TlsBackend tlsBackend,
@@ -56,6 +64,15 @@ namespace TurboHTTP.Transport
         {
         }
 
+        /// <summary>
+        /// Creates a transport with explicit HTTP/2 and streaming options. Both option objects are
+        /// copied, so later changes to the instances you pass have no effect.
+        /// </summary>
+        /// <param name="pool">Connection pool; null creates one. The transport disposes the pool it uses.</param>
+        /// <param name="tlsBackend">TLS backend selection.</param>
+        /// <param name="http2Options">HTTP/2 settings; must not be null.</param>
+        /// <param name="streamingOptions">Buffer sizes and thresholds for streaming bodies; must not be null.</param>
+        /// <exception cref="ArgumentNullException">An options argument is null.</exception>
         public RawSocketTransport(
             TcpConnectionPool pool,
             TlsBackend tlsBackend,
@@ -143,6 +160,18 @@ namespace TurboHTTP.Transport
             return sslStreamAlpn || bouncyCastleAvailable ? TransportCapabilities.Http2 : TransportCapabilities.None;
         }
 
+        /// <summary>
+        /// Sends <paramref name="request"/> over HTTP/1.1 or HTTP/2 (direct, or through the proxy in
+        /// <see cref="RequestMetadataKeys.ProxySettings"/>) and reports the response to
+        /// <paramref name="handler"/>. Network and protocol failures reach the handler as
+        /// <see cref="UHttpException"/>; HTTP error statuses are normal responses. Thread-safe: any number
+        /// of dispatches may run concurrently.
+        /// </summary>
+        /// <param name="request">The request.</param>
+        /// <param name="handler">Receives the response events; must not be null.</param>
+        /// <param name="context">Per-request state; must not be null.</param>
+        /// <param name="cancellationToken">Cancels the dispatch; timeouts are enforced through it.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="handler"/> or <paramref name="context"/> is null.</exception>
         public async Task DispatchAsync(
             UHttpRequest request,
             IHttpHandler handler,
@@ -2656,6 +2685,10 @@ namespace TurboHTTP.Transport
                 _h2Manager.HasConnection(originHost, originPort, proxyHost, proxyPort);
         }
 
+        /// <summary>
+        /// Closes the HTTP/2 connections and disposes the connection pool. Idempotent; requests in
+        /// flight fail.
+        /// </summary>
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

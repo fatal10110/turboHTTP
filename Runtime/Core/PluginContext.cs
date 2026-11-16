@@ -38,23 +38,14 @@ namespace TurboHTTP.Core
         /// </summary>
         public UHttpClientOptions OptionsSnapshot => _optionsSnapshot;
 
-        /// <summary>
-        /// Gets the capabilities declared by the plugin.
-        /// </summary>
+        /// <summary>The capabilities this plugin was granted.</summary>
         public PluginCapabilities Capabilities => _capabilities;
 
         internal IReadOnlyList<IHttpInterceptor> RegisteredInterceptors => _registeredInterceptors;
 
-        /// <summary>
-        /// Adds <paramref name="interceptor"/> to the client pipeline.
-        /// The plugin needs at least one of <see cref="PluginCapabilities.ObserveRequests"/>, <see cref="PluginCapabilities.ReadOnlyMonitoring"/>,
-        /// <see cref="PluginCapabilities.MutateRequests"/>, <see cref="PluginCapabilities.MutateResponses"/> or <see cref="PluginCapabilities.HandleErrors"/>;
-        /// otherwise a <see cref="PluginException"/> is thrown (and the registration fails as a plugin initialization failure).
-        /// The interceptor is wrapped so mutation, error handling and redispatch outside the declared flags fail the request with a <see cref="PluginException"/>.
-        /// </summary>
-        /// <param name="interceptor">The interceptor to register.</param>
+        /// <summary>Adds an interceptor to the client pipeline. When the plugin does not hold every mutation capability the interceptor is wrapped so it cannot change what it is not allowed to change. Call during initialization only.</summary>
         /// <exception cref="ArgumentNullException"><paramref name="interceptor"/> is null.</exception>
-        /// <exception cref="PluginException">The plugin has no interceptor capability.</exception>
+        /// <exception cref="PluginException">The plugin holds no interceptor capability.</exception>
         public void RegisterInterceptor(IHttpInterceptor interceptor)
         {
             if (interceptor == null)
@@ -92,12 +83,8 @@ namespace TurboHTTP.Core
             _registeredInterceptors.Add(guarded);
         }
 
-        /// <summary>
-        /// Writes a diagnostic message attributed to the plugin.
-        /// Requires <see cref="PluginCapabilities.Diagnostics"/> or <see cref="PluginCapabilities.ReadOnlyMonitoring"/>.
-        /// </summary>
-        /// <param name="message">The message to log.</param>
-        /// <exception cref="PluginException">The plugin has neither capability.</exception>
+        /// <summary>Writes a diagnostics message attributed to this plugin.</summary>
+        /// <exception cref="PluginException">The plugin holds neither <see cref="PluginCapabilities.Diagnostics"/> nor <see cref="PluginCapabilities.ReadOnlyMonitoring"/>.</exception>
         public void LogDiagnostic(string message)
         {
             if ((_capabilities & PluginCapabilities.Diagnostics) == 0 &&

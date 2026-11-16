@@ -6,10 +6,7 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
-    /// <summary>
-    /// A response whose body is read incrementally through <see cref="Body"/>. Dispose it (or use <c>await using</c>) to release the
-    /// connection and buffers.
-    /// </summary>
+    /// <summary>Response whose body is read as a stream. The caller owns it and must dispose it to release the connection; disposing also ends any unread body.</summary>
     public sealed class UHttpStreamingResponse : IAsyncDisposable, IDisposable
     {
         private readonly IResponseBodySource _bodySource;
@@ -21,13 +18,7 @@ namespace TurboHTTP.Core
         private static int s_undisposedFinalizedCount;
 #endif
 
-        /// <summary>
-        /// Creates a streaming response.
-        /// </summary>
-        /// <param name="statusCode">The response status.</param>
-        /// <param name="headers">The response headers; null becomes an empty collection.</param>
-        /// <param name="bodySource">The body source; owned by this response.</param>
-        /// <exception cref="ArgumentNullException"><paramref name="bodySource"/> is null.</exception>
+        /// <summary>Creates a streaming response over <paramref name="bodySource"/>; null <paramref name="headers"/> become empty headers.</summary>
         public UHttpStreamingResponse(
             HttpStatusCode statusCode,
             HttpHeaders headers,
@@ -39,19 +30,13 @@ namespace TurboHTTP.Core
             _body = new ResponseBodyStream(this);
         }
 
-        /// <summary>
-        /// Gets the response status code. 4xx and 5xx are normal responses.
-        /// </summary>
+        /// <summary>The HTTP status code.</summary>
         public HttpStatusCode StatusCode { get; }
 
-        /// <summary>
-        /// Gets the response headers.
-        /// </summary>
+        /// <summary>The response header fields.</summary>
         public HttpHeaders Headers { get; }
 
-        /// <summary>
-        /// Gets the readable body stream. It is invalid after the response is disposed.
-        /// </summary>
+        /// <summary>The body stream; it is closed when the response is disposed.</summary>
         public ResponseBodyStream Body => _body;
 
         internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
@@ -150,9 +135,7 @@ namespace TurboHTTP.Core
             }
         }
 
-        /// <summary>
-        /// Releases the body source and runs the dispose callback once.
-        /// </summary>
+        /// <summary>Disposes the response and its body; never blocks on a pending body dispose. Idempotent.</summary>
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -175,9 +158,7 @@ namespace TurboHTTP.Core
                 CompleteDisposeWhenBodyDisposed(pendingBodyDispose);
         }
 
-        /// <summary>
-        /// Asynchronously releases the body source and runs the dispose callback once.
-        /// </summary>
+        /// <summary>Disposes the response and its body, completing when the transport released them. Idempotent.</summary>
         public ValueTask DisposeAsync()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)

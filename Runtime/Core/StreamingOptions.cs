@@ -26,27 +26,21 @@ namespace TurboHTTP.Core
         private int _expectContinueTimeoutMs = DefaultExpectContinueTimeoutMsValue;
         private long? _autoExpectContinueThresholdBytes;
 
-        /// <summary>
-        /// Gets or sets the size in bytes up to which a buffered request body is sent in a single write. Must be positive. Default 32 KiB.
-        /// </summary>
+        /// <summary>Largest buffered request body sent together with its headers in one write. Default 32 KiB. Must be positive.</summary>
         public int SmallBufferedRequestThresholdBytes
         {
             get => _smallBufferedRequestThresholdBytes;
             set => _smallBufferedRequestThresholdBytes = ValidatePositive(value, nameof(SmallBufferedRequestThresholdBytes));
         }
 
-        /// <summary>
-        /// Gets or sets the buffer size in bytes used when sending a streamed request body. Must be positive. Default 32 KiB.
-        /// </summary>
+        /// <summary>Chunk size for sending a streamed request body. Default 32 KiB. Must be positive.</summary>
         public int DefaultStreamingSendBufferBytes
         {
             get => _defaultStreamingSendBufferBytes;
             set => _defaultStreamingSendBufferBytes = ValidatePositive(value, nameof(DefaultStreamingSendBufferBytes));
         }
 
-        /// <summary>
-        /// Gets or sets the buffer size in bytes used when receiving a streamed response body. Must be positive. Default 64 KiB.
-        /// </summary>
+        /// <summary>Buffer size for reading a streamed HTTP/1.1 response body. Default 64 KiB. Must be positive.</summary>
         public int DefaultStreamingReceiveBufferBytes
         {
             get => _defaultStreamingReceiveBufferBytes;
@@ -64,19 +58,14 @@ namespace TurboHTTP.Core
             set => _defaultHttp2PerStreamReceiveBufferBytes = ValidatePositive(value, nameof(DefaultHttp2PerStreamReceiveBufferBytes));
         }
 
-        /// <summary>
-        /// Gets or sets the largest unread response remainder in bytes the transport drains to keep the connection reusable;
-        /// more than that and the connection is closed. Must be positive. Default 64 KiB.
-        /// </summary>
+        /// <summary>Most bytes of an unread body that are drained to keep the connection reusable; a larger body closes the connection instead. Default 64 KiB. Must be positive.</summary>
         public int BufferedDrainReuseThresholdBytes
         {
             get => _bufferedDrainReuseThresholdBytes;
             set => _bufferedDrainReuseThresholdBytes = ValidatePositive(value, nameof(BufferedDrainReuseThresholdBytes));
         }
 
-        /// <summary>
-        /// Gets or sets the upper bound in bytes of response data buffered per HTTP/2 connection (HTTP/1.1 does not read it). Must be positive. Default 8 MiB.
-        /// </summary>
+        /// <summary>Upper bound on received HTTP/2 data buffered for one connection across all its streams. Default 8 MiB. Must be positive.</summary>
         public int MaxConnectionBufferedBytes
         {
             get => _maxConnectionBufferedBytes;
@@ -96,8 +85,7 @@ namespace TurboHTTP.Core
 
         /// <summary>
         /// Timeout in milliseconds to wait for a 100 Continue response before proceeding
-        /// with request body transmission (RFC 9110 section 10.1.1: a client does not wait indefinitely).
-        /// Applies to requests carrying <c>Expect: 100-continue</c>, see <see cref="UHttpRequest.WithExpectContinue"/>.
+        /// with request body transmission.
         /// </summary>
         public int ExpectContinueTimeoutMs
         {
@@ -118,9 +106,7 @@ namespace TurboHTTP.Core
                 nameof(AutoExpectContinueThresholdBytes));
         }
 
-        /// <summary>
-        /// Creates a copy of these options.
-        /// </summary>
+        /// <summary>Returns a copy of these options.</summary>
         public StreamingOptions Clone()
         {
             return new StreamingOptions

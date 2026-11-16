@@ -12,10 +12,14 @@ namespace TurboHTTP.Core
     /// </summary>
     public class TimelineEvent
     {
+        /// <summary>Event name.</summary>
         public string Name { get; }
+        /// <summary>Time since the request started.</summary>
         public TimeSpan Timestamp { get; }
+        /// <summary>Extra event data; may be empty.</summary>
         public Dictionary<string, object> Data { get; }
 
+        /// <summary>Creates an event.</summary>
         public TimelineEvent(string name, TimeSpan timestamp, Dictionary<string, object> data = null)
         {
             Name = name;
@@ -90,6 +94,8 @@ namespace TurboHTTP.Core
         /// </summary>
         public TimeSpan Elapsed => _stopwatch.Elapsed;
 
+        /// <summary>Creates the context of <paramref name="request"/> and starts its clock.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="request"/> is null.</exception>
         public RequestContext(UHttpRequest request)
         {
             _request = request ?? throw new ArgumentNullException(nameof(request));

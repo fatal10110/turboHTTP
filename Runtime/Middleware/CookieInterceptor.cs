@@ -33,8 +33,11 @@ namespace TurboHTTP.Middleware
         private readonly string _callerCookieStateKey;
         private int _disposed;
 
+        /// <summary>The jar this interceptor reads and writes: the one passed to the constructor, or the one it created.</summary>
         public CookieJar Jar => _jar;
 
+        /// <summary>Creates the interceptor.</summary>
+        /// <param name="jar">The jar to use, which may be shared with other interceptors and stays owned by the caller. <c>null</c> creates a private jar that <see cref="Dispose"/> disposes.</param>
         public CookieInterceptor(CookieJar jar = null)
         {
             _callerCookieStateKey = "TurboHTTP.Middleware.CookieCallerHeader." +
@@ -52,6 +55,9 @@ namespace TurboHTTP.Middleware
             }
         }
 
+        /// <summary>Adds the jar's <c>Cookie</c> header to requests to http(s) URIs and stores the <c>Set-Cookie</c> headers of responses. Thread-safe; requests are not mutated, a copy carries the header.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="next"/> is null.</exception>
+        /// <exception cref="ObjectDisposedException">A request is sent after <see cref="Dispose"/>.</exception>
         public DispatchFunc Wrap(DispatchFunc next)
         {
             if (next == null)
@@ -257,6 +263,7 @@ namespace TurboHTTP.Middleware
                 context.RecordEvent("CookieAttached");
         }
 
+        /// <summary>Disposes the jar when this interceptor created it; a jar passed to the constructor is left to its owner. Idempotent.</summary>
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

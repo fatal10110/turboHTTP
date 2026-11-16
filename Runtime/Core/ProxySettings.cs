@@ -7,18 +7,32 @@ using TurboHTTP.Core.Internal;
 namespace TurboHTTP.Core
 {
     /// <summary>
-    /// Proxy configuration for a client (<see cref="UHttpClientOptions"/>) or a single request.
+    /// Forward-proxy configuration for <see cref="UHttpClientOptions.Proxy"/> and
+    /// <see cref="ProxyRequestBuilderExtensions.WithProxy"/>. Only <c>http://</c> proxy addresses are
+    /// supported: <c>http://</c> targets are sent in absolute form (RFC 9112 section 3.2.2) and
+    /// <c>https://</c> targets go through a <c>CONNECT</c> tunnel (RFC 9110 section 9.3.6), so TLS to
+    /// the origin is end to end. The proxy leg itself is cleartext.
+    /// A mutable settings object is not thread-safe; the client and the request builder store a
+    /// <see cref="Clone"/>, so later changes to the instance you passed do not affect them.
     /// </summary>
     public sealed class ProxySettings
     {
         /// <summary>
-        /// Gets or sets the proxy URI (<c>http://host:port</c>). When null, <see cref="UseEnvironmentVariables"/> decides.
+        /// Proxy URI (<c>http://host:port</c>). <c>null</c> (the default) configures no explicit proxy:
+        /// the environment is consulted instead when <see cref="UseEnvironmentVariables"/> is
+        /// <c>true</c>. An address that is not <c>http://</c> is rejected by <see cref="Validate"/>.
         /// </summary>
         public Uri Address { get; set; }
+
         /// <summary>
-        /// Gets or sets proxy credentials, sent as <c>Proxy-Authorization</c> to the proxy only, never to the origin. See <see cref="AllowPlaintextProxyAuth"/>.
+        /// Credentials sent to the proxy as <c>Proxy-Authorization</c> (RFC 9110 section 11.7), never
+        /// to the origin. They are only sent when <see cref="AllowPlaintextProxyAuth"/> is
+        /// <c>true</c>, because the proxy leg is cleartext. Settings built from <c>HTTP_PROXY</c>/
+        /// <c>HTTPS_PROXY</c> carry no credentials. Setting credentials without an
+        /// <see cref="Address"/> fails <see cref="Validate"/>.
         /// </summary>
         public NetworkCredential Credentials { get; set; }
+
         /// <summary>
         /// Hosts that skip the proxy. Rules (case-insensitive, optional <c>:port</c> suffix):
         /// <list type="bullet">
@@ -34,8 +48,13 @@ namespace TurboHTTP.Core
         /// the target. <c>NO_PROXY</c>/<c>no_proxy</c> entries (comma-separated) use the same rules.
         /// </summary>
         public IReadOnlyList<string> BypassList { get; set; } = Array.Empty<string>();
+
         /// <summary>
-        /// Gets or sets whether <c>HTTP_PROXY</c>, <c>HTTPS_PROXY</c> and <c>NO_PROXY</c> are consulted when <see cref="Address"/> is not set. Default <c>true</c>.
+        /// Default <c>true</c>. With no <see cref="Address"/> set, the proxy comes from the
+        /// <c>HTTP_PROXY</c>/<c>HTTPS_PROXY</c> environment variables (upper or lower case) and
+        /// <c>NO_PROXY</c> is honoured, so a client with no proxy configuration still honours the
+        /// process environment (see <see cref="ProxyEnvironmentResolver.Resolve"/>). Set to
+        /// <c>false</c> to ignore the environment. Has no effect when <see cref="Address"/> is set.
         /// </summary>
         public bool UseEnvironmentVariables { get; set; } = true;
 
@@ -55,7 +74,8 @@ namespace TurboHTTP.Core
         public bool AllowPlaintextProxyAuth { get; set; }
 
         /// <summary>
-        /// Creates a deep copy, including the credentials and bypass list.
+        /// Returns a deep copy: the credentials object and the bypass list are copied, so changing the
+        /// copy never changes this instance.
         /// </summary>
         public ProxySettings Clone()
         {
@@ -73,8 +93,10 @@ namespace TurboHTTP.Core
         }
 
         /// <summary>
-        /// Throws <see cref="ArgumentException"/> when the combination of settings is invalid (for example credentials without an address).
+        /// Checks the settings without contacting anything.
         /// </summary>
+        /// <exception cref="ArgumentException"><see cref="Credentials"/> are set without an
+        /// <see cref="Address"/>, or the address is not <c>http://</c>.</exception>
         public void Validate()
         {
             if (Address == null)
@@ -97,7 +119,8 @@ namespace TurboHTTP.Core
     }
 
     /// <summary>
-    /// Matches a target host against proxy bypass rules (see <see cref="ProxySettings.BypassList"/>).
+    /// Matches a target host and port against proxy bypass rules (the <see cref="ProxySettings.BypassList"/>
+    /// and <c>NO_PROXY</c> syntax). Stateless and thread-safe.
     /// </summary>
     public static class ProxyBypassMatcher
     {
@@ -358,15 +381,34 @@ namespace TurboHTTP.Core
     }
 
     /// <summary>
-    /// Resolves the proxy for a target from <c>HTTP_PROXY</c>, <c>HTTPS_PROXY</c> and <c>NO_PROXY</c>.
+    /// Decides which proxy, if any, applies to a target URI. Stateless and thread-safe; it reads the
+    /// process environment on every call.
     /// </summary>
     public static class ProxyEnvironmentResolver
     {
         /// <summary>
-        /// Gets the proxy to use for <paramref name="targetUri"/>, or null when it connects directly.
+        /// Resolves the proxy for <paramref name="targetUri"/>. <see cref="UHttpClient"/> calls this once
+        /// per request and again when a redirect hop changes the proxy target.
+        /// <list type="number">
+        /// <item>An explicit <see cref="ProxySettings.Address"/> wins and the environment is not read;
+        /// <see cref="ProxySettings.BypassList"/> can still bypass it.</item>
+        /// <item>Otherwise, when <see cref="ProxySettings.UseEnvironmentVariables"/> is <c>true</c> (also
+        /// when <paramref name="configured"/> is <c>null</c>), <c>HTTPS_PROXY</c> (https targets) or
+        /// <c>HTTP_PROXY</c> (http targets; https targets only with
+        /// <see cref="ProxySettings.AllowHttpProxyFallbackForHttps"/>) is read, and <c>NO_PROXY</c>
+        /// applies. The returned settings carry no credentials.</item>
+        /// </list>
         /// </summary>
-        /// <param name="targetUri">The request target.</param>
-        /// <param name="configured">The configured settings, or null to use the environment only.</param>
+        /// <param name="targetUri">The request URI.</param>
+        /// <param name="configured">The client-level settings; may be <c>null</c>.</param>
+        /// <returns>The settings to use, or <c>null</c> to connect directly (no proxy configured,
+        /// bypassed, environment disabled, or an unparseable environment value).</returns>
+        /// <exception cref="ArgumentNullException"><paramref name="targetUri"/> is <c>null</c>.</exception>
+        /// <exception cref="ArgumentException"><paramref name="configured"/> fails
+        /// <see cref="ProxySettings.Validate"/>.</exception>
+        /// <exception cref="UHttpException">The environment names a proxy that is not <c>http://</c>
+        /// (<see cref="UHttpErrorType.InvalidRequest"/>); the value is not echoed because it can carry
+        /// credentials.</exception>
         public static ProxySettings Resolve(Uri targetUri, ProxySettings configured)
         {
             if (targetUri == null)

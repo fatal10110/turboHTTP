@@ -86,36 +86,52 @@ namespace TurboHTTP.Auth
     /// <summary> Represents a request to an OAuth authorization endpoint. </summary>
     public sealed class OAuthAuthorizationRequest
     {
-        public Uri AuthorizationUri { get; set; }
-        public string State { get; set; }
-        public string Nonce { get; set; }
-        public string CodeVerifier { get; set; }
-        public string CodeChallenge { get; set; }
+        /// <summary>The URL to open in the user's browser. Read-only.</summary>
+        public Uri AuthorizationUri { get; internal set; }
+        /// <summary>The <c>state</c> value in <see cref="AuthorizationUri"/>; compare it with the returned one using <see cref="OAuthClient.ValidateState"/>. Read-only.</summary>
+        public string State { get; internal set; }
+        /// <summary>The OpenID Connect <c>nonce</c>, when requested; validate it against the ID token. Read-only.</summary>
+        public string Nonce { get; internal set; }
+        /// <summary>The PKCE code verifier (RFC 7636); keep it secret and pass it to the code exchange. Read-only.</summary>
+        public string CodeVerifier { get; internal set; }
+        /// <summary>The PKCE S256 code challenge sent in <see cref="AuthorizationUri"/>. Read-only.</summary>
+        public string CodeChallenge { get; internal set; }
     }
 
     /// <summary> Represents a request to exchange an authorization code for tokens. </summary>
     public sealed class OAuthCodeExchangeRequest
     {
+        /// <summary>The client configuration used for the request.</summary>
         public OAuthConfig Config { get; set; }
+        /// <summary>The authorization code returned to the redirect URI.</summary>
         public string AuthorizationCode { get; set; }
+        /// <summary>The PKCE code verifier (RFC 7636) that matches the challenge sent in the authorization request; <c>null</c> when PKCE is not used.</summary>
         public string CodeVerifier { get; set; }
+        /// <summary>The redirect URI used in the authorization request; must match it exactly.</summary>
         public string RedirectUri { get; set; }
     }
 
     /// <summary> Represents a request to refresh an existing OAuth token. </summary>
     public sealed class OAuthRefreshRequest
     {
+        /// <summary>The client configuration used for the request.</summary>
         public OAuthConfig Config { get; set; }
+        /// <summary>The refresh token to present to the token endpoint.</summary>
         public string RefreshToken { get; set; }
+        /// <summary>Space-delimited scope sent with the refresh request when not blank; it is also part of the default token-store key.</summary>
         public string Scope { get; set; }
+        /// <summary>Key of the stored token to update; when blank it is derived with <see cref="OAuthClient.BuildTokenStoreKey"/> from the config and <see cref="Scope"/>.</summary>
         public string TokenStoreKey { get; set; }
     }
 
     /// <summary> Stores OpenID Provider discovery metadata. </summary>
     public sealed class OpenIdProviderMetadata
     {
-        public Uri AuthorizationEndpoint { get; set; }
-        public Uri TokenEndpoint { get; set; }
-        public Uri Issuer { get; set; }
+        /// <summary>The <c>authorization_endpoint</c> of the provider; <c>null</c> when it did not publish one. Read-only.</summary>
+        public Uri AuthorizationEndpoint { get; internal set; }
+        /// <summary>The <c>token_endpoint</c> of the provider; <c>null</c> when it did not publish one. Read-only.</summary>
+        public Uri TokenEndpoint { get; internal set; }
+        /// <summary>The <c>issuer</c> identifier of the provider; <c>null</c> when it did not publish one. Read-only.</summary>
+        public Uri Issuer { get; internal set; }
     }
 }

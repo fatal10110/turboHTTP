@@ -17,6 +17,11 @@ namespace TurboHTTP.Auth
         private readonly string _tokenStoreKey;
         private readonly OAuthRefreshRequest _refreshTemplate;
 
+        /// <summary>Creates a provider for one stored token.</summary>
+        /// <param name="oauthClient">The client that reads and refreshes the token; it stays owned by the caller.</param>
+        /// <param name="tokenStoreKey">The token-store key of the token.</param>
+        /// <param name="refreshTemplate">Used to refresh an expired token; <c>null</c> never refreshes. It is copied on each use.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="oauthClient"/> or <paramref name="tokenStoreKey"/> is null.</exception>
         public OAuthTokenProvider(
             OAuthClient oauthClient,
             string tokenStoreKey,
@@ -27,6 +32,7 @@ namespace TurboHTTP.Auth
             _refreshTemplate = refreshTemplate;
         }
 
+        /// <summary>Returns the access token, refreshing it first when it is expired and a refresh template is set. Returns <c>null</c> when no token is stored, and an expired token when it cannot be refreshed (see <see cref="OAuthClient.GetValidTokenAsync"/>). Thread-safe.</summary>
         public async Task<string> GetTokenAsync(CancellationToken cancellationToken = default)
         {
             var token = await _oauthClient.GetValidTokenAsync(_tokenStoreKey, CopyTemplate(), cancellationToken)

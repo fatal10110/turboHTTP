@@ -91,6 +91,7 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <inheritdoc/>
         public override string ToString()
         {
             var statusPart = StatusCode.HasValue ? $" (HTTP {(int)StatusCode.Value})" : "";
@@ -115,6 +116,7 @@ namespace TurboHTTP.Core
             HttpError = error;
         }
 
+        /// <inheritdoc/>
         public override string ToString()
         {
             return $"UHttpException: {HttpError}";
