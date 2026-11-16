@@ -27,6 +27,9 @@ namespace TurboHTTP.Transport.Http1
         /// <see cref="OperationCanceledException"/> as soon as <paramref name="ct"/> fires while the
         /// write is pending.
         /// </summary>
+        /// <param name="stream">The stream to write to.</param>
+        /// <param name="data">The bytes to write; the caller keeps ownership of the buffer.</param>
+        /// <param name="ct">Cancels the wait; the underlying write may continue (see <paramref name="pendingWrite"/>).</param>
         /// <param name="pendingWrite">
         /// The underlying write when it was raced, else null. After a failure it tells the buffer
         /// owner whether the write may still read the buffer (<see cref="IsStillRunning"/>).

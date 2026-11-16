@@ -13,7 +13,7 @@ namespace TurboHTTP.Core.Internal
     /// Data is written via <see cref="Write(ReadOnlySpan{byte})"/> or the two-step
     /// <see cref="GetWriteSpan"/>/<see cref="Advance"/> pattern.
     /// After writing is complete, call <see cref="AsSequence"/> to project a
-    /// <see cref="ReadOnlySequence{byte}"/> over the buffered data without copying.
+    /// <see cref="ReadOnlySequence{T}"/> over the buffered data without copying.
     /// </para>
     /// <para>
     /// <b>Ownership:</b> The buffer exclusively owns all rented segments.
@@ -117,7 +117,7 @@ namespace TurboHTTP.Core.Internal
         // ── Read API ───────────────────────────────────────────────────────────
 
         /// <summary>
-        /// Projects a <see cref="ReadOnlySequence{byte}"/> over all written data.
+        /// Projects a <see cref="ReadOnlySequence{T}"/> over all written data.
         /// The sequence is valid until the next <see cref="Reset"/> or <see cref="Dispose"/>.
         /// </summary>
         public ReadOnlySequence<byte> AsSequence()

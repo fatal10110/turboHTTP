@@ -11,6 +11,12 @@ using TurboHTTP.Transport.Internal;
 
 namespace TurboHTTP.Transport.Connection
 {
+    /// <summary>
+    /// Connects to the first address of a resolved set that accepts, racing IPv6 and IPv4 attempts
+    /// (RFC 8305 "Happy Eyeballs") instead of waiting for each failure in turn. Stateless; every call
+    /// owns the sockets it opens and disposes the losing ones. <c>TcpConnectionPool</c> uses it
+    /// for every new connection, including the proxy leg; DNS resolution happens before it.
+    /// </summary>
     public static class HappyEyeballsConnector
     {
         private readonly struct ScheduledAttempt

@@ -406,6 +406,8 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary>Sends this request through the client that created it and returns the response with a streaming body; the caller disposes the response. The request is disposed afterwards.</summary>
+        /// <exception cref="InvalidOperationException">The request is not associated with a client.</exception>
         public async ValueTask<UHttpStreamingResponse> SendStreamingAsync(CancellationToken cancellationToken = default)
         {
             ThrowIfDisposed();
@@ -423,6 +425,7 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <inheritdoc/>
         public override string ToString()
         {
             return $"{Method} {Uri}";

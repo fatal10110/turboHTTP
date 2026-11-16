@@ -26,18 +26,21 @@ namespace TurboHTTP.Core
         private int _expectContinueTimeoutMs = DefaultExpectContinueTimeoutMsValue;
         private long? _autoExpectContinueThresholdBytes;
 
+        /// <summary>Largest buffered request body sent together with its headers in one write. Default 32 KiB. Must be positive.</summary>
         public int SmallBufferedRequestThresholdBytes
         {
             get => _smallBufferedRequestThresholdBytes;
             set => _smallBufferedRequestThresholdBytes = ValidatePositive(value, nameof(SmallBufferedRequestThresholdBytes));
         }
 
+        /// <summary>Chunk size for sending a streamed request body. Default 32 KiB. Must be positive.</summary>
         public int DefaultStreamingSendBufferBytes
         {
             get => _defaultStreamingSendBufferBytes;
             set => _defaultStreamingSendBufferBytes = ValidatePositive(value, nameof(DefaultStreamingSendBufferBytes));
         }
 
+        /// <summary>Buffer size for reading a streamed HTTP/1.1 response body. Default 64 KiB. Must be positive.</summary>
         public int DefaultStreamingReceiveBufferBytes
         {
             get => _defaultStreamingReceiveBufferBytes;
@@ -55,12 +58,14 @@ namespace TurboHTTP.Core
             set => _defaultHttp2PerStreamReceiveBufferBytes = ValidatePositive(value, nameof(DefaultHttp2PerStreamReceiveBufferBytes));
         }
 
+        /// <summary>Most bytes of an unread body that are drained to keep the connection reusable; a larger body closes the connection instead. Default 64 KiB. Must be positive.</summary>
         public int BufferedDrainReuseThresholdBytes
         {
             get => _bufferedDrainReuseThresholdBytes;
             set => _bufferedDrainReuseThresholdBytes = ValidatePositive(value, nameof(BufferedDrainReuseThresholdBytes));
         }
 
+        /// <summary>Upper bound on received HTTP/2 data buffered for one connection across all its streams. Default 8 MiB. Must be positive.</summary>
         public int MaxConnectionBufferedBytes
         {
             get => _maxConnectionBufferedBytes;
@@ -101,6 +106,7 @@ namespace TurboHTTP.Core
                 nameof(AutoExpectContinueThresholdBytes));
         }
 
+        /// <summary>Returns a copy of these options.</summary>
         public StreamingOptions Clone()
         {
             return new StreamingOptions

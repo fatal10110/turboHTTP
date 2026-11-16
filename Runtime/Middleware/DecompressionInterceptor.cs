@@ -54,6 +54,8 @@ namespace TurboHTTP.Middleware
             _maxDecompressedBodySizeBytes = maxDecompressedBodySizeBytes;
         }
 
+        /// <summary>Adds <c>Accept-Encoding</c> and decodes gzip and deflate response bodies up to the configured size limit. Thread-safe.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="next"/> is null.</exception>
         public DispatchFunc Wrap(DispatchFunc next)
         {
             if (next == null)

@@ -4,10 +4,14 @@ using System.Text;
 
 namespace TurboHTTP.Auth
 {
+    /// <summary>Proof Key for Code Exchange helpers (RFC 7636). Stateless and thread-safe.</summary>
     public static class PkceUtility
     {
         private const string AllowedChars = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789-._~";
 
+        /// <summary>Generates a random code verifier from the unreserved characters with a cryptographic generator (RFC 7636 section 4.1).</summary>
+        /// <param name="length">Length from 43 to 128.</param>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="length"/> is outside 43 to 128.</exception>
         public static string GenerateCodeVerifier(int length = 64)
         {
             if (length < 43 || length > 128)
@@ -38,6 +42,9 @@ namespace TurboHTTP.Auth
             return new string(chars);
         }
 
+        /// <summary>Derives the <c>S256</c> code challenge: base64url of the SHA-256 of the verifier (RFC 7636 section 4.2).</summary>
+        /// <exception cref="ArgumentException"><paramref name="codeVerifier"/> is null or empty.</exception>
+        /// <exception cref="ArgumentOutOfRangeException">The verifier is not 43 to 128 characters.</exception>
         public static string CreateS256CodeChallenge(string codeVerifier)
         {
             if (string.IsNullOrEmpty(codeVerifier))
@@ -50,6 +57,7 @@ namespace TurboHTTP.Auth
             return Base64UrlEncode(digest);
         }
 
+        /// <summary>Whether <paramref name="codeVerifier"/> is 43 to 128 characters of the unreserved set. Never throws.</summary>
         public static bool ValidateCodeVerifier(string codeVerifier)
         {
             if (string.IsNullOrEmpty(codeVerifier))

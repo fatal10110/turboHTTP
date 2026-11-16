@@ -28,6 +28,9 @@ namespace TurboHTTP.Middleware
         private readonly bool _overrideExisting;
         private readonly string _originStateKey;
 
+        /// <summary>Creates the interceptor.</summary>
+        /// <param name="defaultHeaders">Headers to add to every request; <c>null</c> adds none. The instance is not copied, so it should not be changed once requests are in flight.</param>
+        /// <param name="overrideExisting">Whether a default replaces a header the request already has; by default the request's own value wins.</param>
         public DefaultHeadersInterceptor(HttpHeaders defaultHeaders, bool overrideExisting = false)
         {
             _defaultHeaders = defaultHeaders ?? new HttpHeaders();
@@ -36,6 +39,8 @@ namespace TurboHTTP.Middleware
                               Interlocked.Increment(ref s_nextInstanceId).ToString(CultureInfo.InvariantCulture);
         }
 
+        /// <summary>Adds the default headers to each request (on a copy; the caller's request is not changed). Credential headers apply only to the origin of the first request seen for the context. Thread-safe.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="next"/> is null.</exception>
         public DispatchFunc Wrap(DispatchFunc next)
         {
             if (next == null)

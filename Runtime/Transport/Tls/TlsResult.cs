@@ -48,6 +48,8 @@ namespace TurboHTTP.Transport.Tls
         /// </summary>
         public string ProviderName { get; }
 
+        /// <summary>Creates a handshake result. <paramref name="negotiatedAlpn"/> may be null.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="secureStream"/> or <paramref name="tlsVersion"/> is null.</exception>
         public TlsResult(
             Stream secureStream,
             string negotiatedAlpn,

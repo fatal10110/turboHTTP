@@ -7,7 +7,7 @@ using System.Threading;
 
 namespace TurboHTTP.Transport.Tls
 {
-    /// <summary>Outcome class of <see cref="ServerCertificateVerifier.Verify"/>.</summary>
+    /// <summary>Outcome class of <c>ServerCertificateVerifier.Verify</c>.</summary>
     /// <remarks>
     /// Fail-closed convention (#278): the zero value is <see cref="NotVerified"/>, a rejection, so a
     /// default or unset result never reads as trusted. Success has an explicit non-zero value.
@@ -33,7 +33,7 @@ namespace TurboHTTP.Transport.Tls
         NoVerifier = 5,
     }
 
-    /// <summary>Result of <see cref="ServerCertificateVerifier.Verify"/>.</summary>
+    /// <summary>Result of <c>ServerCertificateVerifier.Verify</c>.</summary>
     /// <remarks>
     /// <c>default</c> is <see cref="CertificateVerificationStatus.NotVerified"/> without a path, a
     /// rejection. Consumers accept a chain only through <see cref="IsTrusted"/>.

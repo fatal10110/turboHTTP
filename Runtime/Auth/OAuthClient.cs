@@ -98,6 +98,10 @@ namespace TurboHTTP.Auth
             });
         }
 
+        /// <summary>Applies OIDC discovery to <paramref name="config"/>. Without <c>UseOidcDiscovery</c> it returns <paramref name="config"/> itself; otherwise it returns a validated copy whose endpoints come from <see cref="DiscoverAsync"/> where the provider named them. The input is not changed. Thread-safe.</summary>
+        /// <exception cref="InvalidOperationException">The discovered issuer does not match the discovery endpoint.</exception>
+        /// <exception cref="ArgumentNullException"><paramref name="config"/> is null.</exception>
+        /// <exception cref="ObjectDisposedException">The client is disposed.</exception>
         public async Task<OAuthConfig> ResolveEndpointsAsync(
             OAuthConfig config,
             Uri discoveryEndpoint,
@@ -232,6 +236,10 @@ namespace TurboHTTP.Auth
                 .ConfigureAwait(false);
         }
 
+        /// <summary>Fetches the provider metadata document (OpenID Connect Discovery; RFC 8414) from <paramref name="discoveryEndpoint"/>, which must be <c>https://</c> or a localhost URI. The request carries no authorization. Missing fields are <c>null</c>. Thread-safe.</summary>
+        /// <exception cref="ArgumentException">The endpoint is not https and not localhost.</exception>
+        /// <exception cref="UHttpException">The request failed.</exception>
+        /// <exception cref="ObjectDisposedException">The client is disposed.</exception>
         public async Task<OpenIdProviderMetadata> DiscoverAsync(Uri discoveryEndpoint, CancellationToken ct)
         {
             ThrowIfDisposed();
@@ -259,6 +267,11 @@ namespace TurboHTTP.Auth
             return metadata;
         }
 
+        /// <summary>Returns the stored token for <paramref name="key"/>, refreshing it first when it is expired (or within the refresh skew of expiring) and a refresh token and <paramref name="refreshRequest"/> are available. Concurrent callers for one key share a single refresh. Thread-safe.</summary>
+        /// <returns>The token, or <c>null</c> when nothing is stored under the key. The token can be expired: it is returned as stored when <paramref name="refreshRequest"/> is <c>null</c> or the token has no refresh token, so check <see cref="IsTokenExpired"/> if that matters.</returns>
+        /// <exception cref="ArgumentException"><paramref name="key"/> is blank, or <paramref name="refreshRequest"/> has no config.</exception>
+        /// <exception cref="InvalidOperationException">The refresh was rejected; reauthorization is required.</exception>
+        /// <exception cref="ObjectDisposedException">The client is disposed.</exception>
         public async Task<OAuthToken> GetValidTokenAsync(
             string key,
             OAuthRefreshRequest refreshRequest,
@@ -289,6 +302,8 @@ namespace TurboHTTP.Auth
                 .ConfigureAwait(false);
         }
 
+        /// <summary>Builds the default token-store key from the client id, the token endpoint and <paramref name="audienceOrScope"/>, so tokens for different clients, providers or audiences do not collide. The key is not a secret.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="config"/> is null.</exception>
         public static string BuildTokenStoreKey(OAuthConfig config, string audienceOrScope)
         {
             if (config == null) throw new ArgumentNullException(nameof(config));
@@ -296,6 +311,7 @@ namespace TurboHTTP.Auth
             return config.ClientId + "|" + config.TokenEndpoint + "|" + audience;
         }
 
+        /// <summary>Whether <paramref name="token"/> is expired or within the client's refresh skew of expiring, by the client's clock. A <c>null</c> token counts as expired.</summary>
         public bool IsTokenExpired(OAuthToken token)
         {
             if (token == null)
@@ -304,6 +320,9 @@ namespace TurboHTTP.Auth
             return token.IsExpired(_utcNow(), _defaultRefreshSkew);
         }
 
+        /// <summary>Checks the <c>state</c> returned by the authorization server against the value sent (RFC 6749 section 10.12). Call it before using an authorization code.</summary>
+        /// <exception cref="ArgumentException"><paramref name="expectedState"/> is null or empty.</exception>
+        /// <exception cref="InvalidOperationException">The values differ.</exception>
         public static void ValidateState(string expectedState, string actualState)
         {
             if (string.IsNullOrEmpty(expectedState))
@@ -315,6 +334,7 @@ namespace TurboHTTP.Auth
             }
         }
 
+        /// <summary>Cancels refreshes in flight (their waiters see the cancellation) and disposes the <see cref="UHttpClient"/> when this client created it. A client or token store passed to the constructor stays owned by the caller. Idempotent.</summary>
         public void Dispose()
         {
             if (Interlocked.CompareExchange(ref _disposed, 1, 0) != 0)

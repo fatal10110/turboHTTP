@@ -30,7 +30,7 @@ namespace TurboHTTP.Core
         /// The returned <see cref="ReadOnlySequence{T}"/> is valid only for the lifetime of
         /// this <see cref="UHttpResponse"/>. Disposing this response returns the underlying
         /// pooled buffers to <see cref="System.Buffers.ArrayPool{T}.Shared"/>. Any segment
-        /// references held past <see cref="Dispose"/> point to memory that may be reused for
+        /// references held past <see cref="Dispose()"/> point to memory that may be reused for
         /// unrelated purposes — this is use-after-pool-return and will cause data corruption.
         /// Always consume the body before or within a <c>using</c> block. A response that is never
         /// disposed does not return its buffers: its finalizer leaves them to the garbage collector,
@@ -53,7 +53,7 @@ namespace TurboHTTP.Core
         /// </summary>
         /// <remarks>
         /// For requests created via <see cref="UHttpClient.CreateRequest"/> (pooled requests),
-        /// this property is only valid while the response is alive (before <see cref="Dispose"/>
+        /// this property is only valid while the response is alive (before <see cref="Dispose()"/>
         /// is called). Accessing it after disposing the response returns a request object that
         /// may have already been re-leased to a different caller with different state.
         /// Do not cache this reference beyond the response lifetime.
@@ -83,6 +83,7 @@ namespace TurboHTTP.Core
         private Action _onDispose;
         private int _disposed;
 
+        /// <summary>Creates a buffered response. With <paramref name="bodyFromPool"/> the response owns <paramref name="body"/> and returns its array to the pool on <see cref="Dispose()"/>.</summary>
         public UHttpResponse(
             HttpStatusCode statusCode,
             HttpHeaders headers,
@@ -270,6 +271,7 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <inheritdoc/>
         public override string ToString()
         {
             return $"{(int)StatusCode} {StatusCode} ({ElapsedTime.TotalMilliseconds:F0}ms)";
@@ -297,11 +299,13 @@ namespace TurboHTTP.Core
                 releaseAction();
         }
 
+        /// <summary>Finalizer: pooled buffers of a response that was not disposed are left to the garbage collector.</summary>
         ~UHttpResponse()
         {
             Dispose(false);
         }
 
+        /// <summary>Releases the body and returns pooled buffers. Idempotent. The body must not be used afterwards.</summary>
         public void Dispose()
         {
             Dispose(true);

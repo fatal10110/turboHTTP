@@ -21,6 +21,12 @@ namespace TurboHTTP.Middleware
         private readonly bool _defaultAllowHttpsToHttpDowngrade;
         private readonly bool _defaultEnforceRedirectTotalTimeout;
 
+        /// <summary>Creates the interceptor. The four arguments are defaults; a request overrides each through <see cref="RequestMetadataKeys"/> (<c>FollowRedirects</c>, <c>MaxRedirects</c>, <c>AllowHttpsToHttpDowngrade</c>, <c>EnforceRedirectTotalTimeout</c>), which <see cref="UHttpClient"/> fills from its options.</summary>
+        /// <param name="defaultFollowRedirects">Whether redirects are followed.</param>
+        /// <param name="defaultMaxRedirects">Most hops followed before the request fails; 0 follows none.</param>
+        /// <param name="defaultAllowHttpsToHttpDowngrade">Whether a redirect from <c>https://</c> to <c>http://</c> is followed; by default it is refused.</param>
+        /// <param name="defaultEnforceRedirectTotalTimeout">Whether the request timeout covers the whole chain instead of restarting per hop.</param>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="defaultMaxRedirects"/> is negative.</exception>
         public RedirectInterceptor(
             bool defaultFollowRedirects = true,
             int defaultMaxRedirects = 10,
@@ -36,6 +42,8 @@ namespace TurboHTTP.Middleware
             _defaultEnforceRedirectTotalTimeout = defaultEnforceRedirectTotalTimeout;
         }
 
+        /// <summary>Follows redirects for the wrapped pipeline. Thread-safe; each request keeps its own hop state.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="next"/> is null.</exception>
         public DispatchFunc Wrap(DispatchFunc next)
         {
             if (next == null)

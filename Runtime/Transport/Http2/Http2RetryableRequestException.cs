@@ -5,7 +5,7 @@ namespace TurboHTTP.Transport.Http2
     /// <summary>
     /// A request failure that <see cref="RawSocketTransport"/> may replay on another HTTP/2 connection.
     /// Raised only before the response started and never for a handler fault, so a replay can never
-    /// deliver a second <see cref="IHttpHandler.OnResponseStart"/>. When not replayed it surfaces as the
+    /// deliver a second <see cref="IHttpHandler.OnResponseStartAsync"/>. When not replayed it surfaces as the
     /// <see cref="UHttpException"/> it is, with the same <see cref="UHttpError"/>.
     /// </summary>
     internal sealed class Http2RetryableRequestException : UHttpException

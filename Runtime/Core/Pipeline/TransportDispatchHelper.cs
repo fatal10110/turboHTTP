@@ -10,6 +10,7 @@ namespace TurboHTTP.Core
     /// </summary>
     public static class TransportDispatchHelper
     {
+        /// <summary>Dispatches <paramref name="request"/> and buffers the whole response; the caller disposes the returned response.</summary>
         public static Task<UHttpResponse> CollectResponseAsync(
             DispatchFunc dispatch,
             UHttpRequest request,
@@ -19,6 +20,7 @@ namespace TurboHTTP.Core
             return BufferedDispatchBridge.CollectResponseAsync(dispatch, request, context, cancellationToken);
         }
 
+        /// <summary>Dispatches <paramref name="request"/> and buffers the whole response; the caller disposes the returned response.</summary>
         public static Task<UHttpResponse> CollectResponseAsync(
             IHttpTransport transport,
             UHttpRequest request,

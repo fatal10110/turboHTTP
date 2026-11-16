@@ -57,6 +57,7 @@ ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)
 CI = os.path.join(ROOT, "Tools~", "ci")
 OUT = os.path.join(ROOT, ".build", "shadow")
 BASELINE = os.path.join(CI, "analyzer-baseline.txt")
+DOC_REQUIRED = ("TurboHTTP.Core", "TurboHTTP.Transport")  # assemblies whose public members need XML docs (CS1591)
 # Samples~ is compiled like a runtime module (each sample ships its own asmdef), so a sample that no
 # longer compiles against the API fails here instead of in a customer project (#98).
 SOURCE_DIRS = ["Runtime", "Editor", "Samples~", "Tests"]
@@ -329,6 +330,11 @@ def generate(variant, asmdefs, dlls, out=OUT, precompiled=None, tests=True, docs
             f"    <AllowUnsafeBlocks>{'true' if a.get('allowUnsafeCode') else 'false'}</AllowUnsafeBlocks>",
             f"    <DefineConstants>$(DefineConstants);{';'.join(sorted(asmdef_defines(a, defines, packages)))}</DefineConstants>",
         ]
+        if name in DOC_REQUIRED and not a.get("_tests") and not a.get("_external"):
+            # Public API of Core and Transport must be documented (#811): CS1591 stays a warning that
+            # goes through the baseline ratchet instead of being muted by Shadow.props.
+            lines.append("    <GenerateDocumentationFile>true</GenerateDocumentationFile>")
+            lines.append("    <NoWarn>$(NoWarn.Replace('CS1591', ''))</NoWarn>")
         if a.get("_tests") or a.get("_external") or compile_only:
             # Tests, Unity's Test Framework source and the opt-in define variants: compiler errors only.
             lines.append("    <RunAnalyzers>false</RunAnalyzers>")

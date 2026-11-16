@@ -2,6 +2,10 @@ using System;
 
 namespace TurboHTTP.Core
 {
+    /// <summary>
+    /// Per-request proxy overrides for <see cref="UHttpRequest"/>; they take precedence over
+    /// <see cref="UHttpClientOptions.Proxy"/> and the environment.
+    /// </summary>
     public static class ProxyRequestBuilderExtensions
     {
         /// <summary>
@@ -28,6 +32,10 @@ namespace TurboHTTP.Core
                 proxySettings?.Clone());
         }
 
+        /// <summary>
+        /// Sends this request directly, ignoring the client's proxy and the
+        /// <c>HTTP_PROXY</c>/<c>HTTPS_PROXY</c> environment (and any <see cref="WithProxy"/> value).
+        /// </summary>
         public static UHttpRequest WithoutProxy(this UHttpRequest request)
         {
             if (request == null) throw new ArgumentNullException(nameof(request));

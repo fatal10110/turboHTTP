@@ -19,6 +19,7 @@ namespace TurboHTTP.Core
         private readonly Dictionary<string, List<string>> _headers;
         private readonly bool _frozen;
 
+        /// <summary>Creates empty headers with case-insensitive names.</summary>
         public HttpHeaders() : this(false)
         {
         }

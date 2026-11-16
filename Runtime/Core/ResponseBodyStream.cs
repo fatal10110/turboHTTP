@@ -5,6 +5,7 @@ using System.Threading.Tasks;
 
 namespace TurboHTTP.Core
 {
+    /// <summary>Forward-only read stream over a streaming response body. Not seekable or writable; owned by its <see cref="UHttpStreamingResponse"/>. One reader at a time.</summary>
     public sealed class ResponseBodyStream : Stream
     {
         private readonly UHttpStreamingResponse _owner;
@@ -17,12 +18,16 @@ namespace TurboHTTP.Core
             _owner = owner ?? throw new ArgumentNullException(nameof(owner));
         }
 
+        /// <inheritdoc/>
         public override bool CanRead => Volatile.Read(ref _disposed) == 0 && !_owner.IsDisposed;
 
+        /// <inheritdoc/>
         public override bool CanSeek => false;
 
+        /// <inheritdoc/>
         public override bool CanWrite => false;
 
+        /// <inheritdoc/>
         public override long Length
         {
             get
@@ -37,17 +42,20 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <inheritdoc/>
         public override long Position
         {
             get => throw new NotSupportedException();
             set => throw new NotSupportedException();
         }
 
+        /// <inheritdoc/>
         public override void Flush()
         {
             ThrowIfDisposed();
         }
 
+        /// <inheritdoc/>
         public override Task FlushAsync(CancellationToken cancellationToken)
         {
             ThrowIfDisposed();
@@ -55,6 +63,7 @@ namespace TurboHTTP.Core
             return Task.CompletedTask;
         }
 
+        /// <inheritdoc/>
         public override int Read(byte[] buffer, int offset, int count)
         {
             ValidateReadArguments(buffer, offset, count);
@@ -64,6 +73,7 @@ namespace TurboHTTP.Core
                 .GetResult();
         }
 
+        /// <inheritdoc/>
         public override Task<int> ReadAsync(
             byte[] buffer,
             int offset,
@@ -75,6 +85,7 @@ namespace TurboHTTP.Core
             return ReadCoreAsync(new Memory<byte>(buffer, offset, count), cancellationToken).AsTask();
         }
 
+        /// <inheritdoc/>
         public override ValueTask<int> ReadAsync(
             Memory<byte> buffer,
             CancellationToken cancellationToken = default)
@@ -83,26 +94,31 @@ namespace TurboHTTP.Core
             return ReadCoreAsync(buffer, cancellationToken);
         }
 
+        /// <inheritdoc/>
         public override long Seek(long offset, SeekOrigin origin)
         {
             throw new NotSupportedException();
         }
 
+        /// <inheritdoc/>
         public override void SetLength(long value)
         {
             throw new NotSupportedException();
         }
 
+        /// <inheritdoc/>
         public override void Write(byte[] buffer, int offset, int count)
         {
             throw new NotSupportedException();
         }
 
+        /// <inheritdoc/>
         public override void Write(ReadOnlySpan<byte> buffer)
         {
             throw new NotSupportedException();
         }
 
+        /// <inheritdoc/>
         public override Task WriteAsync(
             byte[] buffer,
             int offset,
@@ -112,6 +128,7 @@ namespace TurboHTTP.Core
             throw new NotSupportedException();
         }
 
+        /// <inheritdoc/>
         public override ValueTask WriteAsync(
             ReadOnlyMemory<byte> buffer,
             CancellationToken cancellationToken = default)
@@ -119,6 +136,7 @@ namespace TurboHTTP.Core
             throw new NotSupportedException();
         }
 
+        /// <inheritdoc/>
         protected override void Dispose(bool disposing)
         {
             if (disposing)
@@ -127,6 +145,7 @@ namespace TurboHTTP.Core
             base.Dispose(disposing);
         }
 
+        /// <inheritdoc/>
         public override ValueTask DisposeAsync()
         {
             DisposeStreamCore();

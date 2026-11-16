@@ -38,10 +38,14 @@ namespace TurboHTTP.Core
         /// </summary>
         public UHttpClientOptions OptionsSnapshot => _optionsSnapshot;
 
+        /// <summary>The capabilities this plugin was granted.</summary>
         public PluginCapabilities Capabilities => _capabilities;
 
         internal IReadOnlyList<IHttpInterceptor> RegisteredInterceptors => _registeredInterceptors;
 
+        /// <summary>Adds an interceptor to the client pipeline. When the plugin does not hold every mutation capability the interceptor is wrapped so it cannot change what it is not allowed to change. Call during initialization only.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="interceptor"/> is null.</exception>
+        /// <exception cref="PluginException">The plugin holds no interceptor capability.</exception>
         public void RegisterInterceptor(IHttpInterceptor interceptor)
         {
             if (interceptor == null)
@@ -79,6 +83,8 @@ namespace TurboHTTP.Core
             _registeredInterceptors.Add(guarded);
         }
 
+        /// <summary>Writes a diagnostics message attributed to this plugin.</summary>
+        /// <exception cref="PluginException">The plugin holds neither <see cref="PluginCapabilities.Diagnostics"/> nor <see cref="PluginCapabilities.ReadOnlyMonitoring"/>.</exception>
         public void LogDiagnostic(string message)
         {
             if ((_capabilities & PluginCapabilities.Diagnostics) == 0 &&

@@ -9,6 +9,12 @@ using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Core
 {
+    /// <summary>
+    /// Body of a <see cref="UHttpRequest"/>. A body is single-owner: the request that holds it disposes it.
+    /// Disposing it while a send is reading it is safe: the release of its resources is deferred until
+    /// the read session ends. Implementations are <see cref="EmptyRequestBody"/>, <see cref="BufferedRequestBody"/>,
+    /// <see cref="OwnedMemoryRequestBody"/>, <see cref="StreamRequestBody"/> and <see cref="FactoryRequestBody"/>.
+    /// </summary>
     public abstract class UHttpRequestBody : IDisposable
     {
         private static readonly string[] EmptyDeclaredTrailerNames = Array.Empty<string>();
@@ -21,12 +27,16 @@ namespace TurboHTTP.Core
         private Func<HttpHeaders> _trailerProvider;
         private string[] _declaredTrailerNames = EmptyDeclaredTrailerNames;
 
+        /// <summary>Whether the body has no content (a zero-length body, or no body at all).</summary>
         public abstract bool IsEmpty { get; }
 
+        /// <summary>Content length in bytes, or <c>null</c> when it is not known up front (the request is then sent chunked or length-delimited by the protocol).</summary>
         public abstract long? Length { get; }
 
+        /// <summary>Whether and how the body can be sent again, for a redirect or a retry.</summary>
         public abstract RequestBodyReplayability Replayability { get; }
 
+        /// <summary>Returns the whole body as one contiguous buffer when it is held in memory; <c>false</c> for stream-backed bodies. The memory belongs to the body and is valid until it is disposed.</summary>
         public abstract bool TryGetBufferedData(out ReadOnlyMemory<byte> data);
 
         internal Func<HttpHeaders> TrailerProvider => Volatile.Read(ref _trailerProvider);
@@ -171,6 +181,7 @@ namespace TurboHTTP.Core
                 FailSession);
         }
 
+        /// <summary>Disposes the body. Idempotent; when a send is reading the body, the release of its resources waits until that read ends.</summary>
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0)
@@ -180,16 +191,19 @@ namespace TurboHTTP.Core
                 DisposeCoreOnce();
         }
 
+        /// <summary>Releases resources the body owns. Called at most once, after the last read session has ended.</summary>
         protected virtual void DisposeCore()
         {
         }
 
+        /// <summary>Throws <see cref="ObjectDisposedException"/> when the body was disposed.</summary>
         protected void ThrowIfDisposed()
         {
             if (Volatile.Read(ref _disposed) != 0)
                 throw new ObjectDisposedException(GetType().Name);
         }
 
+        /// <summary>For finalizers of derived classes: runs the one-time resource release without touching other managed objects.</summary>
         protected void DisposeCoreFromFinalizer()
         {
             DisposeCoreOnce();
@@ -291,6 +305,7 @@ namespace TurboHTTP.Core
             }
         }
 
+        /// <summary>Computes a content hash that does not change between runs, for <see cref="object.GetHashCode"/> of buffered bodies.</summary>
         protected static int ComputeStableHash(ReadOnlySpan<byte> data)
         {
             unchecked
@@ -306,14 +321,19 @@ namespace TurboHTTP.Core
         }
     }
 
+    /// <summary>A zero-length request body. Always replayable.</summary>
     public sealed class EmptyRequestBody : UHttpRequestBody
     {
+        /// <inheritdoc/>
         public override bool IsEmpty => true;
 
+        /// <inheritdoc/>
         public override long? Length => 0;
 
+        /// <inheritdoc/>
         public override RequestBodyReplayability Replayability => RequestBodyReplayability.Replayable;
 
+        /// <inheritdoc/>
         public override bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
         {
             data = ReadOnlyMemory<byte>.Empty;
@@ -334,27 +354,34 @@ namespace TurboHTTP.Core
             return new EmptyRequestBody();
         }
 
+        /// <inheritdoc/>
         public override int GetHashCode()
         {
             return 17;
         }
     }
 
+    /// <summary>A request body held in a caller-provided memory block. The memory is not copied or owned: it must stay unchanged and valid until the request completes. Always replayable.</summary>
     public sealed class BufferedRequestBody : UHttpRequestBody
     {
         private readonly ReadOnlyMemory<byte> _data;
 
+        /// <summary>Wraps <paramref name="data"/>; the memory is not copied.</summary>
         public BufferedRequestBody(ReadOnlyMemory<byte> data)
         {
             _data = data;
         }
 
+        /// <inheritdoc/>
         public override bool IsEmpty => _data.IsEmpty;
 
+        /// <inheritdoc/>
         public override long? Length => _data.Length;
 
+        /// <inheritdoc/>
         public override RequestBodyReplayability Replayability => RequestBodyReplayability.Replayable;
 
+        /// <inheritdoc/>
         public override bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
         {
             data = _data;
@@ -377,17 +404,22 @@ namespace TurboHTTP.Core
                 : new BufferedRequestBody(_data.ToArray());
         }
 
+        /// <inheritdoc/>
         public override int GetHashCode()
         {
             return ComputeStableHash(_data.Span);
         }
     }
 
+    /// <summary>A request body held in memory the body owns (typically pooled). Disposing the body disposes the owner. Always replayable.</summary>
     public sealed class OwnedMemoryRequestBody : UHttpRequestBody
     {
         private IMemoryOwner<byte> _owner;
         private readonly int _length;
 
+        /// <summary>Takes ownership of <paramref name="owner"/>; the first <paramref name="length"/> bytes of its memory are the body.</summary>
+        /// <exception cref="ArgumentNullException"><paramref name="owner"/> is null.</exception>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="length"/> is negative or exceeds the owner's memory.</exception>
         public OwnedMemoryRequestBody(IMemoryOwner<byte> owner, int length)
         {
             if (owner == null)
@@ -399,12 +431,16 @@ namespace TurboHTTP.Core
             _length = length;
         }
 
+        /// <inheritdoc/>
         public override bool IsEmpty => _length == 0;
 
+        /// <inheritdoc/>
         public override long? Length => _length;
 
+        /// <inheritdoc/>
         public override RequestBodyReplayability Replayability => RequestBodyReplayability.Replayable;
 
+        /// <inheritdoc/>
         public override bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
         {
             ThrowIfDisposed();
@@ -430,16 +466,19 @@ namespace TurboHTTP.Core
                 : new BufferedRequestBody(_owner.Memory.Slice(0, _length).ToArray());
         }
 
+        /// <inheritdoc/>
         protected override void DisposeCore()
         {
             Interlocked.Exchange(ref _owner, null)?.Dispose();
         }
 
+        /// <summary>Finalizer: releases the owned memory when the body was not disposed.</summary>
         ~OwnedMemoryRequestBody()
         {
             DisposeCoreFromFinalizer();
         }
 
+        /// <inheritdoc/>
         public override int GetHashCode()
         {
             var owner = Volatile.Read(ref _owner);
@@ -463,6 +502,12 @@ namespace TurboHTTP.Core
         private readonly bool _leaveOpen;
         private readonly long _startPosition;
 
+        /// <summary>Wraps <paramref name="stream"/>, reading from its current position.</summary>
+        /// <param name="stream">The stream to send; must be readable.</param>
+        /// <param name="contentLength">Bytes to send when known; <c>null</c> when it is not.</param>
+        /// <param name="leaveOpen">Whether disposing the body leaves <paramref name="stream"/> open; by default the body closes it.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="stream"/> is null.</exception>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="contentLength"/> is negative.</exception>
         public StreamRequestBody(Stream stream, long? contentLength = null, bool leaveOpen = false)
         {
             if (stream == null)
@@ -476,13 +521,17 @@ namespace TurboHTTP.Core
             _startPosition = stream.CanSeek ? stream.Position : 0;
         }
 
+        /// <inheritdoc/>
         public override bool IsEmpty => false;
 
+        /// <inheritdoc/>
         public override long? Length => _contentLength;
 
+        /// <inheritdoc/>
         public override RequestBodyReplayability Replayability =>
             _stream.CanSeek ? RequestBodyReplayability.Replayable : RequestBodyReplayability.NonReplayable;
 
+        /// <inheritdoc/>
         public override bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
         {
             data = default;
@@ -506,17 +555,20 @@ namespace TurboHTTP.Core
                 "Stream-backed request bodies cannot be detached-cloned. Use a replayable factory body or a shared-content copy for same-dispatch mutations.");
         }
 
+        /// <inheritdoc/>
         protected override void DisposeCore()
         {
             if (!_leaveOpen)
                 _stream.Dispose();
         }
 
+        /// <summary>Finalizer: closes the stream (unless left open) when the body was not disposed.</summary>
         ~StreamRequestBody()
         {
             DisposeCoreFromFinalizer();
         }
 
+        /// <inheritdoc/>
         public override int GetHashCode()
         {
             return RuntimeHelpers.GetHashCode(this);
@@ -535,6 +587,11 @@ namespace TurboHTTP.Core
         private readonly Func<CancellationToken, ValueTask<Stream>> _factory;
         private readonly long? _contentLength;
 
+        /// <summary>Creates a body whose stream is created, and disposed, per send attempt.</summary>
+        /// <param name="factory">Creates a fresh readable stream; called once for each attempt.</param>
+        /// <param name="contentLength">Bytes each stream yields when known; <c>null</c> when it is not.</param>
+        /// <exception cref="ArgumentNullException"><paramref name="factory"/> is null.</exception>
+        /// <exception cref="ArgumentOutOfRangeException"><paramref name="contentLength"/> is negative.</exception>
         public FactoryRequestBody(
             Func<CancellationToken, ValueTask<Stream>> factory,
             long? contentLength = null)
@@ -548,13 +605,17 @@ namespace TurboHTTP.Core
             _contentLength = contentLength;
         }
 
+        /// <inheritdoc/>
         public override bool IsEmpty => false;
 
+        /// <inheritdoc/>
         public override long? Length => _contentLength;
 
+        /// <inheritdoc/>
         public override RequestBodyReplayability Replayability =>
             RequestBodyReplayability.ReplayableViaFactory;
 
+        /// <inheritdoc/>
         public override bool TryGetBufferedData(out ReadOnlyMemory<byte> data)
         {
             data = default;
@@ -589,6 +650,7 @@ namespace TurboHTTP.Core
             return new FactoryRequestBody(_factory, _contentLength);
         }
 
+        /// <inheritdoc/>
         public override int GetHashCode()
         {
             return RuntimeHelpers.GetHashCode(this);

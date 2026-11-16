@@ -8,7 +8,7 @@ namespace TurboHTTP.Core
     /// Ownership-carrying buffered response body detached from an <see cref="IResponseBodySource"/>.
     /// </summary>
     /// <remarks>
-    /// The optional <paramref name="owner"/> is transferred to the eventual
+    /// The optional owner passed to the constructors is transferred to the eventual
     /// <see cref="UHttpResponse"/> and is disposed when that response is disposed. A response that is
     /// finalized without being disposed never disposes the owner: the detached body may still be read
     /// through a copied-out <see cref="UHttpResponse.Body"/>, so the owner and its buffers are left to
@@ -23,6 +23,9 @@ namespace TurboHTTP.Core
         private readonly OwnershipState _ownerState;
         private readonly bool _hasSequence;
 
+        /// <summary>Wraps a contiguous buffered body.</summary>
+        /// <param name="body">The body bytes; they stay valid until the owner is disposed.</param>
+        /// <param name="owner">Optional owner of the memory behind <paramref name="body"/>; disposed with the response that adopts this body.</param>
         public DetachedBufferedBody(ReadOnlyMemory<byte> body, IDisposable owner = null)
         {
             _memory = body;
@@ -31,6 +34,9 @@ namespace TurboHTTP.Core
             _hasSequence = false;
         }
 
+        /// <summary>Wraps a segmented buffered body.</summary>
+        /// <param name="body">The body segments; they stay valid until the owner is disposed.</param>
+        /// <param name="owner">Optional owner of the memory behind <paramref name="body"/>; disposed with the response that adopts this body.</param>
         public DetachedBufferedBody(ReadOnlySequence<byte> body, IDisposable owner = null)
         {
             _memory = default;

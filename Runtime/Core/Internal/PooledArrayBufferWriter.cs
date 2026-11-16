@@ -8,7 +8,7 @@ using System.Runtime.CompilerServices;
 namespace TurboHTTP.Core.Internal
 {
     /// <summary>
-    /// <see cref="IBufferWriter{T}"/> backed by <see cref="ArrayPool{byte}.Shared"/>.
+    /// <see cref="IBufferWriter{T}"/> backed by <see cref="ArrayPool{T}.Shared"/>.
     /// Supports buffer growth and transfers ownership of written data via
     /// <see cref="DetachAsOwner"/>.
     /// </summary>
@@ -20,7 +20,7 @@ namespace TurboHTTP.Core.Internal
     /// Typical life cycle:
     /// <list type="number">
     /// <item>Acquire an instance from a pool or <c>new PooledArrayBufferWriter()</c>.</item>
-    /// <item>Pass to a serializer that implements <see cref="IBufferWriter{byte}"/>.</item>
+    /// <item>Pass to a serializer that implements <see cref="IBufferWriter{T}"/>.</item>
     /// <item>Either read the written data via <see cref="WrittenMemory"/> / <see cref="WrittenSpan"/>
     ///       and then call <see cref="Reset"/> to reuse, or call <see cref="DetachAsOwner"/> to
     ///       transfer ownership of the pooled array to the caller.</item>
@@ -128,17 +128,17 @@ namespace TurboHTTP.Core.Internal
 
         /// <summary>
         /// Transfers ownership of the written data to the caller as an
-        /// <see cref="IMemoryOwner{byte}"/> sliced to the written length.
+        /// <see cref="IMemoryOwner{T}"/> sliced to the written length.
         /// After this call the writer enters a "detached" state and must be
         /// reinitialized via <see cref="Reset"/> before further use.
         /// </summary>
         /// <remarks>
-        /// The returned owner's <see cref="IMemoryOwner{byte}.Memory"/> covers exactly
+        /// The returned owner's <see cref="IMemoryOwner{T}.Memory"/> covers exactly
         /// the bytes written (not the full pool-allocated backing array).
         /// The caller is responsible for disposing the returned owner.
         /// </remarks>
         /// <returns>
-        /// An <see cref="IMemoryOwner{byte}"/> wrapping the written data.
+        /// An <see cref="IMemoryOwner{T}"/> wrapping the written data.
         /// </returns>
         public IMemoryOwner<byte> DetachAsOwner()
         {
