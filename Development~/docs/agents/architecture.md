@@ -20,7 +20,7 @@ recorded in the PR and in this table.
 | `TurboHTTP.Core` | — (no assembly references) | `autoReferenced`; client API, request/response, pipeline, `Core.Internal` pooling/buffers. Not engine-free (`noEngineReferences: false`): `UnityEngine` is used only for platform detection and diagnostics (`PlatformInfo`, `PlatformConfig` compile-time constants, `UHttpClient` editor-play-mode check, `TurboDiagnostics`) |
 | `TurboHTTP.Transport` | Core | only assembly with `allowUnsafeCode`; `noEngineReferences`; excludes WebGL |
 | `TurboHTTP.Transport.BouncyCastle` | Core, Transport, SecureProtocol | TLS fallback provider glue; not `noEngineReferences`; opt-in: `defineConstraints` `TURBOHTTP_BOUNCYCASTLE` (#196) |
-| `TurboHTTP.SecureProtocol` | — | vendored BouncyCastle in `Transport/BouncyCastle/Lib/` (never edited); `noEngineReferences`; excludes WebGL; asmdef sits at the `Lib/` root so the re-vendor sync keeps it (#143) |
+| `TurboHTTP.SecureProtocol` | — | vendored BouncyCastle in `Transport/BouncyCastle/Lib/` (sources never edited); `noEngineReferences`; excludes WebGL; opt-in: `defineConstraints` `TURBOHTTP_BOUNCYCASTLE` (#870); the asmdef is TurboHTTP-owned and sits at the `Lib/` root so the re-vendor sync keeps it (#143) |
 | `TurboHTTP.JSON` | Core | `noEngineReferences`; `LiteJsonSerializer` default, `TURBOHTTP_USE_SYSTEM_TEXT_JSON` optional |
 | `TurboHTTP.Middleware`, `.Auth`, `.Retry`, `.Cache`, `.RateLimit`, `.Observability`, `.Files`, `.Testing`, `.Unity` | Core | independently includable feature modules |
 | `TurboHTTP.WebSocket` | Core | `noEngineReferences` |
