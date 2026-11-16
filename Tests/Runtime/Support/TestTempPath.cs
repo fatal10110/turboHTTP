@@ -15,6 +15,9 @@ namespace TurboHTTP.Tests
     /// player reads it once at startup (<see cref="Prime"/>); a first read from a worker thread
     /// before that falls back to <see cref="Path.GetTempPath"/>, which the device runner points at
     /// the same cache directory (<c>TMPDIR</c>).
+    /// The root is a full path in the platform's own form (<see cref="Path.GetFullPath"/>): a Windows
+    /// player's <see cref="Application.temporaryCachePath"/> uses '/' separators, while the paths
+    /// <c>FileDownloader</c> and other code under test return are normalized to '\' (#1219).
     /// </remarks>
     internal static class TestTempPath
     {
@@ -70,7 +73,7 @@ namespace TurboHTTP.Tests
                 return Path.GetTempPath();
 
             Directory.CreateDirectory(cache);
-            return cache;
+            return Path.GetFullPath(cache);
 #endif
         }
     }

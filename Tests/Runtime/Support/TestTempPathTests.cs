@@ -20,6 +20,14 @@ namespace TurboHTTP.Tests
         }
 
         [Test]
+        public void Root_IsInThePlatformsFullPathForm()
+        {
+            // #1219: a Windows player's temporaryCachePath uses '/' separators; paths built on an
+            // unnormalized root never equal the full paths the code under test returns.
+            Assert.AreEqual(Path.GetFullPath(TestTempPath.Root), TestTempPath.Root);
+        }
+
+        [Test]
         public void NewDirectory_IsUniqueAndWritable()
         {
             var first = TestTempPath.NewDirectory("turbohttp_temp_path_");
