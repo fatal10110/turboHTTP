@@ -68,10 +68,12 @@ var transport = new RecordReplayTransport(new RawSocketTransport(), new RecordRe
     MismatchPolicy = RecordReplayMismatchPolicy.Strict
 });
 
-using var client = new UHttpClient(new UHttpClientOptions { Transport = transport });
+// DisposeTransport = true: the client disposes the transport (and its inner RawSocketTransport)
+// when it is disposed. Without it you own the transport and must dispose it yourself.
+using var client = new UHttpClient(new UHttpClientOptions { Transport = transport, DisposeTransport = true });
 using var response = await client.Get("https://api.example.com/user/1").SendBufferedAsync();
 
-transport.SaveRecordings(); // in Record mode; also done on Dispose (AutoFlushOnDispose)
+transport.SaveRecordings(); // in Record mode; also done when the transport is disposed (AutoFlushOnDispose), here by the client's Dispose
 ```
 
 What a recording holds:

@@ -26,17 +26,20 @@ Create a new script `Example.cs` and attach it to a GameObject in your scene.
 
 ```csharp
 using System;
+using System.Threading;
 using TurboHTTP.Core;
 using UnityEngine;
 
 public class Example : MonoBehaviour
 {
     private UHttpClient _client;
+    private CancellationTokenSource _cts;
 
     private void Awake()
     {
         // Initialize the client once and reuse it.
         _client = new UHttpClient();
+        _cts = new CancellationTokenSource();
     }
 
     private async void Start()
@@ -47,7 +50,7 @@ public class Example : MonoBehaviour
             using var response = await _client.Get("https://jsonplaceholder.typicode.com/posts/1")
                 .WithHeader("Accept", "application/json")      // headers
                 .WithTimeout(TimeSpan.FromSeconds(10))         // timeout for this request
-                .SendBufferedAsync();
+                .SendBufferedAsync(_cts.Token);
 
             if (response.IsSuccessStatusCode)
             {
@@ -64,15 +67,30 @@ public class Example : MonoBehaviour
             // Network, TLS, timeout and protocol failures.
             Debug.LogError($"Request failed: {ex.HttpError.Type} - {ex.HttpError.Message}");
         }
+        catch (OperationCanceledException)
+        {
+            // The object was destroyed while the request was in flight.
+        }
+        finally
+        {
+            // The entry point owns disposal, so no continuation can touch a disposed client.
+            _cts?.Dispose();
+            _cts = null;
+            _client?.Dispose();
+            _client = null;
+        }
     }
 
     private void OnDestroy()
     {
-        // Always dispose the client when done.
-        _client?.Dispose();
+        // Only cancel here. Start disposes the client in its finally block once the request
+        // has unwound, so a continuation never touches a disposed client.
+        _cts?.Cancel();
     }
 }
 ```
+
+The default client used in sections 1 to 3 logs a one-time `FollowRedirects` warning at construction, follows no redirects, requests no compression and keeps no cookies. See [What a default client does not do](#what-a-default-client-does-not-do) for the interceptors that change this.
 
 ### 2. POST JSON
 
@@ -80,6 +98,7 @@ public class Example : MonoBehaviour
 
 ```csharp
 using System;
+using System.Threading;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
 using UnityEngine;
@@ -93,20 +112,51 @@ public class Score
 
 public class PostExample : MonoBehaviour
 {
-    private readonly UHttpClient _client = new UHttpClient();
+    // Create the client in Awake, not in a field initializer: Unity can construct a
+    // MonoBehaviour outside play mode and during deserialization, leaving stray clients.
+    private UHttpClient _client;
+    private CancellationTokenSource _cts;
+
+    private void Awake()
+    {
+        _client = new UHttpClient();
+        _cts = new CancellationTokenSource();
+    }
 
     private async void Start()
     {
-        var data = new Score { username = "player1", score = 1000 };
+        try
+        {
+            var data = new Score { username = "player1", score = 1000 };
 
-        using var response = await _client.Post("https://api.example.com/scores")
-            .WithJsonBody(data)
-            .SendBufferedAsync();
+            using var response = await _client.Post("https://api.example.com/scores")
+                .WithJsonBody(data)
+                .SendBufferedAsync(_cts.Token);
 
-        Debug.Log($"Status: {response.StatusCode}");
+            Debug.Log($"Status: {response.StatusCode}");
+        }
+        catch (UHttpException ex)
+        {
+            Debug.LogError($"Request failed: {ex.HttpError.Type} - {ex.HttpError.Message}");
+        }
+        catch (OperationCanceledException)
+        {
+            // Destroyed while the request was in flight.
+        }
+        finally
+        {
+            // The entry point owns disposal, so no continuation can touch a disposed client.
+            _cts?.Dispose();
+            _cts = null;
+            _client?.Dispose();
+            _client = null;
+        }
     }
 
-    private void OnDestroy() => _client.Dispose();
+    private void OnDestroy()
+    {
+        _cts?.Cancel();
+    }
 }
 ```
 
@@ -116,6 +166,7 @@ Deserialize the response straight into a class:
 
 ```csharp
 using System;
+using System.Threading;
 using TurboHTTP.Core;
 using TurboHTTP.JSON;
 using UnityEngine;
@@ -130,37 +181,86 @@ public class User
 
 public class UserExample : MonoBehaviour
 {
-    private readonly UHttpClient _client = new UHttpClient();
+    private UHttpClient _client;
+    private CancellationTokenSource _cts;
+
+    private void Awake()
+    {
+        _client = new UHttpClient();
+        _cts = new CancellationTokenSource();
+    }
 
     private async void Start()
     {
-        User user = await _client.GetJsonAsync<User>("https://jsonplaceholder.typicode.com/users/1");
-        Debug.Log($"User: {user.name}");
+        try
+        {
+            User user = await _client.GetJsonAsync<User>("https://jsonplaceholder.typicode.com/users/1", _cts.Token);
+            Debug.Log($"User: {user.name}");
 
-        // Or deserialize a response you already hold:
-        using var response = await _client.Get("https://jsonplaceholder.typicode.com/users/2").SendBufferedAsync();
-        if (response.TryAsJson(out User other))
-            Debug.Log($"User: {other.name}");
+            // Or deserialize a response you already hold:
+            using var response = await _client.Get("https://jsonplaceholder.typicode.com/users/2").SendBufferedAsync(_cts.Token);
+            if (response.TryAsJson(out User other))
+                Debug.Log($"User: {other.name}");
+        }
+        catch (UHttpException ex)
+        {
+            Debug.LogError($"Request failed: {ex.HttpError.Type} - {ex.HttpError.Message}");
+        }
+        catch (OperationCanceledException)
+        {
+            // Destroyed while the request was in flight.
+        }
+        finally
+        {
+            // The entry point owns disposal, so no continuation can touch a disposed client.
+            _cts?.Dispose();
+            _cts = null;
+            _client?.Dispose();
+            _client = null;
+        }
     }
 
-    private void OnDestroy() => _client.Dispose();
+    private void OnDestroy()
+    {
+        _cts?.Cancel();
+    }
 }
 ```
 
 ### 4. Base URL, default headers and timeout
 
+`BaseUrl` is a prefix, not an RFC 3986 base: a request path is appended to it after its leading slashes are stripped, so `/status` and `status` both resolve to `https://api.example.com/v1/status` below, and the request cannot leave the `BaseUrl` host. Include the version segment in `BaseUrl`.
+
 <!-- snippet: with CancellationToken ct = default; -->
 ```csharp
+using TurboHTTP.Middleware;
+
 var options = new UHttpClientOptions
 {
-    BaseUrl = "https://api.example.com",
+    BaseUrl = "https://api.example.com/v1",
     DefaultTimeout = TimeSpan.FromSeconds(15)
 };
 options.DefaultHeaders.Set("Accept", "application/json");
+
+// A plain client has no interceptors (see "What a default client does not do" below).
+// Canonical order, outermost first: redirects, cookies, decompression.
+options.Interceptors.Add(new RedirectInterceptor());
+options.Interceptors.Add(new CookieInterceptor());
+options.Interceptors.Add(new DecompressionInterceptor());
 using var client = new UHttpClient(options);
 
-using var response = await client.Get("/status").SendBufferedAsync(ct);
+using var response = await client.Get("/status").SendBufferedAsync(ct); // https://api.example.com/v1/status
 ```
+
+#### What a default client does not do
+
+A `new UHttpClient()` runs no interceptors, so unlike `UnityWebRequest` or `HttpClient`:
+
+*   **No redirects.** A 3xx response is returned as is. `FollowRedirects` (default `true`) only takes effect together with `RedirectInterceptor`; without one the client logs a one-time warning at construction. Add the interceptor, or set `FollowRedirects = false` to return 3xx on purpose.
+*   **No `Accept-Encoding` and no decoding.** No compression is requested, and a `Content-Encoding` body you receive anyway is handed over undecoded. `DecompressionInterceptor` adds `Accept-Encoding` and decodes gzip and deflate with a size bound.
+*   **No cookies.** `Set-Cookie` is ignored and no `Cookie` header is sent. `CookieInterceptor` keeps a per-client jar.
+
+All three live in the `TurboHTTP.Middleware` module (reference it from your `.asmdef`); see [Interceptors](Modules/Interceptors.md) for ordering.
 
 ### 5. Large downloads: streaming
 

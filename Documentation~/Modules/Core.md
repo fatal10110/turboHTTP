@@ -61,7 +61,7 @@ using var response = await client.Post("/users")
 
 `MyDto` here and below is a `[Serializable]` class with public fields; see [JSON serializers](../APIReference.md#json-serializers) for the shapes the default serializer reads and how to register another one.
 
-A request is single-use: sending it (or calling `Dispose()`) ends its lease, and any further use throws `ObjectDisposedException`. A relative URL is resolved against `UHttpClientOptions.BaseUrl`.
+A request is single-use: sending it (or calling `Dispose()`) ends its lease, and any further use throws `ObjectDisposedException`. A relative URL is appended to `UHttpClientOptions.BaseUrl` as a prefix, not resolved as an RFC 3986 reference: leading slashes are stripped, so with `BaseUrl = "https://host/api/v1"` both `/users` and `users` give `https://host/api/v1/users`, and `//other/x` stays on `host`. Put the version segment in `BaseUrl`.
 
 ### Request bodies
 
