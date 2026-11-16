@@ -51,7 +51,7 @@
 #        [env] baseline JSON is read from Tests/Benchmarks, which a player does not ship
 # The Player-Android items 4-15 (desktop verifier, test-anchor chains, Windows file locking) run and pass here.
 # Recorded on main 5ab19c6 (2026-11-16): 3602 cases, 5 skipped, exactly 1-5 (plus the two not-counted EXPLICIT
-# Loop384 cases). The IL2CPP backend is not recorded yet: this host has no Windows 10 SDK or MSVC (#1225); its
+# Loop384 cases). Run record: Development~/docs/implementation-journal/2026-11-host-run-win64-standalone.md. The IL2CPP backend is not recorded yet: this host has no Windows 10 SDK or MSVC (#1225); its
 # first complete run checks these numbers and, if it differs, keeps the larger skip count and the smaller total.
 #
 # Player-iOS 22: no script reads this key yet (the iOS simulator handoff summarises its own results);
