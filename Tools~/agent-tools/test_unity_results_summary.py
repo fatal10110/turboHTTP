@@ -95,6 +95,18 @@ class SummarizeResultsTest(unittest.TestCase):
         bare = '<test-case name="E" fullname="N.T.Bare" runstate="Explicit" result="Skipped" label="Explicit" />'
         code, _ = self.run_summary(results_xml().replace("</test-suite>", bare + "</test-suite>"), filtered=True)
         self.assertEqual(0, code)
+        # A filter-selected [Explicit] test keeps runstate="Explicit"; if it skips, Unity labels it Ignored, and it is
+        # an ordinary skip: listed as SKIP, reason-gated (exit 4 without #issue/[env]) and counted.
+        selected = ('<test-case name="X" fullname="N.T.SelectedExplicitIgnored" runstate="Explicit" result="Skipped" '
+                    'label="Ignored"><reason><message><![CDATA[no reason given]]></message></reason></test-case>')
+        code, out = self.run_summary(results_xml().replace("</test-suite>", selected + "</test-suite>"), filtered=True)
+        self.assertEqual(4, code)
+        self.assertIn("SKIP N.T.SelectedExplicitIgnored: no reason given", out)
+        self.assertNotIn("EXPLICIT N.T.SelectedExplicitIgnored", out)
+        explained = selected.replace("no reason given", "[env] no device")
+        code, out = self.run_summary(results_xml("[env] a", "[env] b").replace("</test-suite>", explained + "</test-suite>"))
+        self.assertEqual(4, code)
+        self.assertIn("3 skipped > baseline 2", out)
         # Real skips still count next to the Explicit ones.
         code, out = self.run_summary(with_explicit(results_xml("[env] a", "[env] b", "[env] c")))
         self.assertEqual(4, code)

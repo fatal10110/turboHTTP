@@ -5,10 +5,11 @@ Prints the totals, the failed cases and every skipped/ignored case with its reas
 skip gates:
   * every skipped case must carry a reason with an issue reference (#123) or the [env] marker that
     TestRequirements.IgnoreEnvironment adds; anything else is an unexplained skip;
-  * a not-selected [Explicit] test (result="Skipped", label="Explicit" or runstate="Explicit") is listed as
-    EXPLICIT and neither gated nor counted: it is opt-in by design (stress and device loops such as #384), so it
-    never "stopped running", and counting it would fail every target's baseline for each new one (#1235). An
-    [Explicit] test that a filter selects runs and reports its own result;
+  * a not-selected [Explicit] test (result="Skipped" with label="Explicit") is listed as EXPLICIT and neither
+    gated nor counted: it is opt-in by design (stress and device loops such as #384), so it never "stopped
+    running", and counting it would fail every target's baseline for each new one (#1235). runstate="Explicit"
+    alone does not mark it: Unity keeps that runstate on a filter-selected [Explicit] test that runs, so a
+    selected one that skips (label="Ignored") is gated and counted like any other skip;
   * an unfiltered run (the whole suite) may not skip more cases than the run target's entry in the
     baseline file (Tools~/unity/skip-baseline.txt). A filtered run covers part of the suite, so the
     count is only listed.
@@ -74,8 +75,9 @@ def total_cases(run):
 
 
 def is_explicit_not_run(case):
-    """True for an [Explicit] test-case that was not selected, which NUnit reports as Skipped with label Explicit."""
-    return case.get("result") == "Skipped" and (case.get("label") == "Explicit" or case.get("runstate") == "Explicit")
+    """True for an [Explicit] test-case that was not selected, which NUnit reports as Skipped with label Explicit.
+    The label decides: a selected [Explicit] test keeps runstate="Explicit" and reports its own result."""
+    return case.get("result") == "Skipped" and case.get("label") == "Explicit"
 
 
 def explicit_cases(root):
