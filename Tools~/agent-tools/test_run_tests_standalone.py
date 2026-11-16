@@ -123,9 +123,16 @@ class StandaloneRunTests(unittest.TestCase):
         self.assertEqual((cell["status"], cell["rows"]), ("pass", ["standalonewindows64-mono-x86_64-disabled-host"]))
 
     def test_unfiltered_player_run_is_held_to_its_own_baseline_key(self):
+        # Independent of what skip-baseline.txt currently records for the key: both gates name the key they read
+        # (whether it has entries or not), and a one-case unfiltered run can never reach a real min-total.
         result = self.run_tests("--platform", "StandaloneWindows64", "--backend", "Mono")
         self.assertEqual(result.returncode, 4, result.stdout + result.stderr)
-        self.assertIn("no Player-StandaloneWindows64 entry", result.stdout)
+        self.assertRegex(result.stdout, r"run-tests: (skipped=0 within baseline \d+ for|SKIP GATE FAILED: no) "
+                                        r"Player-StandaloneWindows64\b")
+        self.assertRegex(result.stdout, r"run-tests: TOTAL GATE FAILED: (total 1 < min-total \d+ for|no min-total) "
+                                        r"Player-StandaloneWindows64\b")
+        self.assertNotRegex(result.stdout, r"(for|no|min-total) StandaloneWindows64\b",
+                            "the player run is never gated on the bare StandaloneWindows64 key")
 
     def test_backend_is_required_for_the_player_and_rejected_for_the_editor(self):
         result = self.run_tests("--platform", "StandaloneWindows64", "--filter", "Fake")

@@ -65,6 +65,11 @@ fixes, hardening, validation and documentation.
   cleartext policy is rooted in the Complete bootstrap (#1214).
 - Tooling: `Tools~/ci/check.sh` gates compile the opt-in define code, replay the fuzz corpus and pin
   asmdef settings (#1224); allocation gates use counted bytes with measured baselines (#881).
+- Transports: 1.0 supports only TurboHTTP's own transports (`RawSocketTransport` and the `TurboHTTP.Testing`
+  transports); third-party `IHttpTransport` implementations are not supported and the custom-transport
+  example is gone from the docs. Public custom transport support is planned (#574, #1237).
+  `UHttpRequestBody` has a `private protected` constructor, which states the closed body hierarchy (no
+  subclass outside TurboHTTP could compile before either).
 
 ### Fixed
 - HTTP/1.1 repeats a request once without `Expect: 100-continue` after an early 417 (#214, #392).
@@ -78,6 +83,9 @@ fixes, hardening, validation and documentation.
 - Android: JNI calls run on one attached thread (#328, #335).
 - Apple TLS: "no chain to a trusted anchor" (-25318) is reported as `UntrustedRoot` (#333).
 - Managed Stripping Medium/High keeps Mono's configuration init (#453).
+- The vendored BouncyCastle library (`TurboHTTP.SecureProtocol`) compiles only with `TURBOHTTP_BOUNCYCASTLE`,
+  like its glue: without the define no player contains it, including Mono builds with managed stripping
+  Disabled, which shipped it before (#870).
 - HPACK: the `{` Huffman code and the encoder dynamic table cap (#1161).
 - HTTP/1.1 body, 407-drain and WebSocket handshake reads race their token (#345, #226, #1204); pending body
   reads fail on Abort/Dispose and a connection with unread bytes is never pooled (#1174).

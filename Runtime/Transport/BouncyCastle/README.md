@@ -4,7 +4,8 @@
 (namespace `TurboHTTP.SecureProtocol.Org.BouncyCastle`, assembly `TurboHTTP.SecureProtocol`). It is
 produced by the scripted TLS-client strip in [fatal10110/bc-csharp](https://github.com/fatal10110/bc-csharp)
 (`strip/strip.sh`, plan `STRIP_PLAN_V2.md`) and synced here unmodified. **Never edit `Lib/` by hand**:
-change the strip and re-sync. Licence: `Third-Party Notices.md` at the package root and `Lib/LICENSE.md`.
+change the strip and re-sync. The one exception is `Lib/TurboHTTP.SecureProtocol.asmdef` (+ `.meta`): it is
+TurboHTTP-owned, not vendored content, and the sync below keeps it. Licence: `Third-Party Notices.md` at the package root and `Lib/LICENSE.md`.
 
 ## Provenance
 
@@ -22,11 +23,13 @@ Sync command (the anchored excludes keep `Lib/TurboHTTP.SecureProtocol.asmdef` f
 rsync -a --delete --exclude='/*.asmdef' --exclude='/*.asmdef.meta' <bc-csharp>/strip/out/Lib/ Runtime/Transport/BouncyCastle/Lib/
 ```
 
-The glue and this library are opt-in (#196): the glue asmdef has `defineConstraints:
-["TURBOHTTP_BOUNCYCASTLE"]` and registers the provider with `TlsProviderSelector` at startup
-(`BouncyCastleModuleRegistration.cs`, no by-name lookup, #186). Nothing else references
-`TurboHTTP.SecureProtocol`, so without the define the linker drops it; `link.xml` roots only the
-registration entry point and the provider (Lib/ has no type-by-name reflection).
+The glue and this library are opt-in: both asmdefs have `defineConstraints: ["TURBOHTTP_BOUNCYCASTLE"]`
+(the glue since #196, the library since #870), so without the define neither is compiled and no player
+contains them, including a Mono player at Managed Stripping Level Disabled, which copies every compiled
+assembly. The glue registers the provider with `TlsProviderSelector` at startup
+(`BouncyCastleModuleRegistration.cs`, no by-name lookup, #186); nothing else references
+`TurboHTTP.SecureProtocol`. `link.xml` roots only the registration entry point and the provider (Lib/ has no
+type-by-name reflection).
 
 The closure roots are the glue files next to this README (`BouncyCastleTlsProvider.cs`,
 `BouncyCastleTlsStream.cs`, `TurboTlsClient.cs`, `TurboTlsAuthentication.cs`). When one of them
