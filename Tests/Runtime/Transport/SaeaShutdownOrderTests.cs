@@ -91,9 +91,11 @@ namespace TurboHTTP.Tests.Transport
                     Is.EqualTo(SocketError.Success).Or.EqualTo(SocketError.Shutdown).Or.EqualTo(SocketError.Interrupted),
                     "closing first aborts the receive (OperationAborted)");
 
-                await AbandonedSocketIoTests.WaitUntilAsync(() => channel.IsReleased, "the socket was never closed after the receive ended");
+                // TryRelease sets IsReleased first and BuffersReleased last, after closing the socket and returning
+                // the buffers, so wait on the last write before checking the rest (#1207).
+                await AbandonedSocketIoTests.WaitUntilAsync(() => channel.BuffersReleased, "the ended receive never closed the socket and returned its buffers");
+                Assert.IsTrue(channel.IsReleased);
                 Assert.IsFalse(IsOpen(pair.Client), "the socket is closed after the receive ended");
-                Assert.IsTrue(channel.BuffersReleased, "the ended receive's buffer returns to the pool");
                 Assert.AreEqual(leakedBefore, SaeaSocketChannel.BuffersLeakedOnDispose);
             }, Guard + Guard + Guard);
         }
@@ -140,9 +142,10 @@ namespace TurboHTTP.Tests.Transport
                 Assert.IsFalse(channel.IsReleased);
 
                 receiveMayEnd.Set();
-                await AbandonedSocketIoTests.WaitUntilAsync(() => channel.IsReleased, "the socket was never closed after the receive ended");
+                // Wait on BuffersReleased, TryRelease's last write, not IsReleased, its first (#1207).
+                await AbandonedSocketIoTests.WaitUntilAsync(() => channel.BuffersReleased, "the ended receive never closed the socket and returned its buffers");
+                Assert.IsTrue(channel.IsReleased);
                 Assert.IsFalse(IsOpen(pair.Client));
-                Assert.IsTrue(channel.BuffersReleased);
             }, Guard + Guard + Guard);
         }
 
@@ -232,9 +235,10 @@ namespace TurboHTTP.Tests.Transport
                 Assert.IsFalse(channel.IsReleased);
 
                 sendMayEnd.Set();
-                await AbandonedSocketIoTests.WaitUntilAsync(() => channel.IsReleased, "the socket was never closed after the send ended");
+                // Wait on BuffersReleased, TryRelease's last write, not IsReleased, its first (#1207).
+                await AbandonedSocketIoTests.WaitUntilAsync(() => channel.BuffersReleased, "the ended send never closed the socket and returned its buffers");
+                Assert.IsTrue(channel.IsReleased);
                 Assert.IsFalse(IsOpen(pair.Client));
-                Assert.IsTrue(channel.BuffersReleased);
             }, Guard + Guard + Guard);
         }
 
