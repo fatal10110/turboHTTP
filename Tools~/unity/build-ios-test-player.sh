@@ -272,6 +272,8 @@ public class TurboHttpDeviceResults : ITestRunCallback
             _clock.Restart();
         }
         if (File.Exists(_path)) File.Delete(_path);
+        // A device that auto-locks mid-run backgrounds the player, and iOS then kills it (signal 9).
+        Screen.sleepTimeout = SleepTimeout.NeverSleep;
         Log("TURBOHTTP_DEVICE_RUN started tests=" + testsToRun.TestCaseCount + " unity=" + Application.unityVersion);
         s_Watchdog = new Timer(_ => CheckHang(), null, 15000, 15000);
     }
