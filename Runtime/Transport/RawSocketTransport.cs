@@ -865,20 +865,6 @@ namespace TurboHTTP.Transport
             // An http:// address (RequestProxyResolver): Port is 80 when the URI names none (#828).
             var proxyPort = proxy.Address.Port;
 
-            Http2ConnectionManager.ExtraDialClaim extraDial = null;
-            if (secure)
-            {
-                var existingH2 = _h2Manager.GetIfExists(host, port, proxyHost, proxyPort, out extraDial);
-                if (existingH2 != null)
-                {
-                    var tunneledRequest = PrepareHttpsProxyTunnelRequest(request);
-                    context.RecordEvent("TransportProxyH2Reuse");
-                    await DispatchOnH2ConnectionAsync(existingH2, tunneledRequest, handler, context, ct, callerToken)
-                        .ConfigureAwait(false);
-                    return;
-                }
-            }
-
             if (!secure)
             {
                 context.RecordEvent("TransportProxyConnecting");
@@ -930,9 +916,49 @@ namespace TurboHTTP.Transport
             }
 
             var tunnelPoolKey = BuildConnectTunnelPoolKey(proxyHost, proxyPort, host, port);
+            // extraDial: this request opens the one extra tunnel of a saturated tunneled origin (#238).
+            // coldDial: this request establishes the first tunnel of a cold tunnel key and the others
+            // await it (#1180, as #736 on the direct path). Both are released as soon as the tunnel
+            // ended, and by the finally below on every other path.
+            Http2ConnectionManager.ExtraDialClaim extraDial = null;
+            Http2ConnectionManager.ColdDialClaim coldDial = null;
             ConnectionLease lease = null;
             try
             {
+                bool dialOwn = false;
+                while (true)
+                {
+                    // HTTP/2 fast path, checked again after awaiting another request's tunnel.
+                    var existingH2 = _h2Manager.GetIfExists(host, port, proxyHost, proxyPort, out extraDial);
+                    if (existingH2 != null)
+                    {
+                        context.RecordEvent("TransportProxyH2Reuse");
+                        await DispatchOnH2ConnectionAsync(
+                                existingH2,
+                                PrepareHttpsProxyTunnelRequest(request),
+                                handler,
+                                context,
+                                ct,
+                                callerToken)
+                            .ConfigureAwait(false);
+                        return;
+                    }
+
+                    // Cold tunnel key: one CONNECT tunnel at a time (RFC 9113 Section 9.1). Only when the
+                    // tunnel can negotiate h2 at all; HTTP/1.1 tunnels open in parallel. A request whose
+                    // awaited tunnel did not yield HTTP/2 opens its own instead of awaiting again.
+                    if (!_http2ThroughConnectTunnels || extraDial != null || dialOwn)
+                        break;
+
+                    var pendingDial = _h2Manager.ClaimOrJoinColdDial(host, port, proxyHost, proxyPort, out coldDial);
+                    if (pendingDial == null)
+                        break;
+
+                    context.RecordEvent("TransportProxyH2AwaitDial");
+                    dialOwn = !await Http2ConnectionManager.WaitForColdDialAsync(pendingDial, ct)
+                        .ConfigureAwait(false);
+                }
+
                 context.RecordEvent("TransportProxyConnecting");
                 Http2Connection dialFallback = null;
                 try
@@ -951,7 +977,8 @@ namespace TurboHTTP.Transport
                 }
                 catch
                 {
-                    dialFallback = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                    dialFallback = FallBackAfterFailedDial(
+                        ref extraDial, ref coldDial, host, port, secure: true, context, ct, proxyHost, proxyPort);
                     if (dialFallback == null)
                         throw;
                 }
@@ -982,19 +1009,22 @@ namespace TurboHTTP.Transport
                     }
                     catch
                     {
-                        h2Conn = FallBackAfterFailedExtraDial(ref extraDial, context, ct);
+                        h2Conn = FallBackAfterFailedDial(
+                            ref extraDial, ref coldDial, host, port, secure: true, context, ct, proxyHost, proxyPort);
                         if (h2Conn == null)
                             throw;
                     }
 
                     lease = null;
                     _h2Manager.ReleaseExtraDial(ref extraDial);
+                    _h2Manager.CompleteColdDial(ref coldDial, Http2ConnectionManager.ColdDialOutcome.Http2);
                     await DispatchOnH2ConnectionAsync(h2Conn, tunneledRequest, handler, context, ct, callerToken)
                         .ConfigureAwait(false);
                     return;
                 }
 
                 _h2Manager.ReleaseExtraDial(ref extraDial);
+                _h2Manager.CompleteColdDial(ref coldDial, Http2ConnectionManager.ColdDialOutcome.NotHttp2);
                 context.RecordEvent("TransportProxyH1Dispatch");
                 var preparedLease = lease;
                 lease = null; // owned by the dispatch from here, on every path
@@ -1019,16 +1049,19 @@ namespace TurboHTTP.Transport
             {
                 lease?.Dispose();
                 _h2Manager.ReleaseExtraDial(ref extraDial);
+                _h2Manager.CompleteColdDial(ref coldDial, FailedColdDialOutcome(ct));
             }
         }
 
         /// <summary>
-        /// A direct dial (or the HTTP/2 preface on it) failed. Completes the cold-dial claim, so the
-        /// requests awaiting it dial themselves (or claim again after a cancellation), then, unless this
-        /// request was cancelled or timed out, falls back to an HTTP/2 connection another request
-        /// published meanwhile (#736), or for an extra dial to the connection it would have queued on
-        /// (#238). The fallback is a connection the platform already validated, never this failed one.
-        /// Null when there is none: the caller rethrows the dial failure.
+        /// A direct dial, or with <paramref name="proxyHost"/> a CONNECT tunnel through that proxy
+        /// (#1180), or the HTTP/2 preface on it failed. Completes the cold-dial claim, so the requests
+        /// awaiting it dial themselves (or claim again after a cancellation), then, unless this request
+        /// was cancelled or timed out, falls back to an HTTP/2 connection for the same key (origin, or
+        /// origin through that proxy) another request published meanwhile (#736, #1180), or for an extra
+        /// dial to the connection it would have queued on (#238). The fallback is a connection the
+        /// platform already validated, never this failed one. Null when there is none: the caller
+        /// rethrows the dial failure.
         /// </summary>
         private Http2Connection FallBackAfterFailedDial(
             ref Http2ConnectionManager.ExtraDialClaim extraDial,
@@ -1037,7 +1070,9 @@ namespace TurboHTTP.Transport
             int port,
             bool secure,
             RequestContext context,
-            CancellationToken ct)
+            CancellationToken ct,
+            string proxyHost = null,
+            int proxyPort = 0)
         {
             _h2Manager.CompleteColdDial(ref coldDial, FailedColdDialOutcome(ct));
             if (extraDial != null)
@@ -1046,7 +1081,9 @@ namespace TurboHTTP.Transport
             if (!secure || ct.IsCancellationRequested)
                 return null;
 
-            var fallback = _h2Manager.GetAcceptingConnection(host, port);
+            var fallback = proxyHost == null
+                ? _h2Manager.GetAcceptingConnection(host, port)
+                : _h2Manager.GetAcceptingConnection(host, port, proxyHost, proxyPort);
             if (fallback != null)
                 context.RecordEvent("TransportH2DialFallback");
 
