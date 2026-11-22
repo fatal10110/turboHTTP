@@ -257,7 +257,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             var inner = new PlatformNotSupportedException("ALPN unavailable");
             var wrapped = new System.Reflection.TargetInvocationException(inner);
             Assert.IsTrue(TlsProviderSelector.IsPlatformTlsException(wrapped),
-                "Should unwrap TargetInvocationException from reflection-based ALPN auth");
+                "Should unwrap a TargetInvocationException raised inside the runtime's TLS stack");
 
             var nonPlatformInner = new System.IO.IOException("network error");
             var wrappedNonPlatform = new System.Reflection.TargetInvocationException(nonPlatformInner);

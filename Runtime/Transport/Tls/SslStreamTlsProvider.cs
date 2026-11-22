@@ -255,12 +255,11 @@ namespace TurboHTTP.Transport.Tls
         /// </summary>
         internal static bool IsAlpnSetupFailure(Exception ex)
         {
-            // TargetInvocationException is a legacy arm from the former reflection-based ALPN setup
-            // (#303), kept because SslStreamSingleHandshakeTests asserts it. MemberAccessException is the
-            // base of MissingMemberException/MissingFieldException/MethodAccessException, which a direct
-            // call raises when stripping removed metadata.
-            return ex is System.Reflection.TargetInvocationException
-                || ex is MemberAccessException
+            // The options are built by a direct call (no reflection since #303), so a
+            // TargetInvocationException cannot come from here and propagates like any other error.
+            // MemberAccessException is the base of MissingMemberException/MissingFieldException/
+            // MethodAccessException, which a direct call raises when stripping removed metadata.
+            return ex is MemberAccessException
                 || ex is TypeLoadException
                 || ex is MissingMethodException
                 || ex is NotSupportedException

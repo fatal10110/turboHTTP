@@ -192,8 +192,9 @@ namespace TurboHTTP.Transport.Tls
 
         private static Exception UnwrapPlatformException(Exception ex)
         {
-            // A TargetInvocationException (from a reflection-invoked call) wraps the real exception; a single-task
-            // AggregateException does the same for Task-based handshakes.
+            // TurboHTTP calls the TLS APIs directly (no reflection since #303). A TargetInvocationException
+            // can still surface from inside the runtime's own TLS stack; it and a single-task
+            // AggregateException (Task-based handshakes) wrap the real exception this label reports.
             if (ex is System.Reflection.TargetInvocationException tie && tie.InnerException != null)
                 return tie.InnerException;
             if (ex is AggregateException agg && agg.InnerExceptions.Count == 1)
