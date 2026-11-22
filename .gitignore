@@ -26,6 +26,8 @@ MemoryCaptures/
 !Tools~/soak/*.csproj
 # The streaming benchmark harness (Tools~/bench, #102) is a committed plain .NET project.
 !Tools~/bench/*.csproj
+# The Unity-free NUnit harness (Tools~/unit-tests, #879) is a committed plain .NET project.
+!Tools~/unit-tests/*.csproj
 *.sln
 *.suo
 *.user

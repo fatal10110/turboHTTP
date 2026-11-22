@@ -1,0 +1,7 @@
+<Project>
+  <!-- Keep bin/obj out of the source tree (Tools~/unit-tests) and inside the ignored .build folder. -->
+  <PropertyGroup>
+    <BaseIntermediateOutputPath>$(MSBuildThisFileDirectory)../../.build/unit/obj/</BaseIntermediateOutputPath>
+    <BaseOutputPath>$(MSBuildThisFileDirectory)../../.build/unit/bin/</BaseOutputPath>
+  </PropertyGroup>
+</Project>
