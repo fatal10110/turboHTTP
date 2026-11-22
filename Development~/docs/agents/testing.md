@@ -48,10 +48,14 @@ in `tooling.md`.
   `ValueTask.FromException<T>` (use `new ValueTask<T>(Task.FromException<T>(…))`),
   `Assert.IsNotSame`, `out` parameters in async methods, and other .NET 5+ APIs. The shadow build
   catches most of these before CI.
-- Unity Mono behaves differently from .NET 8, so a green .NET harness proves logic only:
-  `GZipStream` does not throw on truncated input, `NetworkStream.ReadAsync` ignores cancellation
-  tokens, duplex test streams complete synchronously, `CertificateRequest` is unavailable. Tests that
-  depend on these run in the Unity jobs.
+- Unity Mono behaves differently from .NET 8, so a green .NET harness (the `unit` job below) proves
+  logic only: `GZipStream` does not throw on truncated input, `NetworkStream.ReadAsync` ignores
+  cancellation tokens, duplex test streams complete synchronously, `CertificateRequest` is unavailable,
+  and continuations Mono runs inline may still be queued on .NET. Tests that depend on these run in the
+  host-editor Unity runs and are excluded from `unit` by name.
+- A Unity-free test (no `UnityEngine`, `UnityEditor` or `[UnityTest]` in its file) runs on every PR in the
+  `unit` job, so it must also pass on .NET 8. Keep engine calls out of shared helpers, or the helpers'
+  users drop out of `unit` (see "Unity-free unit job").
 - Tests also run as iOS/Android players (the device runs under "Host-editor gates", #99), where
   `AllowCleartext` defaults to false (#85). A test that sends `http://` or `ws://` through
   `RawSocketTransport` or `RawSocketWebSocketTransport` to a loopback server opts in:
@@ -72,8 +76,8 @@ in `tooling.md`.
 - When the transport is right and a test is wrong (e.g. an over-sending flow-control peer), fix the
   test to model a compliant peer; never relax timeouts to make a test pass.
 - Tests that need the public internet carry `[Category("ExternalNetwork")]`; very slow or
-  >100 MB tests carry `[Explicit]` plus `Integration` or `Performance`. No CI job runs Unity; the
-  `ExternalNetwork` category runs in the host editor (`run-tests.sh --category ExternalNetwork`, see
+  >100 MB tests carry `[Explicit]` plus `Integration` or `Performance`. No CI job runs Unity (`unit` runs
+  the Unity-free tests on .NET 8 and skips `ExternalNetwork`); the `ExternalNetwork` category runs in the host editor (`run-tests.sh --category ExternalNetwork`, see
   "Host-editor gates"), never as a gate on a PR.
 - Tests are not exempt from ownership rules: dispose clients and responses (`using var`), and say so
   in a comment when a test deliberately disposes early.
@@ -112,11 +116,41 @@ in `tooling.md`.
 - A journal or PR that says "Unity not run" or "isolated .NET harness only" is unverified. Record
   exactly which lane ran: EditMode, PlayMode, IL2CPP player, Linux player, device.
 
+## Unity-free unit job (`unit`, #879)
+
+The required check `ci` needs the `unit` job, which runs the engine-free part of `Tests/Runtime` on .NET 8
+(`Tools~/unit-tests/`). It is a logic gate on every PR, not a replacement for the Unity runs.
+
+- **Selection is automatic.** `TurboHTTP.UnitTests.csproj` (target `SelectUnityFreeTests`) compiles every
+  `Tests/Runtime/**/*.cs` whose text mentions none of `UnityEngine`, `UnityEditor`, `UnityTest`; a new
+  Unity-free file is picked up without editing anything. The build prints the counts (`unit: N files
+  selected, ...`).
+- **Exclusions are explicit and commented.** Whole files: `UnitExclude` in the csproj (today
+  `Tests/Runtime/Unity/**`, whose tests create engine objects). Single tests: `excluded-tests.txt`, one fully
+  qualified name per line with the reason above it. A test that fails only on .NET is fixed when it is a
+  test or product defect; otherwise it is excluded with a follow-up issue named in the comment.
+  `UnitHelper` force-includes the few shared helpers that mention `UnityEngine` but whose engine call the
+  harness never reaches (`TestTempPath`, `BoundedShutdown`).
+- **Environment.** The editor shadow variant's DLLs and defines (`UNITY_EDITOR`, `UNITY_INCLUDE_TESTS`,
+  the opt-in `TURBOHTTP_BOUNCYCASTLE`/`TURBOHTTP_BACKGROUND_NETWORKING`), NuGet NUnit 3.14 (the suite is
+  written to Unity's NUnit 3.5 subset, which `check_repo.py unitynunit` enforces), assembly name
+  `TurboHTTP.Tests.Runtime` (the modules' `InternalsVisibleTo`), and ICU globalization (the IDN host tests
+  need it). `Tools~/unit-tests/UnitHarnessStartup.cs` runs the registrations the Editor runs at domain load
+  (default transports, the JSON bridge, the BouncyCastle provider); `JsonUtilitySerializer` stays
+  unregistered (native engine code).
+- **Run it locally:** `'Tools~/unit-tests/run.sh'` (add `--no-shadow-build` to reuse `.build/shadow`,
+  `--filter 'FullyQualifiedName~CookieJar'` to narrow). Exit 0 pass, 1 failure, 2 usage, 3 dotnet missing;
+  TRX results in `.build/unit/results`. About 2 minutes for the tests after the build on a 4-core box.
+- **Not covered here:** `[UnityTest]` coroutines, engine objects, Mono- or IL2CPP-specific behavior, the
+  `ExternalNetwork` category and the `Tests/Editor` assembly. The asmdef and `link.xml` text invariants in
+  `Tests/Editor` (`ModuleAutoReferenceTests`, `TurboHttpLinkerProcessorTests`) stay host-editor only; `check_repo.py`
+  enforces the module dependency rules on every PR independently.
+
 ## Host-editor gates (periodic host-editor runs)
 
 CI never runs Unity: the repository has no `UNITY_LICENSE` and will not get one (owner decision
 2026-11-02, #188), so ci.yml has no `unity-tests` job and the required check `ci` covers `lint`,
-`tls-interop` and `h2-interop` only. The Unity gates are these runs in a licensed local Unity 2021.3
+`tls-interop`, `h2-interop` and `unit` (the Unity-free tests on .NET 8, above). The Unity gates are these runs in a licensed local Unity 2021.3
 editor (WSL + Windows editor: `UNITY_PATH=/mnt/<drive>/.../Editor/Unity.exe`), done:
 
 - after every `turbohttp-waves` run (its Step 5), before ticking a milestone's tracking issue, and

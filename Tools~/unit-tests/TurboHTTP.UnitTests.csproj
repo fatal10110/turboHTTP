@@ -1,0 +1,97 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <!--
+    Unity-free NUnit harness (#879). Not a Unity assembly: Tools~ is ignored by Unity.
+    It compiles every Tests/Runtime/**/*.cs file that mentions none of UnityEngine, UnityEditor or UnityTest
+    into a plain .NET 8 test assembly and runs it with `dotnet test` (run.sh; the `unit` job in ci.yml).
+    The production code comes from the shadow-build DLLs (Tools~/ci/shadow_build.py, editor variant), the same
+    netstandard2.1 assemblies the analyzers checked. The assembly is named TurboHTTP.Tests.Runtime so the
+    InternalsVisibleTo grants the Unity test assembly has apply here too.
+
+    Selection is automatic (target SelectUnityFreeTests below): a new Unity-free test file is picked up without
+    editing anything. A file that cannot build or run on .NET goes in UnitExclude with the reason (and the
+    follow-up issue when it hides a defect); single tests go in excluded-tests.txt. The Unity runs in the host
+    editor stay the authority: Mono differs from .NET (Development~/docs/agents/testing.md, "Unity-free unit job").
+    No InvariantGlobalization: the IDN host tests need ICU's IdnMapping (the Unity runtime has its own).
+  -->
+  <PropertyGroup>
+    <TargetFramework>net8.0</TargetFramework>
+    <LangVersion>9.0</LangVersion>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <IsPackable>false</IsPackable>
+    <IsTestProject>true</IsTestProject>
+    <AssemblyName>TurboHTTP.Tests.Runtime</AssemblyName>
+    <RootNamespace>TurboHTTP.Tests</RootNamespace>
+    <EnableDefaultCompileItems>false</EnableDefaultCompileItems>
+    <!-- The test sources follow the Unity rules, not the SDK analyzers' (the shadow build compiles them with analyzers off too). -->
+    <RunAnalyzers>false</RunAnalyzers>
+    <NoWarn>$(NoWarn);CS0618;CS1591;NU1701</NoWarn>
+    <!-- The editor variant of the shadow build (shadow_build.py COMMON_DEFINES, VARIANTS["editor"], OPT_IN_DEFINES, UNITY_INCLUDE_TESTS). -->
+    <DefineConstants>$(DefineConstants);UNITY_EDITOR;UNITY_EDITOR_64;DEBUG;ENABLE_MONO;UNITY_INCLUDE_TESTS;UNITY_2021_3_OR_NEWER;UNITY_2021_3;UNITY_2021;TURBOHTTP_BOUNCYCASTLE;TURBOHTTP_BACKGROUND_NETWORKING</DefineConstants>
+    <RepoRoot>$([System.IO.Path]::GetFullPath('$(MSBuildThisFileDirectory)../../'))</RepoRoot>
+    <ShadowBin Condition="'$(ShadowBin)' == ''">$(RepoRoot).build/shadow/editor/bin/Debug/netstandard2.1/</ShadowBin>
+    <UnityManaged Condition="'$(UnityManaged)' == ''">$(RepoRoot).tools/unity-managed/$([System.IO.File]::ReadAllText('$(RepoRoot)Tools~/ci/unity-version').Trim())/</UnityManaged>
+  </PropertyGroup>
+  <ItemGroup>
+    <!-- NUnit 3.x: the tests are written to Unity's NUnit 3.5 subset (check_repo.py unitynunit); NUnit 4 drops the classic asserts. -->
+    <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.8.0" />
+    <PackageReference Include="NUnit" Version="3.14.0" />
+    <PackageReference Include="NUnit3TestAdapter" Version="4.5.0" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Every assembly Tests/Runtime/TurboHTTP.Tests.Runtime.asmdef references, plus what they load. -->
+    <Reference Include="TurboHTTP.Core" HintPath="$(ShadowBin)TurboHTTP.Core.dll" />
+    <Reference Include="TurboHTTP.Transport" HintPath="$(ShadowBin)TurboHTTP.Transport.dll" />
+    <Reference Include="TurboHTTP.Transport.BouncyCastle" HintPath="$(ShadowBin)TurboHTTP.Transport.BouncyCastle.dll" />
+    <Reference Include="TurboHTTP.SecureProtocol" HintPath="$(ShadowBin)TurboHTTP.SecureProtocol.dll" />
+    <Reference Include="TurboHTTP.WebSocket" HintPath="$(ShadowBin)TurboHTTP.WebSocket.dll" />
+    <Reference Include="TurboHTTP.WebSocket.Transport" HintPath="$(ShadowBin)TurboHTTP.WebSocket.Transport.dll" />
+    <Reference Include="TurboHTTP.Unity.WebSocket" HintPath="$(ShadowBin)TurboHTTP.Unity.WebSocket.dll" />
+    <Reference Include="TurboHTTP.Retry" HintPath="$(ShadowBin)TurboHTTP.Retry.dll" />
+    <Reference Include="TurboHTTP.Cache" HintPath="$(ShadowBin)TurboHTTP.Cache.dll" />
+    <Reference Include="TurboHTTP.Auth" HintPath="$(ShadowBin)TurboHTTP.Auth.dll" />
+    <Reference Include="TurboHTTP.Observability" HintPath="$(ShadowBin)TurboHTTP.Observability.dll" />
+    <Reference Include="TurboHTTP.Files" HintPath="$(ShadowBin)TurboHTTP.Files.dll" />
+    <Reference Include="TurboHTTP.Unity" HintPath="$(ShadowBin)TurboHTTP.Unity.dll" />
+    <Reference Include="TurboHTTP.Testing" HintPath="$(ShadowBin)TurboHTTP.Testing.dll" />
+    <Reference Include="TurboHTTP.RateLimit" HintPath="$(ShadowBin)TurboHTTP.RateLimit.dll" />
+    <Reference Include="TurboHTTP.JSON" HintPath="$(ShadowBin)TurboHTTP.JSON.dll" />
+    <Reference Include="TurboHTTP.Middleware" HintPath="$(ShadowBin)TurboHTTP.Middleware.dll" />
+    <Reference Include="TurboHTTP.Complete" HintPath="$(ShadowBin)TurboHTTP.Complete.dll" />
+    <!-- Core and the Unity modules link UnityEngine; the selected tests never call into the engine. -->
+    <Reference Include="UnityEngine" HintPath="$(UnityManaged)UnityEngine.dll" Private="true" />
+    <Reference Include="UnityEngine.CoreModule" HintPath="$(UnityManaged)UnityEngine.CoreModule.dll" Private="true" />
+  </ItemGroup>
+  <!--
+    Explicit exclude list: files the text rule would select that cannot build or run on .NET. One entry each,
+    with the reason (and the follow-up issue when the exclusion hides a defect).
+  -->
+  <ItemGroup>
+    <!-- TurboHTTP.Unity module tests: they create engine objects (AudioClip, Texture2D) and dispatch to the Unity
+         main thread, which need the native engine runtime. Host editor only. -->
+    <UnitExclude Include="$(RepoRoot)Tests/Runtime/Unity/**/*.cs" />
+  </ItemGroup>
+  <!--
+    Explicit include list: shared helpers that mention UnityEngine but whose engine calls the harness never
+    reaches, so the selected tests that use them build. Keep this list short.
+  -->
+  <ItemGroup>
+    <!-- Engine call only under !UNITY_EDITOR (Application.temporaryCachePath); the harness defines UNITY_EDITOR. -->
+    <UnitHelper Include="$(RepoRoot)Tests/Runtime/Support/TestTempPath.cs" />
+    <!-- UnityEngine.Debug.LogWarning only when a test server's task outlives its Dispose bound (#349). -->
+    <UnitHelper Include="$(RepoRoot)Tests/Runtime/BoundedShutdown.cs" />
+  </ItemGroup>
+
+  <!-- Selection: every Tests/Runtime file outside UnitExclude whose text mentions none of UnityEngine, UnityEditor, UnityTest. -->
+  <Target Name="SelectUnityFreeTests" BeforeTargets="BeforeBuild">
+    <ItemGroup>
+      <UnitCandidate Include="$(RepoRoot)Tests/Runtime/**/*.cs" Exclude="@(UnitExclude)" />
+      <UnitEngineFile Include="@(UnitCandidate)" Condition="$([System.Text.RegularExpressions.Regex]::IsMatch($([System.IO.File]::ReadAllText('%(FullPath)')), 'UnityEngine|UnityEditor|UnityTest'))" />
+      <UnitCandidate Remove="@(UnitEngineFile)" />
+      <UnitEngineFile Remove="@(UnitHelper)" />
+      <Compile Include="@(UnitCandidate);@(UnitHelper)" Link="Tests/%(Filename)%(Extension)" />
+      <Compile Include="$(MSBuildThisFileDirectory)UnitHarnessStartup.cs" />
+    </ItemGroup>
+    <Message Importance="high" Text="unit: @(UnitCandidate->Count()) Tests/Runtime files selected, @(UnitEngineFile->Count()) skipped (they mention UnityEngine/UnityEditor/UnityTest), @(UnitExclude->Count()) excluded by name, @(UnitHelper->Count()) helpers included by name" />
+  </Target>
+</Project>
