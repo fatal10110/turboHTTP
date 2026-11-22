@@ -7,7 +7,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-User-visible changes merged since 1.0.0-pre.1 (2026-11-03 onward). Feature freeze still applies: these are
+User-visible changes merged since 2026-11-02, the date of the 1.0.0-pre.1 entry below (no tag was published for it). Feature freeze still applies: these are
 fixes, hardening, validation and documentation.
 
 ### Added
@@ -113,7 +113,7 @@ fixes, hardening, validation and documentation.
 
 ## [1.0.0-pre.1] - 2026-11-02
 
-First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); third-party notices are in
+First pre-release entry (not yet tagged). TurboHTTP is released under the MIT License (`LICENSE.md`); third-party notices are in
 `Third-Party Notices.md`.
 
 ### Release status
@@ -123,10 +123,10 @@ First pre-release. TurboHTTP is released under the MIT License (`LICENSE.md`); t
   (`Http2Options.EnableHttp2ThroughConnectTunnels`, #382); device validation (#103) is required before 1.0.0;
   WebSocket permessage-deflate is experimental until its verification gates close (#104); background
   networking is experimental and opt-in (#266); BouncyCastle TLS is opt-in (`TURBOHTTP_BOUNCYCASTLE`, #259).
-- `1.0.0-pre.N` tags are cut from `main` while the physical-device matrix (#99) waits for hardware;
+- `1.0.0-pre.N` tags are to be cut from `main` once published, while the physical-device matrix (#99) waits for hardware;
   `1.0.0` follows #99 and a green full host-editor run. Unity tests run only in the host editor (#188).
-- Distribution: Git URL with a release tag (`https://github.com/fatal10110/turboHTTP.git#v1.0.0-pre.1`) and
-  OpenUPM (`com.turbohttp.complete`). There is no `.unitypackage` or Asset Store listing for 1.0 (#6, #101).
+- Distribution: Git URL pinned to a commit hash (`https://github.com/fatal10110/turboHTTP.git#<commit-sha>`; the
+  `#v<version>` tag form applies once a tag is published) and OpenUPM (`com.turbohttp.complete`). There is no `.unitypackage` or Asset Store listing for 1.0 (#6, #101).
   Internal docs moved to `Development~/`, so Unity no longer imports them into projects.
 - The roadmap and milestone mapping are in `Development~/docs/00-overview.md`.
 

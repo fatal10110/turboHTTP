@@ -22,16 +22,17 @@
 
 ## Installation
 
-TurboHTTP is a UPM package (`com.turbohttp.complete`, Unity 2021.3+). Install a tagged release; the
-[releases](https://github.com/fatal10110/turboHTTP/releases) and [CHANGELOG.md](CHANGELOG.md) list the versions.
-Until 1.0.0 the tags are pre-releases (`v1.0.0-pre.N`).
+TurboHTTP is a UPM package (`com.turbohttp.complete`, Unity 2021.3+). No tagged release exists yet, so
+pin a commit of `main` (below). Once a tag is published, the
+[releases](https://github.com/fatal10110/turboHTTP/releases) and [CHANGELOG.md](CHANGELOG.md) will list the versions
+(`v1.0.0-pre.N` before 1.0.0).
 
 ### Git URL
 
 In **Window > Package Manager**, click **+**, select **Add package from git URL...** and enter:
 
 ```text
-https://github.com/fatal10110/turboHTTP.git#v1.0.0-pre.1
+https://github.com/fatal10110/turboHTTP.git#a0ffeee02cefd0570bd8ffc9783324b69ab4a89c
 ```
 
 Or add it to `Packages/manifest.json`:
@@ -39,12 +40,12 @@ Or add it to `Packages/manifest.json`:
 ```json
 {
   "dependencies": {
-    "com.turbohttp.complete": "https://github.com/fatal10110/turboHTTP.git#v1.0.0-pre.1"
+    "com.turbohttp.complete": "https://github.com/fatal10110/turboHTTP.git#a0ffeee02cefd0570bd8ffc9783324b69ab4a89c"
   }
 }
 ```
 
-Keep the `#v...` tag: without it Unity tracks the moving `main` branch.
+Replace the commit hash with the full hash of the commit you want to pin. Keep the `#<hash>` suffix: without it Unity tracks the moving `main` branch. Once a release tag is published, `#v<version>` works the same way.
 
 ### OpenUPM
 
