@@ -1,7 +1,7 @@
 {
   "name": "com.turbohttp.complete",
   "displayName": "TurboHTTP - Complete HTTP Client",
-  "version": "1.0.0-pre.1",
+  "version": "1.0.0-pre.2",
   "unity": "2021.3",
   "description": "Production-grade modular HTTP client for Unity with advanced features: retry logic, caching, observability, file downloads, and Unity asset handlers. Designed for games and applications requiring reliable network communication.",
   "keywords": [

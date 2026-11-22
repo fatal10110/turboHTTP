@@ -7,8 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-User-visible changes merged since 2026-11-02, the date of the 1.0.0-pre.1 entry below (no tag was published for it). Feature freeze still applies: these are
-fixes, hardening, validation and documentation.
+## [1.0.0-pre.2] - 2026-11-22
+
+The first tagged pre-release. It contains every change since the 1.0.0-pre.1 entry below, which was never
+tagged. Feature freeze still applies: the changes are fixes, hardening, validation and documentation.
+
+### Release status
+- Not yet validated on a physical iOS device: the device matrix (#99) is pending. BouncyCastle TLS
+  (opt-in, `TURBOHTTP_BOUNCYCASTLE`) verifies certificates through the platform on every target, but the
+  iOS verifier has run only on the simulator so far (#33, #239).
+- Validated for this release: the Unity 2021.3 Editor (full EditMode and PlayMode suites), Windows Mono and
+  IL2CPP players at Managed Stripping High, Android IL2CPP ARM64 (a phone and API 23/33 emulators), and
+  macOS players.
+- Android is ARM64 only; ARMv7 is not supported in 1.0 (#1257).
 
 ### Added
 - `Http2Options.EnableHttp2ThroughConnectTunnels` (default false): HTTP/2 inside CONNECT proxy tunnels is
@@ -21,6 +32,8 @@ fixes, hardening, validation and documentation.
   (#1228-#1233).
 
 ### Changed
+- HTTP/2 through a CONNECT proxy (opt-in): a cold burst of requests to one origin opens one tunnel,
+  and the other requests wait for it instead of each dialing their own (#1180).
 - Android support in 1.0 is ARM64 only. ARMv7 (32-bit) has not been tested on a device and is no
   longer listed as supported (#1257).
 - `WebSocket` `DisposeAsync` sends a Close frame (1000) instead of aborting (#301, #390).
@@ -115,7 +128,7 @@ fixes, hardening, validation and documentation.
 
 ## [1.0.0-pre.1] - 2026-11-02
 
-First pre-release entry (not yet tagged). TurboHTTP is released under the MIT License (`LICENSE.md`); third-party notices are in
+First pre-release entry. It was never tagged; its changes ship in 1.0.0-pre.2. TurboHTTP is released under the MIT License (`LICENSE.md`); third-party notices are in
 `Third-Party Notices.md`.
 
 ### Release status
