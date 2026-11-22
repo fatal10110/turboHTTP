@@ -1,0 +1,56 @@
+# 2026-11: Unity host-editor runs
+
+Running log of the periodic host-editor runs (testing.md, "Host-editor gates"). The October runs are in
+`2026-10-unity-host-run.md`. Unity 2021.3.45f2, Windows editor driven from WSL, unless a section says otherwise.
+
+## 2026-11-22: after waves run w1122 (main b842808)
+
+Waves run w1122 merged #1249, #1253, #1254, #1255 and #1256.
+
+- EditMode: 87 total, 87 passed, 0 failed, 0 skipped.
+- PlayMode: 3612 total, 3606 passed, 1 failed, 3 counted skips (baseline 3), 2 not-selected `[Explicit]`.
+  - `RawSocketTransportProxy407Tests.ForwardProxy_BasicChallenge_FirstAttemptHasNoCredentialsAndRetriesOnceWithBasic`
+    failed in `TcpListener.Start` with WSAENOBUFS, 53 s into the run. The fixture passed 25/25 twice when
+    run alone. Filed #1259 (Windows port churn or a socket leak under the full suite).
+- ExternalNetwork: 48 total, 38 passed, 0 failed, 10 `[env]` skips: 8 HTTP/2-over-TLS row tests without
+  `TURBOHTTP_H2_ROWS_URL`, 2 "SslStream has no ALPN on this runtime".
+- UniTask (`--with-unitask --filter UniTaskCancellationTests`): 6/6.
+- Players:
+  - win64-mono: PASS (7 rows, `bc=absent`).
+  - win64-mono, Stripping High, `--network`: PASS (`tls-sslstream` example.com 200).
+  - android-il2cpp, with and without `--bouncycastle`: build PASS (not run on a device).
+  - win64-il2cpp, Stripping High, `--network`. The Windows 10 SDK (10.0.28000.0) and MSVC are now on the host.
+    - Without the define: PASS, `bc=absent`, neither BouncyCastle assembly in `ManagedStripped`.
+    - With `--bouncycastle`: PASS, `bc=present`, `tls-bouncycastle` example.com 200 over h2, and the four
+      `h2-*-bouncycastle` rows.
+    - #1225 closed; the win64-il2cpp row recorded on #1210.
+- Win64 IL2CPP standalone test player (`run-tests.sh --platform StandaloneWindows64 --backend IL2CPP`, first
+  complete IL2CPP run): 3612 total, 3603 passed, 2 failed, 5 counted skips (baseline 5), 2 not-selected
+  `[Explicit]`, 248 s.
+  - `Http11BodySourceAbortDuringReadTests.Abort_PendingReadWithCallerToken_DoesNotLeaveTheReaderOnTheCallersToken`:
+    fails 3 of 3 on this player (also in two filtered reruns); it passes in the Editor and the other players.
+    Recorded on #1251, which moved to v1.0 GA.
+  - `WebSocketProxyTests.ProxyConnectionFailure_ThrowsProxyConnectionFailed`: `Timeout` after 15 s instead
+    of `ProxyConnectionFailed`. It passed 2 of 2 filtered reruns. The test reuses a released ephemeral port,
+    which another test can take under load. Recorded on #1259.
+  - The Mono backend's complete run (3603 on 2026-11-16) is recorded on #1219 / #1243. With this IL2CPP run,
+    both Win64 backends have passed the skip and total gates (#1219).
+
+## 2026-11-22: release commit 69ad7b4 (v1.0.0-pre.2)
+
+The release-checklist step 4 gates on the version-bump merge commit (#1260):
+
+- EditMode: 87/87, 0 skipped.
+- PlayMode: 3612 total, 3607 passed, **0 failed**, 3 counted skips (baseline 3), 2 not-selected `[Explicit]`, 144 s.
+- ExternalNetwork: 38 passed, 0 failed, 10 `[env]` skips (as above).
+- Players: win64-mono PASS; android-il2cpp build PASS; android-il2cpp `--bouncycastle` build PASS.
+- `run-samples.sh`: Sample01-05 passed.
+- Install check: a new 2021.3 project with `https://github.com/fatal10110/turboHTTP.git#v1.0.0-pre.2`
+  resolved the package to 69ad7b4 and compiled every TurboHTTP assembly with 0 errors.
+- The tag `v1.0.0-pre.2` was pushed on 69ad7b4; the Release workflow created the GitHub pre-release.
+
+`skip-baseline.txt` min-totals raised from these runs: EditMode 71 -> 87, PlayMode 2923 -> 3612,
+Player-StandaloneWindows64 3603 -> 3612.
+
+Not run: the iOS simulator and device (#99), the Android emulator and phone suites at these commits,
+the certification matrix (release candidates only).
