@@ -62,9 +62,6 @@
     <Reference Include="UnityEngine" HintPath="$(UnityManaged)UnityEngine.dll" Private="true" />
     <Reference Include="UnityEngine.CoreModule" HintPath="$(UnityManaged)UnityEngine.CoreModule.dll" Private="true" />
   </ItemGroup>
-  <ItemGroup>
-    <UnitCandidate Include="$(RepoRoot)Tests/Runtime/**/*.cs" Exclude="@(UnitExclude)" />
-  </ItemGroup>
   <!--
     Explicit exclude list: files the text rule would select that cannot build or run on .NET. One entry each,
     with the reason (and the follow-up issue when the exclusion hides a defect).
@@ -85,10 +82,10 @@
     <UnitHelper Include="$(RepoRoot)Tests/Runtime/BoundedShutdown.cs" />
   </ItemGroup>
 
-  <!-- Selection: every candidate whose text mentions none of UnityEngine, UnityEditor, UnityTest. -->
+  <!-- Selection: every Tests/Runtime file outside UnitExclude whose text mentions none of UnityEngine, UnityEditor, UnityTest. -->
   <Target Name="SelectUnityFreeTests" BeforeTargets="BeforeBuild">
     <ItemGroup>
-      <UnitCandidate Remove="@(UnitExclude)" />
+      <UnitCandidate Include="$(RepoRoot)Tests/Runtime/**/*.cs" Exclude="@(UnitExclude)" />
       <UnitEngineFile Include="@(UnitCandidate)" Condition="$([System.Text.RegularExpressions.Regex]::IsMatch($([System.IO.File]::ReadAllText('%(FullPath)')), 'UnityEngine|UnityEditor|UnityTest'))" />
       <UnitCandidate Remove="@(UnitEngineFile)" />
       <UnitEngineFile Remove="@(UnitHelper)" />
