@@ -32,11 +32,18 @@ or `Unity.exe` did not start through about two minutes of retries (`Tools~/unity
 `testing.md`). Exit 5 is an infrastructure outage, never a result: rerun.
 
 The required status check is the aggregate job `ci` (`.github/workflows/ci.yml`), which passes
-only when `lint`, `tls-interop` and `h2-interop` pass. None of them needs Unity: the repository has
+only when `lint`, `tls-interop`, `h2-interop` and `unit` pass. None of them needs Unity: the repository has
 no Unity license and CI never gets one (owner decision 2026-11-02, #188), so there is no
 `unity-tests` job that could report a pass it never earned. The Unity gates (full EditMode/PlayMode
 runs with the skip baseline, the `ExternalNetwork` run, player builds) are run by hand in a host editor
 (`testing.md`, "Host-editor gates") after each waves run and before a milestone closes.
+
+`unit` (#879) runs the Unity-free part of the NUnit suite on .NET 8: `Tools~/unit-tests/run.sh` builds the
+editor shadow variant, compiles every `Tests/Runtime` file that mentions none of `UnityEngine`,
+`UnityEditor` or `UnityTest` into `Tools~/unit-tests/TurboHTTP.UnitTests.csproj` (NuGet NUnit 3.14, assembly
+name `TurboHTTP.Tests.Runtime` for the `InternalsVisibleTo` grants) and runs `dotnet test` without the
+`ExternalNetwork` category. On failure the job uploads the TRX file (`unit-test-results`). Selection,
+exclusions and local use: `testing.md`, "Unity-free unit job".
 
 Why a shadow build: Unity compiles the package itself, but CI and agents need compiler errors
 and analyzers without a Unity install or license. `Tools~/ci/shadow_build.py` generates one

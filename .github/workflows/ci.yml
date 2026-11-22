@@ -146,16 +146,59 @@ jobs:
           name: h2-interop-logs
           path: .build/h2-interop/run
 
+  # Unity-free NUnit tests (#879): every Tests/Runtime file that mentions none of UnityEngine,
+  # UnityEditor or UnityTest, compiled into a plain .NET 8 test assembly against the shadow-built
+  # DLLs and run with dotnet test (ExternalNetwork excluded). Exclusions are commented in
+  # Tools~/unit-tests (TurboHTTP.UnitTests.csproj, excluded-tests.txt). Unity is not needed.
+  unit:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      - name: Unity version
+        id: unity
+        run: echo "version=$(cat 'Tools~/ci/unity-version')" >> "$GITHUB_OUTPUT"
+
+      - name: Cache Unity managed DLLs
+        uses: actions/cache@v6
+        with:
+          path: .tools/unity-managed
+          key: unity-managed-${{ steps.unity.outputs.version }}
+
+      - name: Cache NuGet packages
+        uses: actions/cache@v6
+        with:
+          path: ~/.nuget/packages
+          key: nuget-unit-${{ hashFiles('Tools~/ci/Shadow.props', 'Tools~/unit-tests/TurboHTTP.UnitTests.csproj') }}
+
+      - name: Unity-free NUnit tests
+        run: '"Tools~/unit-tests/run.sh"'
+
+      - uses: actions/upload-artifact@v7
+        if: failure()
+        with:
+          name: unit-test-results
+          path: .build/unit/results
+
   # The ruleset requires this single check; it passes only when every job above does.
-  # CI never runs Unity (no license, #188): the Unity gates are the host-editor runs in
-  # Development~/docs/agents/testing.md ("Host-editor gates"), not a job here.
+  # CI never runs Unity (no license, #188): `unit` runs the Unity-free tests on .NET 8, and the
+  # Unity gates are the host-editor runs in Development~/docs/agents/testing.md
+  # ("Host-editor gates"), not a job here.
   ci:
     if: always()
-    needs: [lint, tls-interop, h2-interop]
+    needs: [lint, tls-interop, h2-interop, unit]
     runs-on: ubuntu-latest
     steps:
       - env:
           LINT: ${{ needs.lint.result }}
           TLS_INTEROP: ${{ needs.tls-interop.result }}
           H2_INTEROP: ${{ needs.h2-interop.result }}
-        run: '[ "$LINT" = success ] && [ "$TLS_INTEROP" = success ] && [ "$H2_INTEROP" = success ]'
+          UNIT: ${{ needs.unit.result }}
+        run: '[ "$LINT" = success ] && [ "$TLS_INTEROP" = success ] && [ "$H2_INTEROP" = success ] && [ "$UNIT" = success ]'

@@ -28,15 +28,31 @@ namespace TurboHTTP.Tests.WebSocket
 
         private readonly List<string> _diagnostics = new List<string>();
 
+        // Expected diagnostic text -> completed when the sink receives it. A handler signals the test before it
+        // throws, so the report it causes can land after the test resumes; tests await it instead of racing it.
+        private readonly Dictionary<string, TaskCompletionSource<bool>> _reported =
+            new Dictionary<string, TaskCompletionSource<bool>>();
+
         [SetUp]
         public void SetUp()
         {
             lock (_diagnostics)
+            {
                 _diagnostics.Clear();
+                _reported.Clear();
+            }
+
             TurboDiagnostics.SetSink(message =>
             {
                 lock (_diagnostics)
+                {
                     _diagnostics.Add(message);
+                    foreach (var pending in _reported)
+                    {
+                        if (message.Contains(pending.Key))
+                            pending.Value.TrySetResult(true);
+                    }
+                }
             });
         }
 
@@ -99,7 +115,7 @@ namespace TurboHTTP.Tests.WebSocket
                     Assert.AreEqual(1, Volatile.Read(ref raised), handlerName + " must be raised once.");
                     Assert.AreEqual(WebSocketState.Closed, connection.State);
                     Assert.IsTrue(clientStream.IsDisposed, "The stream must be disposed.");
-                    AssertReported(handlerName);
+                    await AssertReportedAsync(handlerName).ConfigureAwait(false);
                 }
                 finally
                 {
@@ -153,8 +169,8 @@ namespace TurboHTTP.Tests.WebSocket
                     Assert.GreaterOrEqual(Volatile.Read(ref metricsRaised), 1);
                     Assert.AreEqual(1, Volatile.Read(ref qualityRaised));
                     Assert.AreEqual(WebSocketState.Open, connection.State);
-                    AssertReported("MetricsUpdated");
-                    AssertReported("ConnectionQualityChanged");
+                    await AssertReportedAsync("MetricsUpdated").ConfigureAwait(false);
+                    await AssertReportedAsync("ConnectionQualityChanged").ConfigureAwait(false);
                 }
                 finally
                 {
@@ -222,10 +238,10 @@ namespace TurboHTTP.Tests.WebSocket
                 Assert.AreEqual(1, Volatile.Read(ref closed));
                 Assert.AreEqual(WebSocketState.Closed, client.State);
                 Assert.IsTrue(clientStream.IsDisposed, "The stream must be disposed.");
-                AssertReported("OnConnected");
-                AssertReported("OnError");
-                AssertReported("OnClosed");
-                AssertReported("OnMetricsUpdated");
+                await AssertReportedAsync("OnConnected").ConfigureAwait(false);
+                await AssertReportedAsync("OnError").ConfigureAwait(false);
+                await AssertReportedAsync("OnClosed").ConfigureAwait(false);
+                await AssertReportedAsync("OnMetricsUpdated").ConfigureAwait(false);
             });
         }
 
@@ -284,14 +300,34 @@ namespace TurboHTTP.Tests.WebSocket
                 Assert.AreEqual(1, Volatile.Read(ref connected));
                 Assert.GreaterOrEqual(Volatile.Read(ref errors), 1);
                 Assert.AreEqual(1, Volatile.Read(ref reconnecting));
-                AssertReported("OnReconnecting");
-                AssertReported("OnReconnected");
+                await AssertReportedAsync("OnReconnecting").ConfigureAwait(false);
+                await AssertReportedAsync("OnReconnected").ConfigureAwait(false);
             });
         }
 
-        private void AssertReported(string eventName)
+        private async Task AssertReportedAsync(string eventName)
         {
             string expected = "WebSocket " + eventName + " handler threw.";
+            Task reported;
+            lock (_diagnostics)
+            {
+                if (!_reported.TryGetValue(expected, out var tcs))
+                {
+                    tcs = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+                    _reported.Add(expected, tcs);
+                    foreach (var message in _diagnostics)
+                    {
+                        if (message.Contains(expected))
+                            tcs.TrySetResult(true);
+                    }
+                }
+
+                reported = tcs.Task;
+            }
+
+            // Guard only: the report follows the handler's throw on the same thread.
+            await Task.WhenAny(reported, Task.Delay(Guard)).ConfigureAwait(false);
+
             lock (_diagnostics)
             {
                 foreach (var message in _diagnostics)
