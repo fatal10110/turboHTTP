@@ -109,10 +109,14 @@ Player-iOS-2021.3 35
 #   Player-Android 3625  API 23 and API 33 x86_64 emulators, Stripping High, main 628c1b2, 2026-11-23
 #   Player-StandaloneWindows64 3625  Win64 IL2CPP player (Stripping High), main 628c1b2, 2026-11-23, Unity
 #                        2021.3.45f2 (the Mono player's 3603 on 2026-11-16 predates the tests added since)
-# Player-iOS and Player-iOS-2021.3 have no entry yet (no complete unfiltered run of them is recorded), so an
-# unfiltered run of them fails until its total is recorded here.
+#   Player-iOS-2021.3 3612  run-ios-player.sh (#99), main 0065546, iPhone 17 Pro simulator (iOS 26.4, x86_64
+#                        under Rosetta) and an iPhone 13 Pro Max (iOS 27.0.1, arm64; 3615 there), IL2CPP High,
+#                        2026-11-22, Unity 2021.3.45f2 (predates the tests main added since)
+# Player-iOS has no entry yet (no complete unfiltered Unity 6 run of it is recorded), so an unfiltered run of it
+# fails until its total is recorded here.
 # min-total <run target> <min cases>
 min-total EditMode 87
 min-total PlayMode 3625
 min-total Player-Android 3625
 min-total Player-StandaloneWindows64 3625
+min-total Player-iOS-2021.3 3612
