@@ -10,7 +10,7 @@ TurboHTTP is designed to run reliably across major Unity platforms, supporting b
 | **macOS** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (SecTrust verifier not yet validated on a Mac, #33) | As Windows. | Needs a Mac (#33) |
 | **Linux** | Mono / IL2CPP | ⚠️ Partly validated | Unavailable (BouncyCastle rejects every certificate on Linux) | Only a Mono standalone player under WSL2 (Ubuntu) was run, with `SslStream`; that Unity runtime crashed in its Boehm GC in 10 of 140 launches before any test ran (a runtime issue, #423). No IL2CPP Linux run, no native Ubuntu or other-distribution run. | Open: #436 |
 | **iOS** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | Requires AOT-safe configuration. | Open: #99 |
-| **Android** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | ARM64/ARMv7. Restrictions on cleartext apply. | Open: #99 |
+| **Android** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | ARM64 only: ARMv7 (32-bit) is not supported in v1.0 (see "Android (IL2CPP)" below). Restrictions on cleartext apply. | Open: #99 |
 | **WebGL** | IL2CPP | ❌ Unsupported in v1.0 | n/a | Browsers provide no raw sockets. A WebGL player build fails at build time with an explanatory error instead of failing every request at runtime. Support is planned for a later release. | n/a |
 | **Consoles** | IL2CPP | Untested | Unknown | Not tested on any console. The socket implementation varies by platform SDK (see `ConnectionPoolOptions.SocketIoMode`). | None |
 
@@ -158,6 +158,12 @@ ATS does not apply to raw sockets, so `Info.plist` ATS keys do not affect TurboH
 App Store submission requires IPv6 support. TurboHTTP natively supports IPv6 via standard C# Sockets and resolves names with Happy Eyeballs (RFC 8305), so a hostname works on dual-stack and IPv6-only networks. On a NAT64/DNS64 network connect to hostnames, not IPv4 literals (`http://203.0.113.5/` has no synthesized IPv6 address). Behavior on a real NAT64 network is `needs-device-validation` (#99); it has not been verified from the Editor.
 
 ### Android (IL2CPP)
+
+#### Target architecture: ARM64 only
+v1.0 supports Android on ARM64 (`arm64-v8a`) only. ARMv7 (`armeabi-v7a`, 32-bit) has not been
+tested on a device and is not supported in this release (#1257). In **Player Settings > Other
+Settings > Target Architectures**, select **ARM64** and clear **ARMv7** (a new Unity 2021.3 project
+may have ARMv7 selected).
 
 #### Background Networking (experimental, opt-in)
 With the Android Player Settings define `TURBOHTTP_BACKGROUND_NETWORKING`, the build includes
