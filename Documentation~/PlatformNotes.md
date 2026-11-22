@@ -54,7 +54,12 @@ A POST is never replayed and keeps waiting until the request timeout. `Timeout.I
 
 ## Negotiated TLS versions
 
-Recorded on the Android API 23 emulator against www.google.com (run w1108): `SslStream` (UnityTls, with the TLS 1.2 floor enforced by TurboHTTP) negotiated TLS 1.2, and the BouncyCastle backend negotiated TLS 1.3. The desktop 2021.3 `SslStream` version is not recorded (needs-device-validation).
+Recorded on the Android API 23 emulator against www.google.com (run w1108): `SslStream` (UnityTls, with the TLS 1.2 floor enforced by TurboHTTP) negotiated TLS 1.2, and the BouncyCastle backend negotiated TLS 1.3. The desktop 2021.3 `SslStream` version is not recorded (needs-device-validation), and no TLS 1.3 negotiation by `SslStream` on desktop is claimed.
+
+| Backend | Android API 23 emulator | Desktop 2021.3 |
+| :--- | :--- | :--- |
+| `SslStream` | TLS 1.2 (recorded) | not recorded |
+| BouncyCastle | TLS 1.3 (recorded) | not recorded |
 
 ## HTTP/2 needs the BouncyCastle backend
 
