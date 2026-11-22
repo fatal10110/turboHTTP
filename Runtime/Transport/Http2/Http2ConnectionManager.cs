@@ -12,8 +12,10 @@ namespace TurboHTTP.Transport.Http2
     /// Per-host HTTP/2 connection cache. Keeps up to <see cref="Http2Options.MaxConnectionsPerOrigin"/>
     /// active Http2Connections per origin (one by default, RFC 9113 Section 9.1); another opens only
     /// when every connection of the origin is saturated. Thread-safe. A cold origin is dialed once: the
-    /// first request claims the dial (<see cref="ClaimOrJoinColdDial"/>) and the others await it instead
-    /// of each opening a TCP+TLS connection (#736); the per-key init lock only serializes the HTTP/2
+    /// first request claims the dial
+    /// (<see cref="ClaimOrJoinColdDial(string, int, out ColdDialClaim)"/>) and the
+    /// others await it instead of each opening a TCP+TLS connection (#736; through a CONNECT proxy, one
+    /// tunnel per origin and proxy, #1180); the per-key init lock only serializes the HTTP/2
     /// connection preface of connections that were dialed anyway.
     /// </summary>
     internal class Http2ConnectionManager : IDisposable
@@ -187,7 +189,25 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         internal Http2Connection GetAcceptingConnection(string host, int port)
         {
-            return Volatile.Read(ref _disposed) == 0 ? SelectConnection($"{host}:{port}", out _) : null;
+            return GetAcceptingConnection($"{host}:{port}");
+        }
+
+        /// <summary>
+        /// Tunnel-keyed <see cref="GetAcceptingConnection(string, int)"/>: the connection through this
+        /// proxy to this origin a request can still queue on after its own tunnel failed, or null.
+        /// </summary>
+        internal Http2Connection GetAcceptingConnection(
+            string originHost,
+            int originPort,
+            string proxyHost,
+            int proxyPort)
+        {
+            return GetAcceptingConnection(BuildTunnelKey(originHost, originPort, proxyHost, proxyPort));
+        }
+
+        private Http2Connection GetAcceptingConnection(string key)
+        {
+            return Volatile.Read(ref _disposed) == 0 ? SelectConnection(key, out _) : null;
         }
 
         /// <summary>
@@ -203,11 +223,32 @@ namespace TurboHTTP.Transport.Http2
         /// </summary>
         public Task<bool> ClaimOrJoinColdDial(string host, int port, out ColdDialClaim coldDial)
         {
+            return ClaimOrJoinColdDial($"{host}:{port}", out coldDial);
+        }
+
+        /// <summary>
+        /// Tunnel-keyed <see cref="ClaimOrJoinColdDial(string, int, out ColdDialClaim)"/> (#1180): the
+        /// first cold request for this origin through this proxy establishes the CONNECT tunnel, the
+        /// others await it. Same contract; the claim is completed through <see cref="CompleteColdDial"/>.
+        /// </summary>
+        public Task<bool> ClaimOrJoinColdDial(
+            string originHost,
+            int originPort,
+            string proxyHost,
+            int proxyPort,
+            out ColdDialClaim coldDial)
+        {
+            return ClaimOrJoinColdDial(
+                BuildTunnelKey(originHost, originPort, proxyHost, proxyPort),
+                out coldDial);
+        }
+
+        private Task<bool> ClaimOrJoinColdDial(string key, out ColdDialClaim coldDial)
+        {
             coldDial = null;
             if (Volatile.Read(ref _disposed) != 0)
                 return null;
 
-            string key = $"{host}:{port}";
             if (_nonHttp2Origins.ContainsKey(key))
                 return null;
 
@@ -259,7 +300,8 @@ namespace TurboHTTP.Transport.Http2
         }
 
         /// <summary>
-        /// Awaits a pending cold dial returned by <see cref="ClaimOrJoinColdDial"/>; throws
+        /// Awaits a pending cold dial returned by
+        /// <see cref="ClaimOrJoinColdDial(string, int, out ColdDialClaim)"/>; throws
         /// <see cref="OperationCanceledException"/> as soon as <paramref name="ct"/> fires (the request
         /// timeout is enforced by transport cancellation). The cancellation registration is released on
         /// every path; the pending dial itself never faults.
@@ -286,8 +328,7 @@ namespace TurboHTTP.Transport.Http2
             string proxyHost,
             int proxyPort)
         {
-            return Volatile.Read(ref _disposed) == 0 &&
-                SelectConnection(BuildTunnelKey(originHost, originPort, proxyHost, proxyPort), out _) != null;
+            return GetAcceptingConnection(originHost, originPort, proxyHost, proxyPort) != null;
         }
 
         /// <summary>
@@ -726,7 +767,8 @@ namespace TurboHTTP.Transport.Http2
         }
 
         /// <summary>
-        /// The right to dial the first connection of a cold origin; see <see cref="ClaimOrJoinColdDial"/>.
+        /// The right to dial the first connection of a cold origin (or tunnel key); see
+        /// <see cref="ClaimOrJoinColdDial(string, int, out ColdDialClaim)"/>.
         /// </summary>
         internal sealed class ColdDialClaim
         {
