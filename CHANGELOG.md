@@ -21,6 +21,8 @@ fixes, hardening, validation and documentation.
   (#1228-#1233).
 
 ### Changed
+- Android support in 1.0 is ARM64 only. ARMv7 (32-bit) has not been tested on a device and is no
+  longer listed as supported (#1257).
 - `WebSocket` `DisposeAsync` sends a Close frame (1000) instead of aborting (#301, #390).
 - `LiteJson` follows the RFC 8259 grammar strictly (invalid JSON that parsed before now throws), accepts a
   BOM, reads UTC timestamps, has `MaxInputBytes` and throws `NotSupportedException` for POCOs (#75, #395).
