@@ -65,7 +65,9 @@ namespace TurboHTTP.Tests.Transport.Tls
             Assert.IsFalse(SslStreamTlsProvider.IsAlpnSetupFailure(new InvalidOperationException()));
             Assert.IsFalse(SslStreamTlsProvider.IsAlpnSetupFailure(new IOException()));
             Assert.IsFalse(SslStreamTlsProvider.IsAlpnSetupFailure(new System.Security.Authentication.AuthenticationException()));
-            Assert.IsTrue(SslStreamTlsProvider.IsAlpnSetupFailure(new System.Reflection.TargetInvocationException(new Exception())));
+            // The options are built without reflection (#303, #904): a TargetInvocationException is
+            // not an ALPN capability gap and must propagate instead of downgrading to HTTP/1.1.
+            Assert.IsFalse(SslStreamTlsProvider.IsAlpnSetupFailure(new System.Reflection.TargetInvocationException(new Exception())));
             Assert.IsTrue(SslStreamTlsProvider.IsAlpnSetupFailure(new MissingMethodException()));
             Assert.IsTrue(SslStreamTlsProvider.IsAlpnSetupFailure(new TypeLoadException()));
             Assert.IsTrue(SslStreamTlsProvider.IsAlpnSetupFailure(new MemberAccessException()));

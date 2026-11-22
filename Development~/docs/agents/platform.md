@@ -5,9 +5,13 @@ Load for TLS, sockets, IL2CPP/AOT, iOS/Android behavior, timeouts or device vali
 ## TLS
 
 - `SslStream` is the primary provider. Strict validation: only `SslPolicyErrors.None` is accepted.
-  `SslProtocols.None` lets the OS negotiate; TLS < 1.2 is rejected after the handshake. ALPN goes
-  through a runtime-probed `SslClientAuthenticationOptions` overload; without it the 4-argument
-  overload is used with dispose-on-cancel.
+  `SslProtocols.None` lets the OS negotiate; TLS < 1.2 is rejected after the handshake. ALPN
+  options (`SslClientAuthenticationOptions`, `SslApplicationProtocol`) are built and passed by
+  direct calls, no reflection (#303); if building them fails (missing AOT code or stripped
+  metadata), an offer containing `http/1.1` falls back to the 4-argument overload with
+  dispose-on-cancel. Unity's SslStream ignores the options and cannot report a negotiated protocol
+  (mono#12880, #418): the type initializer detects this, `IsAlpnSupported()` is false, so Auto
+  and `TlsBackend.SslStream` connections are HTTP/1.1 only and HTTP/2 needs BouncyCastle.
 - BouncyCastle (`TurboHTTP.Transport.BouncyCastle`) exists for IL2CPP platforms where `SslStream`
   ALPN is missing. It is explicit opt-in only (`TlsBackend.BouncyCastle`). Its server certificates
   are checked by `ServerCertificateVerifier` (#33): RFC 6125 host matching, then the platform verifier
