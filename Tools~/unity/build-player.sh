@@ -58,7 +58,8 @@
 # (connection still Open, echo round trip) with a max-ping-gap of at least half the freeze, else the process kept
 # running and the run FAILs (#1281). The freeze (chosen before the launch, exit 2 when none works): kill -STOP/-CONT
 # as root (adb root: emulator google_apis images), else through run-as (a debuggable APK; the smoke is not one),
-# else the cached-apps freezer when it is on (API 31+; the system freezes the cached app after its debounce).
+# else the cached-apps freezer when it is on (API 31+; the system freezes the cached app after its debounce, so
+# TURBOHTTP_SMOKE_SUSPEND_S must be at least twice freeze_debounce_timeout plus a margin: 30 s for a 10 s debounce).
 # Without --suspend the row is SKIP. CI never builds players (no Unity license, #188, #100): this script, run in a host editor, is
 # the player-build gate (testing.md, "Host-editor gates"). TURBOHTTP_SMOKE_WAIT_S (default 300 s, 600 s with
 # --suspend, 900 s with --network) also bounds the Windows player run.
@@ -377,11 +378,24 @@ if [ "$run" = 1 ]; then
       return 0
     fi
     if [ "$level" -ge 31 ]; then
-      out="$(adbr shell "dumpsys activity settings | grep use_freezer=; true")" || adb_failed "$?" "dumpsys activity settings"
+      out="$(adbr shell "dumpsys activity settings | grep -E 'use_freezer=|freeze_debounce_timeout='; true")" ||
+        adb_failed "$?" "dumpsys activity settings"
       if [[ $out == *"use_freezer=true"* ]]; then
         freeze_method=freezer
+        # Frozen for about SUSPEND_S minus the debounce, and the gap check needs at least SUSPEND_S/2:
+        # SUSPEND_S >= 2 x debounce + 10 s margin.
+        local debounce_ms need_s
+        debounce_ms="$(printf '%s\n' "$out" | tr -d '\r' | sed -n 's/.*freeze_debounce_timeout=\([0-9][0-9]*\).*/\1/p' | head -n 1)"
         echo "build-player: --suspend: freeze method freezer (the cached-apps freezer freezes the backgrounded app" \
-          "after its debounce; max-ping-gap tells for how long)"
+          "after its debounce, freeze_debounce_timeout=${debounce_ms:-unknown} ms; max-ping-gap tells for how long)"
+        if [ -n "$debounce_ms" ]; then
+          need_s=$(( (2 * debounce_ms + 999) / 1000 + 10 ))
+          if [ "$suspend_s" -lt "$need_s" ]; then
+            echo "build-player: --suspend: warning: TURBOHTTP_SMOKE_SUSPEND_S=$suspend_s is below twice the freezer" \
+              "debounce plus a 10 s margin ($need_s s): the app is frozen for about ${suspend_s}s minus the debounce," \
+              "so max-ping-gap may stay under half the freeze and the row FAILs. Set TURBOHTTP_SMOKE_SUSPEND_S=$need_s or more." >&2
+          fi
+        fi
         return 0
       fi
       freezer="off (use_freezer=true not in dumpsys activity settings)"

@@ -259,7 +259,10 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    already root or `adb root` allowed, as on emulator `google_apis` images but not `google_apis_playstore` or
    production phones), else `run-as` (the same signals as the app's uid; only a debuggable APK, which the smoke
    is not), else `freezer` (the cached-apps freezer is on, API 31+: the system freezes the cached app after its
-   debounce and thaws it on the resume, so raise `TURBOHTTP_SMOKE_SUSPEND_S` past that debounce). When none works
+   debounce and thaws it on the resume; the app is frozen for only about `TURBOHTTP_SMOKE_SUSPEND_S` minus that
+   debounce while the gap check needs half of `TURBOHTTP_SMOKE_SUSPEND_S`, so set it to at least twice the
+   debounce plus a margin, e.g. 30 s for a 10 s debounce; the script prints `freeze_debounce_timeout` from
+   `dumpsys activity settings` and warns when the value is lower). When none works
    the script exits 2 naming each refusal. After the run it prints
    `--suspend: freeze=<method> frozen=<s>s; background=... max-ping-gap=... grace-waits=... resume-signal=...`.
    The row must PASS: the connection is still Open about 8 s after `OnApplicationPause(false)` and an echo round

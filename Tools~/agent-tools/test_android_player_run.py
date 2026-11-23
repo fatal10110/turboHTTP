@@ -38,7 +38,7 @@ case "$*" in
   "shell id")
     if [ -f "$FAKE_WSL.adb.root" ]; then printf 'uid=0(root) gid=0(root)\r\n'; else printf 'uid=2000(shell) gid=2000(shell)\r\n'; fi ;;
   *"dumpsys activity settings"*)
-    if [ -n "${FAKE_ADB_FREEZER:-}" ]; then printf '  use_freezer=true\r\n'; fi ;;
+    if [ -n "${FAKE_ADB_FREEZER:-}" ]; then printf '  use_freezer=true\r\n  freeze_debounce_timeout=%s\r\n' "$FAKE_ADB_FREEZER"; fi ;;
   *get-state*) printf 'device\r\n' ;;
   *"getprop ro.build.version.sdk"*) printf '%s\r\n' "${FAKE_ADB_SDK:-31}" ;;
   *getprop*) printf '%s\r\n' "${FAKE_ADB_ABI:-x86_64}" ;;
@@ -308,11 +308,20 @@ class AndroidPlayerRunTests(unittest.TestCase):
         self.assertNotIn("shell kill -STOP 4242", calls)
         # The freezer: the system freezes and thaws the app, so the script sends no signal.
         pathlib.Path(f"{self.state}.adb.calls").unlink()
-        result, out = self.suspend_run(FAKE_ADB_ROOT="deny", FAKE_ADB_FREEZER="1", FAKE_ADB_SDK="33")
+        result, out = self.suspend_run(FAKE_ADB_ROOT="deny", FAKE_ADB_FREEZER="10000", FAKE_ADB_SDK="33")
         self.assertEqual(result.returncode, 0, out)
         self.assertIn("freeze method freezer", out)
+        self.assertIn("freeze_debounce_timeout=10000 ms", out)
         self.assertIn("--suspend: freeze=freezer frozen=<=10s;", out)
         self.assertFalse([c for c in self.calls("adb") if "kill -" in c])
+        # SUSPEND_S=10 is below 2 x 10 s debounce + 10 s: the script warns with the value to use.
+        self.assertIn("Set TURBOHTTP_SMOKE_SUSPEND_S=30 or more", " ".join(result.stderr.split()))
+
+    def test_suspend_freezer_does_not_warn_when_the_freeze_outlasts_twice_the_debounce(self):
+        result, out = self.suspend_run(FAKE_ADB_ROOT="deny", FAKE_ADB_FREEZER="10000", FAKE_ADB_SDK="33",
+                                       TURBOHTTP_SMOKE_SUSPEND_S="30")
+        self.assertIn("freeze method freezer", out)
+        self.assertNotIn("warning: TURBOHTTP_SMOKE_SUSPEND_S", result.stderr)
 
     def test_suspend_exits_2_before_the_launch_when_no_freeze_works(self):
         for sdk, freezer in (("33", "off (use_freezer=true not in dumpsys activity settings)"),
