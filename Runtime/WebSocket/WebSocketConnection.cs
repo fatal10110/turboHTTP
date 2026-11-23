@@ -204,9 +204,7 @@ namespace TurboHTTP.WebSocket
                     return new WebSocketException(WebSocketError.CertificateError, ex.Message, ex);
                 case TimeoutException _:
                     return new WebSocketException(WebSocketError.Timeout, ex.Message, ex);
-                case SocketException socket when socket.SocketErrorCode == SocketError.HostNotFound ||
-                                                 socket.SocketErrorCode == SocketError.NoData ||
-                                                 socket.SocketErrorCode == SocketError.TryAgain:
+                case SocketException socket when IsResolverFailure(SocketErrorNormalizer.Normalize(socket)):
                     return new WebSocketException(WebSocketError.DnsResolutionFailed, ex.Message, ex);
                 case ArgumentException _:
                     return new WebSocketException(WebSocketError.InvalidRequest, ex.Message, ex);
@@ -218,6 +216,11 @@ namespace TurboHTTP.WebSocket
                     return new WebSocketException(WebSocketError.ConnectionClosed, ex.Message, ex);
             }
         }
+
+        // Resolver failures as reported: the normalizer keeps these defined values and maps no raw errno to
+        // them (getaddrinfo EAI_* codes are not errno values, see SocketErrorNormalizer, #1290).
+        private static bool IsResolverFailure(SocketError error) =>
+            error == SocketError.HostNotFound || error == SocketError.NoData || error == SocketError.TryAgain;
 
         public WebSocketMetrics Metrics => _metrics?.GetSnapshot() ?? default;
 

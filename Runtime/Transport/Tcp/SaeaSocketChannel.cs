@@ -354,11 +354,21 @@ namespace TurboHTTP.Transport.Tcp
         }
 
         private static void ResolveFromSaea(SocketAsyncEventArgs saea, SaeaCompletionSource source)
+            => ResolveFromSaea(saea.SocketError, saea.BytesTransferred, source, SocketErrorNormalizer.CurrentTable);
+
+        /// <summary>
+        /// Ends <paramref name="source"/> from a completed operation's error, read in <paramref name="table"/>:
+        /// some IL2CPP players report the raw errno (#1290), so an EINTR or ECANCELED still cancels.
+        /// </summary>
+        internal static void ResolveFromSaea(
+            SocketError reported, int bytesTransferred, SaeaCompletionSource source,
+            SocketErrorNormalizer.ErrnoTable table)
         {
-            switch (saea.SocketError)
+            var error = SocketErrorNormalizer.Normalize(reported, table);
+            switch (error)
             {
                 case SocketError.Success:
-                    source.TrySetResult(saea.BytesTransferred);
+                    source.TrySetResult(bytesTransferred);
                     break;
                 case SocketError.OperationAborted:
                 case SocketError.Interrupted:
@@ -366,7 +376,7 @@ namespace TurboHTTP.Transport.Tcp
                         "Socket I/O was cancelled (socket closed or operation aborted)."));
                     break;
                 default:
-                    source.TrySetException(new SocketException((int)saea.SocketError));
+                    source.TrySetException(new SocketException((int)error));
                     break;
             }
         }

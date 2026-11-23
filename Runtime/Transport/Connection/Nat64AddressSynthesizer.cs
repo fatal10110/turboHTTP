@@ -4,6 +4,7 @@ using System.Net;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Transport.Connection
 {
@@ -229,11 +230,16 @@ namespace TurboHTTP.Transport.Connection
 
         /// <summary>
         /// Connect errors that mean "no IPv4 path from this host" (an IPv6-only network) rather
-        /// than "the peer refused or did not answer".
+        /// than "the peer refused or did not answer". A raw errno (IL2CPP on Android and iOS reports
+        /// ENETUNREACH and EHOSTUNREACH unmapped, #1290) is normalized first.
         /// </summary>
-        internal static bool IsNoIpv4RouteError(SocketError error)
+        internal static bool IsNoIpv4RouteError(SocketError error) =>
+            IsNoIpv4RouteError(error, SocketErrorNormalizer.CurrentTable);
+
+        /// <summary><see cref="IsNoIpv4RouteError(SocketError)"/> with a raw errno read in <paramref name="table"/>.</summary>
+        internal static bool IsNoIpv4RouteError(SocketError error, SocketErrorNormalizer.ErrnoTable table)
         {
-            switch (error)
+            switch (SocketErrorNormalizer.Normalize(error, table))
             {
                 case SocketError.NetworkUnreachable:
                 case SocketError.HostUnreachable:

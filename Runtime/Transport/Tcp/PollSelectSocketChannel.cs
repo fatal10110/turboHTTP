@@ -395,7 +395,9 @@ namespace TurboHTTP.Transport.Tcp
             int received;
             try
             {
-                received = _socket.Receive(_recvBuffer, 0, count, SocketFlags.None, out var err);
+                received = _socket.Receive(_recvBuffer, 0, count, SocketFlags.None, out var rawErr);
+                // A raw errno (EAGAIN unmapped on an IL2CPP player, #1290) must still read as WouldBlock.
+                var err = SocketErrorNormalizer.Normalize(rawErr);
 
                 if (err == SocketError.WouldBlock)
                 {
@@ -519,7 +521,10 @@ namespace TurboHTTP.Transport.Tcp
             _sendSegment[0] = new ArraySegment<byte>(array, offset, count);
             try
             {
-                return _socket.Send(_sendSegment, SocketFlags.None, out err);
+                int sent = _socket.Send(_sendSegment, SocketFlags.None, out var rawErr);
+                // A raw errno (EAGAIN unmapped on an IL2CPP player, #1290) must still read as WouldBlock.
+                err = SocketErrorNormalizer.Normalize(rawErr);
+                return sent;
             }
             finally
             {
@@ -674,10 +679,10 @@ namespace TurboHTTP.Transport.Tcp
         /// </summary>
         private static Exception MapException(Exception ex, CancellationToken ct)
         {
+            SocketError code = ex is SocketException se ? SocketErrorNormalizer.Normalize(se) : SocketError.Success;
             bool aborted = ex is ObjectDisposedException ||
-                           (ex is SocketException se &&
-                            (se.SocketErrorCode == SocketError.OperationAborted ||
-                             se.SocketErrorCode == SocketError.Interrupted));
+                           code == SocketError.OperationAborted ||
+                           code == SocketError.Interrupted;
 
             if (ex is OperationCanceledException oce)
             {
