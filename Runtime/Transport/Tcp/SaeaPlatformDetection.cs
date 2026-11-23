@@ -126,10 +126,13 @@ namespace TurboHTTP.Transport.Tcp
         ///   <item>Selector platforms (kqueue/epoll), measured on Mono and IL2CPP: a shutdown ends a
         ///   pending receive with the descriptor still open (end of stream, or <c>Interrupted</c>,
         ///   #410), while IL2CPP's close leaves a stale selector job behind (#384). Shut down first.</item>
-        ///   <item>Windows, Mono (measured in the Windows Editor, #405): a shutdown did not end a
-        ///   pending receive, so a hold kept the abandoned read until its bound. Close first.</item>
-        ///   <item>Windows, IL2CPP: not measured yet (#843). Keeps the close-first order it has had
-        ///   since before #384 until a Windows IL2CPP player run records which order holds.</item>
+        ///   <item>Windows, Mono and IL2CPP (measured in the Windows Editor, #405, and in Windows x64
+        ///   Mono and IL2CPP players, #843): a local shutdown does not end a pending receive (only the
+        ///   peer's close does), so a hold would keep the abandoned read until its bound. A close
+        ///   ends the pending receive at once (<c>OperationAborted</c> for SAEA, an
+        ///   <c>ObjectDisposedException</c> for Begin/EndReceive), and a new socket that gets the
+        ///   closed handle value receives normally: no stale selector job is left. Close first.
+        ///   <c>SocketCloseOrderProbeTests</c> checks both facts against this decision.</item>
         ///   <item>Windows, .NET (non-Unity host): the runtime completes Socket I/O through I/O
         ///   completion ports, where a close aborts pending operations. Close first.</item>
         /// </list>
@@ -142,9 +145,9 @@ namespace TurboHTTP.Transport.Tcp
             switch (runtime)
             {
                 case SocketRuntimeKind.Mono:
-                    return true; // measured, #405
+                    return true; // measured: Windows Editor (#405) and Windows x64 Mono player (#843)
                 case SocketRuntimeKind.Il2Cpp:
-                    return true; // unmeasured, #843: unchanged until the Windows IL2CPP player run
+                    return true; // measured: Windows x64 IL2CPP player (#843)
                 default:
                     return true; // .NET on Windows: I/O completion ports
             }
@@ -152,11 +155,10 @@ namespace TurboHTTP.Transport.Tcp
 
         /// <summary>
         /// False where <see cref="CloseAbortsPendingIoFor"/> answers without a measurement on that
-        /// runtime (Windows IL2CPP, #843; an unknown operating system).
+        /// runtime: an unknown operating system. Windows IL2CPP was measured in #843.
         /// </summary>
         internal static bool IsCloseOrderMeasured(SocketOsFamily os, SocketRuntimeKind runtime) =>
-            os != SocketOsFamily.Unknown &&
-            !(os == SocketOsFamily.Windows && runtime == SocketRuntimeKind.Il2Cpp);
+            os != SocketOsFamily.Unknown;
 
         // ── Logging ───────────────────────────────────────────────────────────
 
