@@ -7,9 +7,9 @@ TurboHTTP is designed to run reliably across major Unity platforms, supporting b
 | Platform | Scripting Backend | Status | HTTP/2 | Notes | Validation |
 | :--- | :--- | :--- | :--- | :--- | :--- |
 | **Windows** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` | `SslStream` uses the runtime TLS stack (UnityTls) with a TLS 1.2 floor enforced by TurboHTTP; the negotiated version on desktop Unity 2021.3 is not recorded (needs-device-validation). See "Negotiated TLS versions" below. | Windows Mono player run done (#404); IL2CPP player rows pending (#1225) |
-| **macOS** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (SecTrust verifier not yet validated on a Mac, #33) | As Windows. | Needs a Mac (#33) |
+| **macOS** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (SecTrust verifier validated in the Editor and in Mono and IL2CPP players on Apple Silicon, #286) | As Windows. | Editor, Mono and IL2CPP players run on an M2 Mac (#286); x86_64 not run |
 | **Linux** | Mono / IL2CPP | ⚠️ Partly validated | Unavailable (BouncyCastle rejects every certificate on Linux) | Only a Mono standalone player under WSL2 (Ubuntu) was run, with `SslStream`; that Unity runtime crashed in its Boehm GC in 10 of 140 launches before any test ran (a runtime issue, #423). No IL2CPP Linux run, no native Ubuntu or other-distribution run. | Open: #436 |
-| **iOS** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | Requires AOT-safe configuration. | Open: #99 |
+| **iOS** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (validated on one device: HTTP/2 via ALPN, public chains) | Requires AOT-safe configuration. IPv6-only (NAT64) networks are **not verified** in v1.0 (see "IPv6 and NAT64" below). | Run on one iPhone (iOS 27, Stripping Low and High, network changes, suspend/resume; #99). NAT64: #1283 |
 | **Android** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | ARM64 only: ARMv7 (32-bit) is not supported in v1.0 (see "Android (IL2CPP)" below). Restrictions on cleartext apply. | Open: #99 |
 | **WebGL** | IL2CPP | ❌ Unsupported in v1.0 | n/a | Browsers provide no raw sockets. A WebGL player build fails at build time with an explanatory error instead of failing every request at runtime. Support is planned for a later release. | n/a |
 | **Consoles** | IL2CPP | Untested | Unknown | Not tested on any console. The socket implementation varies by platform SDK (see `ConnectionPoolOptions.SocketIoMode`). | None |
@@ -155,7 +155,9 @@ ATS does not apply to raw sockets, so `Info.plist` ATS keys do not affect TurboH
 `AllowCleartext = true` to opt in (see [Cleartext traffic](#cleartext-traffic)).
 
 #### IPv6 and NAT64
-App Store submission requires IPv6 support. TurboHTTP natively supports IPv6 via standard C# Sockets and resolves names with Happy Eyeballs (RFC 8305), so a hostname works on dual-stack and IPv6-only networks. On a NAT64/DNS64 network connect to hostnames, not IPv4 literals (`http://203.0.113.5/` has no synthesized IPv6 address). Behavior on a real NAT64 network is `needs-device-validation` (#99); it has not been verified from the Editor.
+App Store submission requires IPv6 support. TurboHTTP uses standard C# sockets with IPv6 and resolves names with Happy Eyeballs (RFC 8305), so on a DNS64/NAT64 network a hostname resolves to the synthesized IPv6 addresses. For an IPv4 literal (`http://203.0.113.5/`) DNS64 synthesizes nothing; when the IPv4 connect has no route, the transport discovers the NAT64 prefix (RFC 7050, `ipv4only.arpa`) and retries on the synthesized address. Still, connect to hostnames where you can.
+
+**Not verified in v1.0:** none of this has run on a real IPv6-only (DNS64/NAT64) network. The v1.0 device runs covered Wi-Fi, cellular, Airplane Mode and the switches between them, but not NAT64. The device row is #1283 (v1.1). Before an App Store submission, test your app on Apple's recommended IPv6-only network (macOS Internet Sharing, "Create NAT64 Network").
 
 ### Android (IL2CPP)
 

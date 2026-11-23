@@ -70,7 +70,9 @@ Allocation gates skip on 2021.3 iOS (#414), so no device allocation numbers.
 ## Not run
 - NAT64: `DeviceNetworkChangeTests.Nat64Network_DnsNameAndIpv4Literal_ConnectOnBothBackends` is written (it
   checks DNS64 through `ipv4only.arpa`, then requests a name and the IPv4 literal 1.1.1.1 on both backends),
-  but the NAT64 network could not be set up on the Mac, so it has not run. ATS beyond the cleartext tests.
+  but the NAT64 network could not be set up on the Mac (Internet Sharing needs a wired upstream), so it has not
+  run. Owner decision 2026-11-23: NAT64 moves to #1283 (v1.1); v1.0 documents it as not verified
+  (PlatformNotes "IPv6 and NAT64"). ATS beyond the cleartext tests.
 - The HTTP/2 row tests against a row server (#1210) and an iOS player smoke (`build-player.sh` has no iOS
   target).
 - The #114 short soak on iOS.
