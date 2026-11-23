@@ -46,6 +46,17 @@
 # Raised from 17 to 18 (#1259): 18 is a new test that asserts the refusing port helper holds its port; it runs
 # only on Windows, so it is not a test that stopped running.
 #
+# Player-StandaloneOSX 15, IL2CPP player (Stripping High) on an M2 Mac, macOS 26.7.1, main 86bf65f + #1279, 2026-11-23
+# (run-tests.sh --platform StandaloneOSX); the Mono player (Stripping Disabled) skipped items 1-8 only:
+#   1    FileDownloaderResumeSafetyTests.Restart200_PartLockedWhileTruncating_...  [env] Windows file locking
+#   2-3  Phase19AllocationGateTests (both)  [env] Editor allocation baselines / Tests/Benchmarks not in a player
+#   4    RefusingLoopbackPortTests.Port_CannotBeBoundByAnotherSocketWhileHeld  [env] Windows only (#1259)
+#   5    DesktopCertificateVerifierTests.Windows_TestAnchorsAreTheOnlyRoots  [env] Windows only
+#   6-7  SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName x2  [env] (#46)
+#   8    VerificationFailClosedTests.Linux_ProductionConfiguration_RejectsWithNoVerifier  [env] Linux only
+#   9-15 the 7 "fault is observed" tests (abandoned read/write/handshake, WaitAsync)  [env] IL2CPP reports no
+#        known unobserved faulted task, as on iOS and Android
+#
 # Player-StandaloneWindows64 5, Mono player on the Windows host (Unity 2021.3.45f2, Stripping Disabled, #1219):
 #   1-2  SslStreamServerNameTests.SslStream_ClientHello_IpLiteral_SendsNoServerName("127.0.0.1", "[::1]")
 #        [env] UnityTls sends an IP literal as server_name (#46)
@@ -95,6 +106,7 @@ EditMode 0
 PlayMode 3
 Player-Android 18
 Player-StandaloneWindows64 5
+Player-StandaloneOSX 15
 Player-iOS 23
 Player-iOS-2021.3 35
 
@@ -107,6 +119,7 @@ Player-iOS-2021.3 35
 #                        69ad7b4, 2026-11-22, Unity 2021.3.45f2, Mono)
 #   PlayMode 3625      periodic host-editor run after waves run w1123 (main 628c1b2, 2026-11-23)
 #   Player-Android 3625  API 23 and API 33 x86_64 emulators, Stripping High, main 628c1b2, 2026-11-23
+#   Player-StandaloneOSX 3654  macOS Mono and IL2CPP players, main 86bf65f + #1279, 2026-11-23, Unity 2021.3.45f2
 #   Player-StandaloneWindows64 3625  Win64 IL2CPP player (Stripping High), main 628c1b2, 2026-11-23, Unity
 #                        2021.3.45f2 (the Mono player's 3603 on 2026-11-16 predates the tests added since)
 #   Player-iOS-2021.3 3612  run-ios-player.sh (#99), main 0065546, iPhone 17 Pro simulator (iOS 26.4, x86_64
@@ -119,4 +132,5 @@ min-total EditMode 87
 min-total PlayMode 3625
 min-total Player-Android 3625
 min-total Player-StandaloneWindows64 3625
+min-total Player-StandaloneOSX 3654
 min-total Player-iOS-2021.3 3612

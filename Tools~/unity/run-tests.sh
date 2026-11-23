@@ -17,7 +17,7 @@
 # the standalone-windows cell. The player opens a window on the host's desktop: it is not headless. The gates use
 # the Player-StandaloneWindows64 entries of Tools~/unity/skip-baseline.txt.
 # --platform StandaloneOSX does the same with a macOS editor on a Mac (#286): results-StandaloneOSX-<backend>-<ts>.xml
-# (the standalone-macos cell); Player-StandaloneOSX has no baseline entry yet, so only filtered runs pass the gates.
+# (the standalone-macos cell) and the Player-StandaloneOSX baseline entries.
 #
 # WSL with a Windows editor: point UNITY_PATH at Unity.exe under /mnt/<drive>/... The package copy,
 # test project, results and log then live under %LOCALAPPDATA%\turbohttp (Unity cannot run a project

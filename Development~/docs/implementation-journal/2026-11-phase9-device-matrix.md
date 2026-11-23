@@ -54,6 +54,20 @@ Unity 2021.3.45f2 unless noted.
 - iOS ARM64 at Stripping Low and High: PASS (iOS-L, iOS-H). The only full-suite failure in both, #1251, was a test defect, since replaced by #1264.
 - Android ARM64: High PASS on the phone (And-H). Stripping Low has not run on the phone yet: OPEN (#1284).
 
+## Certification matrix (#105)
+`platform_matrix.py`, run on the full-suite results of 2026-11-23 (main 86bf65f + #1279):
+
+| Cell | Row | Result |
+| --- | --- | --- |
+| ios-il2cpp | iPhone 13 Pro Max, iOS 27.0.1, arm64, High | 3654 tests: 3616 passed, 1 failed, 32 skipped (baseline 35); certification suites and budgets pass |
+| standalone-macos | macOS IL2CPP player, arm64, High | 3654 tests: 3633 passed, 1 failed, 15 skipped (new `Player-StandaloneOSX` baseline) |
+| standalone-macos | macOS Mono player, arm64, Stripping Disabled | 3654 tests: 3640 passed, 1 failed, 8 skipped |
+
+- **Why the cells read "fail":** the one failure in each row is `RefusingLoopbackPortTests.Connect_IsRefused`, a test-helper defect on Darwin (#1286). Its fix, PR #1288, passes that test and the WebSocket proxy-failure test on all three targets. So apart from #1286, the iOS and macOS cells pass. A full rerun after #1288 merges would turn them green.
+- **Earlier full runs:** the 2026-11-22 iPhone rows (High and Low, main 0065546) failed only on #1251, a test later replaced by #1264.
+
 ## Failures and their issues
-Every FAIL above has an issue: #323 / #416 (arm64 allocation budgets, documented for GA). The slow HTTP/2 recovery
+Every FAIL above has an issue: #323 / #416 (arm64 allocation budgets, documented for GA) and #1286 (test helper,
+fixed by #1288). Runtime finding from the same runs: IL2CPP on Darwin reports raw errno values in
+`SocketException.SocketErrorCode` (#1287, v1.1, together with NAT64 #1283). The slow HTTP/2 recovery
 after a network change is a PASS with a known limitation, #717.
