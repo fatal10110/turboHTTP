@@ -134,6 +134,34 @@ namespace TurboHTTP.Core.Internal
             _totalWritten += count;
         }
 
+        /// <summary>
+        /// Returns the tail segment to the pool when nothing was written into it (a read into
+        /// <see cref="GetWriteMemory"/> that reported the end), so the buffer holds no empty segment.
+        /// </summary>
+        public void TrimEmptyTail()
+        {
+            ThrowIfDisposed();
+            if (_tail == null || _tail.Written != 0)
+                return;
+
+            var empty = _tail;
+            if (_head == empty)
+            {
+                _head = null;
+                _tail = null;
+            }
+            else
+            {
+                var previous = _head;
+                while (previous.Next != empty)
+                    previous = (PooledSegment)previous.Next;
+                previous.SetNext(null);
+                _tail = previous;
+            }
+
+            empty.ReturnToPool();
+        }
+
         // ── Read API ───────────────────────────────────────────────────────────
 
         /// <summary>

@@ -74,6 +74,38 @@ namespace TurboHTTP.Tests.Pipeline
             Assert.AreEqual(activeBefore, ByteArrayPool.GetDiagnostics().ActiveCount);
         }
 
+        // The read that reports the end may start a segment; the collector returns it before the response
+        // is handed out, so a live response holds exactly the segments its bytes need.
+        [TestCase(0, 0)]
+        [TestCase(SixteenKiB, 1)]
+        [TestCase(ThirtyTwoKiB, 2)]
+        public void UnknownLength_EndOnSegmentBoundary_HoldsNoEmptySegment(int size, int expectedSegments)
+        {
+            var source = new RecordingBodySource(Pattern(size), declaredLength: null);
+            var response = Collect(source, out var activeBefore);
+
+            using (response)
+            {
+                AssertBody(size, response);
+                var segments = 0;
+                // An empty ReadOnlySequence enumerates one empty memory; only a non-empty body has segments.
+                foreach (var segment in response.Body.IsEmpty ? default : response.Body)
+                {
+                    Assert.Greater(segment.Length, 0, "no empty segment in the body");
+                    segments++;
+                }
+
+                Assert.AreEqual(expectedSegments, segments, "segments in the body");
+                Assert.AreEqual(
+                    activeBefore + expectedSegments,
+                    ByteArrayPool.GetDiagnostics().ActiveCount,
+                    "pooled arrays held while the response is alive: " + Describe(source));
+            }
+
+            Assert.IsTrue(source.Disposed);
+            Assert.AreEqual(activeBefore, ByteArrayPool.GetDiagnostics().ActiveCount);
+        }
+
         // A source that delivers fewer or more bytes than it declared: the collector keeps reading until
         // the source reports the end, as it did with a fixed read buffer.
         [TestCase(ThirtyTwoKiB, 20000)]

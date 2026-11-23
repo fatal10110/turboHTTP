@@ -217,6 +217,19 @@ namespace TurboHTTP.Core
                         ThrowIfOverBufferedLimit(totalRead);
                         bufferedBody.Advance(read);
                     }
+
+                    // The read that reported the end may have started a segment (an empty body, or an
+                    // unknown length that ended on a segment boundary): return it now instead of holding
+                    // it for the response's lifetime.
+                    if (totalRead == 0)
+                    {
+                        bufferedBody.Dispose();
+                        bufferedBody = null;
+                    }
+                    else
+                    {
+                        bufferedBody.TrimEmptyTail();
+                    }
                 }
 
                 if (!detached)
