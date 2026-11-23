@@ -2,7 +2,7 @@
   "schema": 1,
   "note": "TurboHTTP streaming benchmark (Tools~/bench, Phase 22a.6). Loopback Kestrel peer in a separate process; alloc_bytes_per_request is process-wide and includes the caller\u0027s own async state machine.",
   "recorded_utc": "2026-11-23T09:11:32Z",
-  "commit": "dfbfab7",
+  "commit": "b99977d",
   "machine": {
     "os": "Ubuntu 24.04.5 LTS",
     "arch": "X64",
