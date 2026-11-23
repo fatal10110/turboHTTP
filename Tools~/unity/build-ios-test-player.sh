@@ -28,7 +28,7 @@ set -euo pipefail
 repo="$(cd "$(dirname "$0")/../.." && pwd)"
 # shellcheck source=Tools~/unity/wsl-interop.sh
 . "$repo/Tools~/unity/wsl-interop.sh"
-out_dir="${UNITY_IOS_HANDOFF_OUT:-}"; stripping=High; filter=""; category=""; integration=0
+out_dir="${UNITY_IOS_HANDOFF_OUT:-}"; stripping=High; filter=""; category=""; integration=0; team="${TURBOHTTP_IOS_TEAM:-}"
 while [ $# -gt 0 ]; do
   case "$1" in
     --out) out_dir="$2"; shift 2 ;;
@@ -36,7 +36,8 @@ while [ $# -gt 0 ]; do
     --filter) filter="$2"; shift 2 ;;
     --category) category="$2"; shift 2 ;;
     --integration) integration=1; shift ;;
-    *) echo "usage: $0 [--out dir] [--stripping Low|High] [--filter regex] [--category name] [--integration]" >&2; exit 2 ;;
+    --team) team="$2"; shift 2 ;;
+    *) echo "usage: $0 [--out dir] [--stripping Low|High] [--filter regex] [--category name] [--integration] [--team <Apple team id>]" >&2; exit 2 ;;
   esac
 done
 case "$stripping" in Low|High) ;; *) echo "build-ios-test-player: --stripping Low|High" >&2; exit 2 ;; esac
@@ -51,7 +52,13 @@ if [ -z "$unity" ] || [ ! -x "$unity" ]; then
     "simulator Apple Silicon needs; $(cat "$repo/Tools~/ci/unity-version") builds an x86_64-only simulator player)"
   exit 3
 fi
-if [ ! -d "$(dirname "$unity")/Data/PlaybackEngines/iOSSupport" ]; then
+ios_support=0
+# Windows: <Editor>/Data/PlaybackEngines; macOS Hub: <version>/PlaybackEngines next to Unity.app
+# (<version>/Unity.app/Contents/MacOS/Unity), or Unity.app/Contents/PlaybackEngines.
+for d in "$(dirname "$unity")/Data/PlaybackEngines" "$(dirname "$unity")/../PlaybackEngines" "$(dirname "$unity")/../../../PlaybackEngines"; do
+  [ -d "$d/iOSSupport" ] && ios_support=1
+done
+if [ "$ios_support" != 1 ]; then
   echo "UNITY_UNAVAILABLE: iOS Build Support not installed for $unity"
   exit 3
 fi
@@ -161,8 +168,18 @@ public class TurboHttpIosTestBuild : ITestPlayerBuildModifier, IPostBuildCleanup
             ? ManagedStrippingLevel.Low : ManagedStrippingLevel.High;
         PlayerSettings.SetScriptingBackend(NamedBuildTarget.iOS, ScriptingImplementation.IL2CPP);
         PlayerSettings.SetManagedStrippingLevel(NamedBuildTarget.iOS, stripping);
-        PlayerSettings.SetApplicationIdentifier(NamedBuildTarget.iOS, "com.turbohttp.devicetests");
-        PlayerSettings.iOS.sdkVersion = iOSSdkVersion.SimulatorSDK;
+        // TURBOHTTP_IOS_TEAM (--team) set: a signed DEVICE build for that team (automatic signing; the bundle
+        // id carries the team so a personal team can provision it). Unset: the simulator build.
+        var team = Environment.GetEnvironmentVariable("TURBOHTTP_IOS_TEAM");
+        var device = !string.IsNullOrEmpty(team);
+        PlayerSettings.SetApplicationIdentifier(NamedBuildTarget.iOS,
+            device ? "com.turbohttp.devicetests." + team.ToLowerInvariant() : "com.turbohttp.devicetests");
+        PlayerSettings.iOS.sdkVersion = device ? iOSSdkVersion.DeviceSDK : iOSSdkVersion.SimulatorSDK;
+        if (device)
+        {
+            PlayerSettings.iOS.appleDeveloperTeamID = team;
+            PlayerSettings.iOS.appleEnableAutomaticSigning = true;
+        }
         PlayerSettings.iOS.targetOSVersionString = "15.0";
         var simArch = "x86_64";
 #if UNITY_6000_0_OR_NEWER
@@ -174,7 +191,7 @@ public class TurboHttpIosTestBuild : ITestPlayerBuildModifier, IPostBuildCleanup
         options.locationPathName = Environment.GetEnvironmentVariable("TURBOHTTP_IOS_OUT");
         s_Built = true;
         s_PostProcessed = false;
-        Debug.Log("TURBOHTTP_DEVICE_BUILD target=iOS sdk=Simulator arch=" + simArch + " unity=" + Application.unityVersion
+        Debug.Log("TURBOHTTP_DEVICE_BUILD target=iOS sdk=" + (device ? "Device arch=ARM64" : "Simulator arch=" + simArch) + " unity=" + Application.unityVersion
             + " stripping=" + stripping + " out=" + options.locationPathName);
         return options;
     }
@@ -255,6 +272,8 @@ public class TurboHttpDeviceResults : ITestRunCallback
             _clock.Restart();
         }
         if (File.Exists(_path)) File.Delete(_path);
+        // A device that auto-locks mid-run backgrounds the player, and iOS then kills it (signal 9).
+        Screen.sleepTimeout = SleepTimeout.NeverSleep;
         Log("TURBOHTTP_DEVICE_RUN started tests=" + testsToRun.TestCaseCount + " unity=" + Application.unityVersion);
         s_Watchdog = new Timer(_ => CheckHang(), null, 15000, 15000);
     }
@@ -390,11 +409,12 @@ rm -rf "$handoff/READY" "$handoff/DONE" "$handoff/out" "$stage"
 mkdir -p "$(dirname "$stage")"
 
 ts="$(date +%Y%m%d-%H%M%S)"
-log="$cache/unity-iOS-sim-$stripping-$ts.log"
+sdk_label=sim; [ -n "$team" ] && sdk_label=device
+log="$cache/unity-iOS-$sdk_label-$stripping-$ts.log"
 stage_path="$(topath "$stage")"
-export TURBOHTTP_DEVICE_STRIPPING="$stripping" TURBOHTTP_IOS_OUT="$stage_path"
+export TURBOHTTP_DEVICE_STRIPPING="$stripping" TURBOHTTP_IOS_OUT="$stage_path" TURBOHTTP_IOS_TEAM="$team"
 # A Windows Unity.exe started from WSL sees only the variables listed in WSLENV.
-export WSLENV="${WSLENV:+$WSLENV:}TURBOHTTP_DEVICE_STRIPPING:TURBOHTTP_IOS_OUT"
+export WSLENV="${WSLENV:+$WSLENV:}TURBOHTTP_DEVICE_STRIPPING:TURBOHTTP_IOS_OUT:TURBOHTTP_IOS_TEAM"
 args=(-batchmode -projectPath "$(topath "$proj")" -runTests -testPlatform iOS -buildTarget iOS
       -logFile "$(topath "$log")")
 [ -n "$filter" ] && args+=(-testFilter "$filter")
@@ -423,4 +443,6 @@ for _ in 1 2 3 4 5; do
 done
 [ "$copied" = 1 ] || { echo "build-ios-test-player: cannot copy the Xcode project to $out_dir; READY not created" >&2; exit 2; }
 touch "$handoff/READY"
+# The staged copy is a second full Xcode project (about 1 GB); the next build writes it again.
+rm -rf "$stage"
 echo "build-ios-test-player: build succeeded; Xcode project in $out_dir; READY created; log $log"

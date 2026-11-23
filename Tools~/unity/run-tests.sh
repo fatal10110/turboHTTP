@@ -5,6 +5,7 @@
 #   UNITY_PATH=<Unity 2021.3 editor binary> \
 #     Tools~/unity/run-tests.sh --platform EditMode|PlayMode [--filter <regex>] [--category <name>] [--integration] [--with-unitask[=local]]
 #     Tools~/unity/run-tests.sh --platform StandaloneWindows64 --backend Mono|IL2CPP [--filter <regex>] [--category <name>]
+#     Tools~/unity/run-tests.sh --platform StandaloneOSX --backend Mono|IL2CPP [--filter <regex>] [--category <name>]
 #
 # --platform StandaloneWindows64 (#404) runs the PlayMode suite in a Windows x86_64 standalone test player: the
 # Unity Test Runner builds the player (-runTests -testPlatform StandaloneWindows64), starts it on the editor's host
@@ -15,6 +16,8 @@
 # host project, and writes results-StandaloneWindows64-<backend>-<ts>.xml, the name platform_matrix.py reads for
 # the standalone-windows cell. The player opens a window on the host's desktop: it is not headless. The gates use
 # the Player-StandaloneWindows64 entries of Tools~/unity/skip-baseline.txt.
+# --platform StandaloneOSX does the same with a macOS editor on a Mac (#286): results-StandaloneOSX-<backend>-<ts>.xml
+# (the standalone-macos cell) and the Player-StandaloneOSX baseline entries.
 #
 # WSL with a Windows editor: point UNITY_PATH at Unity.exe under /mnt/<drive>/... The package copy,
 # test project, results and log then live under %LOCALAPPDATA%\turbohttp (Unity cannot run a project
@@ -66,17 +69,19 @@ while [ $# -gt 0 ]; do
     --with-unitask) unitask=git; shift ;;
     --with-unitask=local) unitask=local; shift ;;
     --backend) backend="$2"; shift 2 ;;
-    *) echo "usage: $0 --platform EditMode|PlayMode|StandaloneWindows64 [--backend Mono|IL2CPP] [--filter regex] [--category name] [--integration] [--with-unitask[=local]]" >&2; exit 2 ;;
+    *) echo "usage: $0 --platform EditMode|PlayMode|StandaloneWindows64|StandaloneOSX [--backend Mono|IL2CPP] [--filter regex] [--category name] [--integration] [--with-unitask[=local]]" >&2; exit 2 ;;
   esac
 done
 case "$platform" in
   EditMode|PlayMode)
-    [ -z "$backend" ] || { echo "run-tests: --backend applies to --platform StandaloneWindows64" >&2; exit 2; } ;;
-  StandaloneWindows64)
-    case "$backend" in Mono|IL2CPP) ;; *) echo "run-tests: --platform StandaloneWindows64 needs --backend Mono|IL2CPP" >&2; exit 2 ;; esac
+    [ -z "$backend" ] || { echo "run-tests: --backend applies to the standalone platforms" >&2; exit 2; } ;;
+  StandaloneWindows64|StandaloneOSX)
+    case "$backend" in Mono|IL2CPP) ;; *) echo "run-tests: --platform $platform needs --backend Mono|IL2CPP" >&2; exit 2 ;; esac
     [ "$unitask" = 0 ] || { echo "run-tests: --with-unitask applies to the editor platforms" >&2; exit 2; } ;;
-  *) echo "run-tests: --platform EditMode|PlayMode|StandaloneWindows64 required" >&2; exit 2 ;;
+  *) echo "run-tests: --platform EditMode|PlayMode|StandaloneWindows64|StandaloneOSX required" >&2; exit 2 ;;
 esac
+standalone=0
+case "$platform" in Standalone*) standalone=1 ;; esac
 if [ "$category" = ExternalNetwork ]; then integration=1; fi
 
 unity="${UNITY_PATH:-}"
@@ -96,6 +101,11 @@ if [ "$platform" = StandaloneWindows64 ] && [ "$win" != 1 ]; then
   echo "run-tests: --platform StandaloneWindows64 needs a Windows editor (UNITY_PATH=<...>/Unity.exe, driven from WSL)" >&2
   exit 2
 fi
+# A macOS test player is built and started by a Mac editor on its own host (#286, #99).
+if [ "$platform" = StandaloneOSX ] && { [ "$win" = 1 ] || [ "$(uname -s)" != Darwin ]; }; then
+  echo "run-tests: --platform StandaloneOSX needs a macOS editor (UNITY_PATH=<...>/Unity.app/Contents/MacOS/Unity)" >&2
+  exit 2
+fi
 
 if [ "$win" = 1 ]; then
   # A failed lookup is never exit 1 ("test failures"): exit 5 for an interop outage, else 2 (wsl-interop.sh).
@@ -105,7 +115,7 @@ else
   cache="${XDG_CACHE_HOME:-$HOME/.cache}/turbohttp"
 fi
 proj="${UNITY_TEST_PROJECT:-$cache/testproj}"
-if [ "$platform" = StandaloneWindows64 ]; then proj="${UNITY_STANDALONE_TEST_PROJECT:-$cache/standalone-testproj}"; fi
+if [ "$standalone" = 1 ]; then proj="${UNITY_STANDALONE_TEST_PROJECT:-$cache/standalone-testproj}"; fi
 pkg="${UNITY_PACKAGE_COPY:-$cache/package}"
 mkdir -p "$cache"
 
@@ -172,13 +182,13 @@ if new != text:
     open(path, "w", encoding="utf-8").write(new)
 PY
 
-# The Win64 test player's scripting backend and stripping level, set by the Test Runner's build hook (#404). Only
+# The standalone test player's scripting backend and stripping level, set by the Test Runner's build hook (#404). Only
 # the standalone project gets the hook; the backend reaches it as -turbohttpBackend on the editor command line.
-if [ "$platform" = StandaloneWindows64 ]; then
+if [ "$standalone" = 1 ]; then
   mkdir -p "$proj/Assets/Editor"
   cat > "$proj/Assets/Editor/TurboHttpStandaloneTestBuild.cs" <<'CS'
-// Written by Tools~/unity/run-tests.sh --platform StandaloneWindows64 (#404): the scripting backend and managed
-// stripping level of the Windows test player the Unity Test Runner builds, starts and reads over the player connection.
+// Written by Tools~/unity/run-tests.sh --platform StandaloneWindows64|StandaloneOSX (#404): the scripting backend and managed
+// stripping level of the standalone test player the Unity Test Runner builds, starts and reads over the player connection.
 using System;
 using UnityEditor;
 using UnityEditor.Build;
@@ -208,12 +218,12 @@ CS
 fi
 
 ts="$(date +%Y%m%d-%H%M%S)"
-# A standalone player's result name carries its backend: results-StandaloneWindows64-<backend>-<ts>.xml (platform_matrix.py).
+# A standalone player's result name carries its backend: results-<StandaloneWindows64|StandaloneOSX>-<backend>-<ts>.xml (platform_matrix.py).
 run_name="$platform${backend:+-$backend}"
 xml="$cache/results-$run_name-$ts.xml"; log="$cache/unity-$run_name-$ts.log"
 args=(-batchmode -projectPath "$(topath "$proj")" -runTests -testPlatform "$platform"
       -testResults "$(topath "$xml")" -logFile "$(topath "$log")")
-if [ "$platform" = StandaloneWindows64 ]; then args+=(-buildTarget StandaloneWindows64 -turbohttpBackend "$backend"); fi
+if [ "$standalone" = 1 ]; then args+=(-buildTarget "$platform" -turbohttpBackend "$backend"); fi
 # Editor-window tests need graphics in EditMode.
 [ "$platform" = PlayMode ] && args+=(-nographics)
 [ -n "$filter" ] && args+=(-testFilter "$filter")
@@ -236,7 +246,7 @@ if [ ! -f "$xml" ]; then
   echo "run-tests: no results (Unity exit $code); compile errors? see $log"
   grep -E "error CS[0-9]+" "$log" | head -20 || true
   # A test player that did not build is not a compile error: say why (an IL2CPP player needs the C++ toolchain).
-  if [ "$platform" = StandaloneWindows64 ]; then
+  if [ "$standalone" = 1 ]; then
     grep -m3 -E "Could not set up a toolchain|Build Finished, Result: Failure|BuildFailedException" "$log" || true
   fi
   exit 2
@@ -249,7 +259,7 @@ if [ -n "$filter" ] || [ -n "$category" ]; then is_filtered=1; fi
 set +e
 # A standalone player skips other platform-scoped [env] tests than the host editor: its own key (#341).
 baseline_key="$platform"
-if [ "$platform" = StandaloneWindows64 ]; then baseline_key=Player-StandaloneWindows64; fi
+if [ "$standalone" = 1 ]; then baseline_key="Player-$platform"; fi
 python3 "$repo/Tools~/unity/summarize_results.py" "$xml" "$baseline_key" "$is_filtered" "$repo/Tools~/unity/skip-baseline.txt"
 gate=$?
 # --with-unitask is the UniTask adapter gate: a run in which none of those tests ran proves nothing.

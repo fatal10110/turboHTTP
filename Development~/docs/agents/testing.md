@@ -302,8 +302,24 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    with iOS Build Support there (the script sets the ARM64 simulator architecture) and record the editor
    version with the results, since it is not the 2021.3 baseline. A simulator run does not replace the
    device rows (ATS, NAT64, ALPN, suspension stay `needs-device-validation`).
+   On a Mac the editor and the run are on one host: `UNITY_PATH=<2021.3>/Unity.app/Contents/MacOS/Unity
+   build-ios-test-player.sh --out <handoff>/xcode`, then `'./Tools~/unity/run-ios-player.sh' <handoff>/xcode
+   [--full] [--launches <n>]` builds it with `xcodebuild`, installs it on the simulator (default "iPhone 17 Pro"),
+   runs it until the player quits, pulls `Documents/results.xml` to `<cache>/results-iOS-sim-<ts>.xml` and
+   applies the `Player-iOS-2021.3`/`Player-iOS` gates (`--full` for an unfiltered build). A physical device:
+   build with `--team <Apple team id>` (a signed device build; the bundle id carries the team so a free
+   personal team can provision it), then `run-ios-player.sh <handoff>/xcode --device <udid> --team <id>`
+   (`xcrun devicectl list devices`). `--suspend-cycles` drives `DeviceSuspendResumeTests` (#1132): it
+   backgrounds the app (Settings) and brings it back after the player logs `TURBOHTTP_SUSPEND_READY`.
+   Network rows (#99): build with `--integration --filter 'DeviceNetworkChangeTests.SameClients'` and run on a
+   phone with cellular data. The instruction for each step is shown on the screen (Wi-Fi off, Airplane Mode on,
+   Airplane off + Wi-Fi on), and each step starts when the route changes. With `--filter
+   'DeviceNetworkChangeTests.Nat64'` on a DNS64/NAT64 Wi-Fi network (macOS Internet Sharing, Option-click,
+   "Create NAT64 Network"), the run checks a name and an IPv4 literal on both backends.
+   The iOS 26.4 simulator keeps a backgrounded player's process running (only the player loop stops), so a
+   suspension is only real on a device: `DeviceSuspendResumeTests` fails on the simulator by design.
 
-   **iOS suspend/resume row (#1132), by hand.** `build-player.sh` has no iOS target and the test player
+   **iOS suspend/resume row (#1132), by hand** (the automated device row is `--suspend-cycles` above). `build-player.sh` has no iOS target and the test player
    does not background itself, so the `ws-suspend-resume` row (item 4) runs from the player smoke built in
    the Mac's editor (2021.3 with iOS Build Support; Unity 6 on Apple Silicon, as above):
    1. Copy `Tools~/unity/player-smoke/` into `Assets/TurboHttpSmoke/` of a throwaway project that
@@ -343,6 +359,8 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    test's NUnit output: `TURBOHTTP_METRIC name=<id> value=<n> budget=<n> unit=<u> profile=<p> result=pass|fail`.
    After the runs, collect the result XMLs from the runners' cache folder into the matrix:
    `python3 'Tools~/unity/platform_matrix.py' <cache>/results-PlayMode-<ts>.xml <cache>/results-Android-High-x86_64-api33-<serial>-<ts>.xml`.
+   `run-tests.sh --platform StandaloneOSX --backend Mono|IL2CPP` does the same with a Mac editor
+   (`results-StandaloneOSX-<backend>-<ts>.xml`, the `standalone-macos` cell).
    `run-tests.sh --platform StandaloneWindows64 --backend Mono|IL2CPP` (#404) writes
    `results-StandaloneWindows64-<backend>-<ts>.xml`, which fills `standalone-windows`; a Linux player's
    `results.xml` (item 7) takes `--set target=StandaloneLinux64 --set backend=Mono`.

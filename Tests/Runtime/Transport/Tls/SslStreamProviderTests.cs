@@ -47,14 +47,19 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Category("Integration")]
         [Category("ExternalNetwork")]
         public void WrapAsync_ValidServer_Succeeds()        {
+            string version = null;
             Task.Run(async () =>
             {
                 var result = await WrapAsync("www.google.com", "www.google.com", new[] { "h2", "http/1.1" }, CancellationToken.None);
 
                 Assert.IsNotNull(result.SecureStream);
                 Assert.That(result.TlsVersion, Is.EqualTo("1.2").Or.EqualTo("1.3"));
+                version = result.TlsVersion;
                 Assert.AreEqual("SslStream", result.ProviderName);
             }).GetAwaiter().GetResult();
+
+            // #607: the negotiated version per backend and runtime, for PlatformNotes.
+            TestContext.WriteLine("TLS SslStream host=www.google.com version=" + version);
         }
 
         [Test]

@@ -6,10 +6,10 @@ TurboHTTP is designed to run reliably across major Unity platforms, supporting b
 
 | Platform | Scripting Backend | Status | HTTP/2 | Notes | Validation |
 | :--- | :--- | :--- | :--- | :--- | :--- |
-| **Windows** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` | `SslStream` uses the runtime TLS stack (UnityTls) with a TLS 1.2 floor enforced by TurboHTTP; the negotiated version on desktop Unity 2021.3 is not recorded (needs-device-validation). See "Negotiated TLS versions" below. | Windows Mono player run done (#404); IL2CPP player rows pending (#1225) |
-| **macOS** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (SecTrust verifier not yet validated on a Mac, #33) | As Windows. | Needs a Mac (#33) |
+| **Windows** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` | `SslStream` uses the runtime TLS stack (UnityTls) with a TLS 1.2 floor enforced by TurboHTTP; it negotiated TLS 1.2 where recorded (macOS, Android), and Windows is not recorded yet. See "Negotiated TLS versions" below. | Windows Mono player run done (#404); IL2CPP player rows pending (#1225) |
+| **macOS** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (SecTrust verifier validated in the Editor and in Mono and IL2CPP players on Apple Silicon, #286) | As Windows. | Editor, Mono and IL2CPP players run on an M2 Mac (#286); x86_64 not run |
 | **Linux** | Mono / IL2CPP | ⚠️ Partly validated | Unavailable (BouncyCastle rejects every certificate on Linux) | Only a Mono standalone player under WSL2 (Ubuntu) was run, with `SslStream`; that Unity runtime crashed in its Boehm GC in 10 of 140 launches before any test ran (a runtime issue, #423). No IL2CPP Linux run, no native Ubuntu or other-distribution run. | Open: #436 |
-| **iOS** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | Requires AOT-safe configuration. | Open: #99 |
+| **iOS** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (validated on one device: HTTP/2 via ALPN, public chains) | Requires AOT-safe configuration. IPv6-only (NAT64) networks are **not verified** in v1.0 (see "IPv6 and NAT64" below). | Run on one iPhone (iOS 27, Stripping Low and High, network changes, suspend/resume; #99). NAT64: #1283 |
 | **Android** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | ARM64 only: ARMv7 (32-bit) is not supported in v1.0 (see "Android (IL2CPP)" below). Restrictions on cleartext apply. | Open: #99 |
 | **WebGL** | IL2CPP | ❌ Unsupported in v1.0 | n/a | Browsers provide no raw sockets. A WebGL player build fails at build time with an explanatory error instead of failing every request at runtime. Support is planned for a later release. | n/a |
 | **Consoles** | IL2CPP | Untested | Unknown | Not tested on any console. The socket implementation varies by platform SDK (see `ConnectionPoolOptions.SocketIoMode`). | None |
@@ -54,12 +54,16 @@ A POST is never replayed and keeps waiting until the request timeout. `Timeout.I
 
 ## Negotiated TLS versions
 
-Recorded on the Android API 23 emulator against www.google.com (run w1108): `SslStream` (UnityTls, with the TLS 1.2 floor enforced by TurboHTTP) negotiated TLS 1.2, and the BouncyCastle backend negotiated TLS 1.3. The desktop 2021.3 `SslStream` version is not recorded (needs-device-validation), and no TLS 1.3 negotiation by `SslStream` on desktop is claimed.
+Recorded against www.google.com on Unity 2021.3.45f2:
+- Android API 23 emulator (run w1108);
+- macOS arm64, 2026-11-23 (#607): the Editor (Mono), a Mono standalone player and an IL2CPP standalone player. The provider tests log `TLS <backend> host=... version=...`.
 
-| Backend | Android API 23 emulator | Desktop 2021.3 |
-| :--- | :--- | :--- |
-| `SslStream` | TLS 1.2 (recorded) | not recorded |
-| BouncyCastle | TLS 1.3 (recorded) | not recorded |
+`SslStream` (UnityTls, with the TLS 1.2 floor that TurboHTTP enforces) negotiated TLS 1.2 everywhere it was recorded, even though the server offers TLS 1.3. The BouncyCastle backend negotiated TLS 1.3. No TLS 1.3 negotiation by `SslStream` is claimed on any Unity 2021.3 runtime.
+
+| Backend | Android API 23 emulator | macOS (Editor, Mono and IL2CPP players) | Windows, Linux, iOS, Android devices |
+| :--- | :--- | :--- | :--- |
+| `SslStream` | TLS 1.2 (recorded) | TLS 1.2 (recorded) | not recorded |
+| BouncyCastle | TLS 1.3 (recorded) | TLS 1.3 (recorded) | not recorded |
 
 ## HTTP/2 needs the BouncyCastle backend
 
@@ -155,7 +159,9 @@ ATS does not apply to raw sockets, so `Info.plist` ATS keys do not affect TurboH
 `AllowCleartext = true` to opt in (see [Cleartext traffic](#cleartext-traffic)).
 
 #### IPv6 and NAT64
-App Store submission requires IPv6 support. TurboHTTP natively supports IPv6 via standard C# Sockets and resolves names with Happy Eyeballs (RFC 8305), so a hostname works on dual-stack and IPv6-only networks. On a NAT64/DNS64 network connect to hostnames, not IPv4 literals (`http://203.0.113.5/` has no synthesized IPv6 address). Behavior on a real NAT64 network is `needs-device-validation` (#99); it has not been verified from the Editor.
+App Store submission requires IPv6 support. TurboHTTP uses standard C# sockets with IPv6 and resolves names with Happy Eyeballs (RFC 8305), so on a DNS64/NAT64 network a hostname resolves to the synthesized IPv6 addresses. On a NAT64/DNS64 network connect to hostnames, not IPv4 literals: DNS64 synthesizes nothing for `http://203.0.113.5/`. The transport has an RFC 7050 fallback for literals (it discovers the NAT64 prefix through `ipv4only.arpa` and retries on the synthesized address), but on iOS and macOS IL2CPP players it does not trigger: there the connect error arrives as a raw errno value that the fallback does not recognize (#1287, v1.1).
+
+**Not verified in v1.0:** none of this has run on a real IPv6-only (DNS64/NAT64) network. The v1.0 device runs covered Wi-Fi, cellular, Airplane Mode and the switches between them, but not NAT64. The device row is #1283 (v1.1). Before an App Store submission, test your app on Apple's recommended IPv6-only network (macOS Internet Sharing, "Create NAT64 Network").
 
 ### Android (IL2CPP)
 
