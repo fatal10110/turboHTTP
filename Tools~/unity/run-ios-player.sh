@@ -38,6 +38,7 @@ while [ $# -gt 0 ]; do
     *) xcode="$1"; shift ;;
   esac
 done
+case "$timeout_s" in ''|*[!0-9]*|0) echo "run-ios-player: --timeout needs a number of seconds >= 1" >&2; exit 2 ;; esac
 case "$launches" in ''|*[!0-9]*|0) echo "run-ios-player: --launches needs a number >= 1" >&2; exit 2 ;; esac
 [ -d "$xcode/Unity-iPhone.xcodeproj" ] || { echo "run-ios-player: no Unity-iPhone.xcodeproj in '$xcode'" >&2; exit 2; }
 if [ -n "$device" ] && [ -z "$team" ]; then echo "run-ios-player: --device needs --team (the build's signing team)" >&2; exit 2; fi
@@ -121,6 +122,10 @@ drive_suspend() {
   done
 }
 
+# Stops the suspend driver once the launch ends: a later "bring the player back" would relaunch a player
+# that iOS killed, outside the launch bound, and its results.xml would be pulled as this launch's.
+stop_driver() { if [ -n "$driver" ]; then kill "$driver" 2>/dev/null || true; wait "$driver" 2>/dev/null || true; driver=""; fi; }
+
 status=0
 for i in $(seq 1 "$launches"); do
   lts="$(date +%Y%m%d-%H%M%S)"
@@ -132,11 +137,13 @@ for i in $(seq 1 "$launches"); do
     data="$(xcrun simctl get_app_container "$udid" "$bundle" data)"
     rm -f "$data/Documents/results.xml"
     bounded xcrun simctl launch --console-pty --terminate-running-process "$udid" "$bundle" >"$console" 2>&1 || rc=$?
+    stop_driver
     [ "$rc" = 124 ] && xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true
     cp "$data/Documents/results.xml" "$out" 2>/dev/null || true
   else
     started=$SECONDS
     bounded xcrun devicectl device process launch --console --terminate-existing --device "$device" "$bundle" >"$console" 2>&1 || rc=$?
+    stop_driver
     # The console link can drop while the player keeps running (a network change, Airplane Mode): keep pulling
     # until the run's results are complete or the launch bound is used up.
     while :; do
@@ -147,7 +154,6 @@ for i in $(seq 1 "$launches"); do
       sleep 10
     done
   fi
-  if [ -n "$driver" ]; then kill "$driver" 2>/dev/null || true; wait "$driver" 2>/dev/null || true; fi
   [ "$rc" = 124 ] && echo "run-ios-player: launch $i did not quit within ${timeout_s}s; terminated"
   grep -E 'TURBOHTTP_DEVICE_(HANG|FAIL) |TURBOHTTP_SUSPEND_(RESUMED|RESULT)' "$console" | head -20 || true
   # The player deletes results.xml when its run starts (RunStarted): a launch that never started a run would

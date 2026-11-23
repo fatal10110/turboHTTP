@@ -12,10 +12,10 @@ Unity 2021.3.45f2 unless noted.
 | iOS-L | iOS arm64 | same | same | IL2CPP | Low | same |
 | iOS-sim | iOS simulator x86_64 (Rosetta) | iPhone 17 Pro sim | iOS 26.4 | IL2CPP | High | same; earlier 2021.3 and Unity 6 sim rows on #99 |
 | And-H | Android arm64 | OnePlus 7 (GM1903) | Android 12 / API 31 | IL2CPP | High | `2026-11-android-device-run.md`, #99 comments 2026-11-08/09 |
-| And-emu | Android x86_64 emulator | API 23, API 33 | | IL2CPP | High | `2026-11-android-emulator-matrix.md`, #99 comments |
+| And-emu | Android x86_64 emulator | AVD `default;x86_64` images on a Ryzen 7 5800X host | Android 6.0 / API 23, Android 13 / API 33 | IL2CPP | High | `2026-11-android-emulator-matrix.md`, #99 comments |
 | mac | macOS arm64 standalone + Editor | Apple M2 | macOS 26.7.1 | Mono, IL2CPP | Disabled (Mono), High (IL2CPP; Mono High in #450) | `2026-11-macos-sectrust-validation.md`, `2026-11-ios-device-run.md` |
-| win | Windows x86_64 standalone | | | Mono (IL2CPP: #1225) | Disabled | `2026-11-host-run-win64-standalone.md` |
-| linux | Linux x86_64 standalone (WSL2) | | | Mono | Disabled | #411, #436 |
+| win | Windows x86_64 standalone | Windows host editor driven from WSL2 | Windows version not recorded in the run record | Mono (IL2CPP: #1225) | Disabled | `2026-11-host-run-win64-standalone.md` |
+| linux | Linux x86_64 standalone (WSL2) | WSL2 on the Windows host | WSL2 distribution not recorded in #411/#436 | Mono | Disabled | #411, #436 |
 
 ## Scenarios
 
@@ -30,8 +30,9 @@ Unity 2021.3.45f2 unless noted.
 | iOS ATS / Android cleartext and network security config | PASS for the cleartext policy (`CleartextTrafficPolicyTests` 17/17, `RawSocketTransportCleartextTests`, `WebSocketCleartextPolicyTests`). ATS itself does not apply to raw sockets (PlatformNotes). | PASS (`AndroidCleartextPolicyRootTests`, NetworkSecurityPolicy JNI) | N/A |
 | IPv6-only network (NAT64) | OPEN: not verified in v1.0, owner decision 2026-11-23; #1283 (v1.1), test ready | OPEN: #1283 | N/A (Editor cannot prove it) |
 | Network switch Wi-Fi to LTE, airplane mode | PASS: `DeviceNetworkChangeTests` (iOS-H). HTTP/2 recovery is slow (18.5 s / 26.3 s), tracked as #717 | OPEN: not run on the phone (#1284) | N/A |
-| App suspend/resume (HTTP/2 PING liveness, pooled reuse) | PASS: `DeviceSuspendResumeTests` 5/5 launches, real freezes (#1132). Pooled-connection reuse after a freeze: covered by the network row and #717 | OPEN: the emulator smoke does not freeze the process (#1281); phone run #1284 | N/A: the iOS simulator does not freeze a backgrounded app |
-| WebSocket (ws/wss, permessage-deflate), background/foreground | PASS: WebSocket suites incl. `WebSocketBouncyCastleTlsTests`, deflate suites; background/foreground via #1132. permessage-deflate IL2CPP rows beyond the suite: v1.1 (#104) | PASS (full suite) | PASS |
+| App suspend/resume: WebSocket keep-alive deadlines | PASS: `DeviceSuspendResumeTests` 5/5 launches, real process freezes (#1132). The connection is in memory (`InMemoryWebSocketPeer`): no socket, TLS or HTTP/2 | OPEN: the emulator smoke does not freeze the process (#1281); phone run #1284 | N/A: the iOS simulator does not freeze a backgrounded app |
+| App suspend/resume with real sockets: HTTP/2 PING liveness, pooled reuse, wss | OPEN: no device run yet (#1289). The network row is a route change, not a freeze | OPEN: #1289, #1284 | N/A |
+| WebSocket (ws/wss, permessage-deflate), background/foreground | PASS: WebSocket suites incl. `WebSocketBouncyCastleTlsTests`, deflate suites. Background/foreground: keep-alive deadlines only, in memory (#1132); ws/wss sockets across a freeze: OPEN (#1289). permessage-deflate IL2CPP rows beyond the suite: v1.1 (#104) | PASS (full suite) | PASS |
 | SAEA and PollSelect socket modes | PASS: channel suites, `SaeaShutdownOrderTests` 6/6; SAEA Loop384 200×3 on the sim (#1184) | PASS: 34/34 socket-mode filter (#410, #415) | PASS |
 | Texture/Audio handlers, MainThreadDispatcher | PASS: handler suites, `UnityReliabilitySuiteTests`, `UnityStressSuiteTests`, `UnityPerformanceBudgetTests` | PASS (full suite) | PASS |
 | Allocation/latency benchmarks on device (22a.6) | N/A on 2021.3 iOS: the allocation counter kills the player (#414); the gates skip | FAIL on arm64 budgets, documented for GA (#323, #416) | PASS on the API 33 emulator (0 B/read) |

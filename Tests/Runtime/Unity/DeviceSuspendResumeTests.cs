@@ -44,6 +44,7 @@ namespace TurboHTTP.Tests.UnityModule
 
         [UnityTest, Explicit("needs the run-ios-player.sh --suspend-cycles driver to background the app (#1132, #99)")]
         [Category("DeviceSuspend")]
+        [Timeout(600000)] // UnityTest's default 180 s is shorter than RunBoundSeconds plus the settle and send waits
         public IEnumerator KeepAlive_AppSuspendedWithLatePongs_StaysOpenThroughEveryResume()
         {
             WebSocketResumeListener.Install();

@@ -159,7 +159,7 @@ ATS does not apply to raw sockets, so `Info.plist` ATS keys do not affect TurboH
 `AllowCleartext = true` to opt in (see [Cleartext traffic](#cleartext-traffic)).
 
 #### IPv6 and NAT64
-App Store submission requires IPv6 support. TurboHTTP uses standard C# sockets with IPv6 and resolves names with Happy Eyeballs (RFC 8305), so on a DNS64/NAT64 network a hostname resolves to the synthesized IPv6 addresses. For an IPv4 literal (`http://203.0.113.5/`) DNS64 synthesizes nothing; when the IPv4 connect has no route, the transport discovers the NAT64 prefix (RFC 7050, `ipv4only.arpa`) and retries on the synthesized address. Still, connect to hostnames where you can.
+App Store submission requires IPv6 support. TurboHTTP uses standard C# sockets with IPv6 and resolves names with Happy Eyeballs (RFC 8305), so on a DNS64/NAT64 network a hostname resolves to the synthesized IPv6 addresses. On a NAT64/DNS64 network connect to hostnames, not IPv4 literals: DNS64 synthesizes nothing for `http://203.0.113.5/`. The transport has an RFC 7050 fallback for literals (it discovers the NAT64 prefix through `ipv4only.arpa` and retries on the synthesized address), but on iOS and macOS IL2CPP players it does not trigger: there the connect error arrives as a raw errno value that the fallback does not recognize (#1287, v1.1).
 
 **Not verified in v1.0:** none of this has run on a real IPv6-only (DNS64/NAT64) network. The v1.0 device runs covered Wi-Fi, cellular, Airplane Mode and the switches between them, but not NAT64. The device row is #1283 (v1.1). Before an App Store submission, test your app on Apple's recommended IPv6-only network (macOS Internet Sharing, "Create NAT64 Network").
 

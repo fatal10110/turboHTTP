@@ -81,7 +81,7 @@ namespace TurboHTTP.Tests.UnityModule
         /// #99 NAT64 row (RFC 6147/6146; Apple's IPv6-only review network): run while the device is on a
         /// DNS64/NAT64 network (macOS Internet Sharing, "Create NAT64 Network"). Requires DNS64 to be present
         /// (ipv4only.arpa resolves to IPv6 only, RFC 7050), then a DNS name and an IPv4 literal must connect on
-        /// both backends; the literal needs the RFC 7050 prefix synthesis (#167).
+        /// both backends; the literal needs the RFC 7050 prefix synthesis (#167), which does not trigger on Darwin IL2CPP until #1287.
         /// </summary>
         [UnityTest, Explicit("needs an IPv6-only DNS64/NAT64 network (#99)")]
         [Category("DeviceNetwork")]
