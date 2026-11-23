@@ -169,7 +169,7 @@ export UNITY_PATH=<Unity 2021.3.45f2 editor binary>
 './Tools~/unity/build-player.sh' --target win64-mono                    # 3. player builds
 './Tools~/unity/build-player.sh' --target win64-mono --stripping High --network   #    Mono + Stripping High (#450)
 './Tools~/unity/build-player.sh' --target android-il2cpp                #    (+ --bouncycastle; win64-il2cpp when the SDK is installed)
-'./Tools~/unity/build-player.sh' --target android-il2cpp --run [--serial <id>] [--network]  # 4. player smoke on a device/emulator
+'./Tools~/unity/build-player.sh' --target android-il2cpp --run [--serial <id>] [--network] [--suspend]  # 4. player smoke on a device/emulator
 ```
 
 A release candidate adds the certification matrix (item 8): the Win64 standalone test players
@@ -207,7 +207,8 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    HTTP/2-over-TLS rows per provider, #1210: 2 MiB down, 1 MiB echoed up, 100 concurrent streams, a
    cancelled streaming read then 2 MiB down, against `Tools~/h2-interop/run.sh --serve`, which the script
    starts unless `TURBOHTTP_H2_ROWS_URL`/`_ROOT` name a running server; BouncyCastle must PASS over h2,
-   SslStream is SKIP with a test root) and one aggregate `TURBOHTTP_SMOKE PASS|FAIL` line the script requires. Mono at `--stripping High --network` is a
+   SslStream is SKIP with a test root; the `ws-suspend-resume` row, #1132, runs only with `--suspend`, item 4)
+   and one aggregate `TURBOHTTP_SMOKE PASS|FAIL` line the script requires. Mono at `--stripping High --network` is a
    required release-candidate row (#450): the offline `net-config` row runs `ServicePointManager`'s
    configuration init and `tls-sslstream` must complete a handshake with a 200, both of which fail when
    UnityLinker strips what that init creates by reflection (`Runtime/Transport/link.xml` keeps it).
@@ -246,7 +247,19 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    `UnityPlayerActivity` and polls logcat for the aggregate marker (`TURBOHTTP_SMOKE_WAIT_S`, default
    300 s, 900 s with `--network`); exit 1 on FAIL or no marker, logcat kept as `logcat.txt` in the build folder. `--apk <file>`
    reruns a built APK without Unity; `--network` (opt-in, needs the internet) adds the TLS and HTTP/2 rows
-   and requires their PASS (a loopback row server is reached through `adb reverse`). Quote the row lines in the #99 journal. Never
+   and requires their PASS (a loopback row server is reached through `adb reverse`). `--suspend` (#1132) adds
+   the `ws-suspend-resume` row (SKIP without it): a WebSocket with a 1 s ping interval and a 2 s pong timeout to
+   a loopback echo server inside the player, which answers each ping after 1 s. When the row logs
+   `TURBOHTTP_SMOKE SUSPEND ws-suspend-resume ready` (a ping in flight), the script presses Home
+   (`input keyevent KEYCODE_HOME`), waits `TURBOHTTP_SMOKE_SUSPEND_S` (default 10 s; 30 s also crosses the
+   cached-apps freezer delay of recent Android versions) and brings the app back with a launcher intent; the row
+   must PASS: the connection is still Open about 8 s after `OnApplicationPause(false)` and an echo round trip
+   works (FAIL on any close, PongTimeout being the #1132 regression). Its line reports `background=`,
+   `ping-in-flight-at-pause=`, `max-ping-gap=` (about the background time when the OS froze the process; about
+   2 s when it kept running), `grace-waits=`/`liveness-extensions=` (the library's keep-alive counters, read by
+   reflection) and `resume-signal=` (the resume reached the keep-alive). The server is in the same process, so
+   the row exercises the ordering of timers and read completions after a process-wide freeze, not network
+   delay; whether a ping is in flight at the freeze is not controlled (about half the time). Quote the row lines in the #99 journal. Never
    stop a running device run from the shell: killing Unity's process tree also kills its adb server.
    With the phone and an emulator (or several) attached, pass `--serial <id>`: Unity only builds the APK
    and the script installs and launches it on that device; `--skip-build` reinstalls the last such APK.
@@ -275,6 +288,36 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    with iOS Build Support there (the script sets the ARM64 simulator architecture) and record the editor
    version with the results, since it is not the 2021.3 baseline. A simulator run does not replace the
    device rows (ATS, NAT64, ALPN, suspension stay `needs-device-validation`).
+
+   **iOS suspend/resume row (#1132), by hand.** `build-player.sh` has no iOS target and the test player
+   does not background itself, so the `ws-suspend-resume` row (item 4) runs from the player smoke built in
+   the Mac's editor (2021.3 with iOS Build Support; Unity 6 on Apple Silicon, as above):
+   1. Copy `Tools~/unity/player-smoke/` into `Assets/TurboHttpSmoke/` of a throwaway project that
+      consumes this package (the `testproj/` a `build-player.sh` run leaves in its cache has it already;
+      never the iOS test project, which this smoke would quit). Switch to iOS, set the bundle identifier
+      `com.turbohttp.playersmoke`, Managed Stripping Level High and Target SDK Simulator SDK, build, and
+      build the exported Xcode project for a booted simulator (`xcodebuild ... -sdk iphonesimulator`).
+   2. `xcrun simctl install booted <app>`, then start it with the option and its console:
+      `SIMCTL_CHILD_TURBOHTTP_SMOKE_SUSPEND=1 xcrun simctl launch --console-pty booted com.turbohttp.playersmoke`
+      (the environment variable reaches the player as `TURBOHTTP_SMOKE_SUSPEND=1`; the
+      `-turbohttpSmokeSuspend` argument after the bundle id works too where the player sees launch
+      arguments). The `ws-suspend-resume` line reads `SKIP ... suspend off` when neither reached it.
+   3. When the console prints `TURBOHTTP_SMOKE SUSPEND ws-suspend-resume ready`, go to the Home screen
+      (Simulator: Device → Home, Shift-Command-H), wait at least 10 s (longer than the 2 s pong
+      timeout; iOS suspends a backgrounded app within seconds), then bring the app back by tapping its
+      icon (or the App Switcher). Do it within 180 s of the ready line, or the row FAILs as never resumed.
+   4. About 10 s later the console prints `TURBOHTTP_SMOKE ROW ws-suspend-resume PASS|FAIL #1132 ...` and the
+      aggregate line. PASS needs the connection still Open and an echo round trip; record the whole row
+      line (`background=`, `ping-in-flight-at-pause=`, `max-ping-gap=`: about the background time when the
+      app was suspended, `grace-waits=`, `resume-signal=`) with the simulator runtime and editor version.
+      Repeat a few times for a run with `ping-in-flight-at-pause=yes`.
+
+   An iPhone follows the same steps: install from Xcode, set `TURBOHTTP_SMOKE_SUSPEND=1` in the scheme's
+   environment (or launch with `xcrun devicectl device process launch` and that variable), read the lines in
+   Console.app filtered on `TURBOHTTP_SMOKE`, and background the app from its Home screen. A debugger
+   attached by Xcode can keep the app from being suspended, so start it without one (or detach before
+   pressing Home). Simulator and device runs are recorded as `needs-device-validation` evidence on #1132
+   until a device run is in the journal; the steps are confirmed on the first run.
 6. **Certification matrix (Phase 15.6, #105).** `UnityReliabilitySuiteTests` (dispatcher flood,
    cancel-before-drain, the domain-reload transition), `UnityStressSuiteTests` (texture and audio
    bursts) and `UnityPerformanceBudgetTests` are the certification suites. Their budgets live in

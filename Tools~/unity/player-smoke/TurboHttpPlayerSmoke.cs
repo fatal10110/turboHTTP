@@ -23,6 +23,10 @@
 // -turbohttpSmokeH2Url <url> and -turbohttpSmokeH2Root <base64 DER> arguments; Android: the turbohttp_smoke_h2_url and
 // turbohttp_smoke_h2_root intent extras). The BouncyCastle rows trust that root and require HTTP/2; the SslStream rows
 // are SKIP with a root (SslStream trusts the platform store only) and run against a publicly trusted server without one.
+// With the suspend option (the -turbohttpSmokeSuspend argument or TURBOHTTP_SMOKE_SUSPEND=1 in the environment, for the
+// iOS procedure in testing.md; Android: the turbohttp_smoke_suspend=1 intent extra that build-player.sh --suspend passes) the ws-suspend-resume row (#1132, TurboHttpSuspendRow.cs) keeps a WebSocket with a
+// short keep-alive open across the backgrounding the script (or, on iOS, the tester) does; otherwise it is SKIP.
+// Every option is read once at startup: a relaunch that brings the app back may replace the Android intent.
 // QuickStartExample is compiled, never attached to a scene.
 using System;
 using System.Collections;
@@ -44,12 +48,18 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
     public const string H2UrlExtra = "turbohttp_smoke_h2_url";
     public const string H2RootArgument = "-turbohttpSmokeH2Root";
     public const string H2RootExtra = "turbohttp_smoke_h2_root";
+    public const string SuspendArgument = "-turbohttpSmokeSuspend";
+    public const string SuspendExtra = "turbohttp_smoke_suspend";
+    public const string SuspendEnvironment = "TURBOHTTP_SMOKE_SUSPEND";
 
     // Bound per row: the offline rows finish in milliseconds; the TLS rows include DNS, TCP and a handshake.
     private const float RowTimeoutSeconds = 60f;
 
     // The HTTP/2 rows move up to 4 MiB or 101 requests; each request has its own 60 s timeout.
     private const float H2RowTimeoutSeconds = 120f;
+
+    // #1132: the suspend row waits up to 180 s for the backgrounding and resume, then about 10 s more.
+    private const float SuspendRowTimeoutSeconds = 300f;
 
     private readonly List<string> _failed = new List<string>();
     private int _passed;
@@ -69,8 +79,18 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
         host.AddComponent<TurboHttpPlayerSmoke>();
     }
 
+    // #1132: the suspend row's view of the backgrounding (Unity calls this on the main thread).
+    private void OnApplicationPause(bool paused)
+    {
+        TurboHttpSuspendRow.ApplicationPaused(paused);
+    }
+
     private IEnumerator Start()
     {
+        var network = Flag(NetworkArgument, NetworkExtra);
+        var suspend = Flag(SuspendArgument, SuspendExtra) || Environment.GetEnvironmentVariable(SuspendEnvironment) == "1";
+        var h2Url = network ? Option(H2UrlArgument, H2UrlExtra) : null;
+        var h2Root = network ? Option(H2RootArgument, H2RootExtra) : null;
         string summary = null;
         Row("registration", "#1", () => summary = TurboHttpSmokeRows.Registration());
         Row("reflection-targets", "#8", TurboHttpSmokeRows.ReflectionTargets);
@@ -87,7 +107,17 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
         yield return JsonCoroutineRow<TurboHttpSmokeRows.StructPayload>(
             "json-coroutine-struct", TurboHttpSmokeRows.StructPath, TurboHttpSmokeRows.VerifyStructPayload);
 
-        var network = NetworkRequested();
+        if (!suspend)
+        {
+            Skip(TurboHttpSuspendRow.Id, TurboHttpSuspendRow.Issue,
+                "suspend off (build-player.sh --suspend on android-il2cpp --run; iOS by hand, testing.md)");
+        }
+        else
+        {
+            yield return AsyncRow(TurboHttpSuspendRow.Id, TurboHttpSuspendRow.Issue,
+                ct => TurboHttpSuspendRow.RunAsync(line => Debug.Log(line), ct), SuspendRowTimeoutSeconds);
+        }
+
         if (!network)
         {
             Skip("tls-sslstream", "#141", "network off (build-player.sh --network)");
@@ -108,7 +138,7 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
             }
         }
 
-        yield return H2Rows(network);
+        yield return H2Rows(network, h2Url, h2Root);
 
         if (_failed.Count == 0 && summary != null)
             Debug.Log(Marker + " PASS " + summary + " rows=" + _passed + " skipped=" + _skipped);
@@ -119,10 +149,8 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
     }
 
     // #1210: the four HTTP/2-over-TLS rows per TLS provider, one after another.
-    private IEnumerator H2Rows(bool network)
+    private IEnumerator H2Rows(bool network, string url, string root)
     {
-        var url = network ? Option(H2UrlArgument, H2UrlExtra) : null;
-        var root = network ? Option(H2RootArgument, H2RootExtra) : null;
         foreach (var backend in new[] { TlsBackend.SslStream, TlsBackend.BouncyCastle })
         {
             string skip = null;
@@ -283,11 +311,12 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
         return text.Length <= 400 ? text : text.Substring(0, 400) + "...";
     }
 
-    private static bool NetworkRequested()
+    // True for the <argument> switch on the command line, else (Android) for the string intent extra "1".
+    private static bool Flag(string argument, string extra)
     {
         foreach (var arg in Environment.GetCommandLineArgs())
         {
-            if (arg == NetworkArgument)
+            if (arg == argument)
                 return true;
         }
 
@@ -298,12 +327,12 @@ public sealed class TurboHttpPlayerSmoke : MonoBehaviour
             using (var activity = player.GetStatic<AndroidJavaObject>("currentActivity"))
             using (var intent = activity.Call<AndroidJavaObject>("getIntent"))
             {
-                return intent.Call<string>("getStringExtra", NetworkExtra) == "1";
+                return intent.Call<string>("getStringExtra", extra) == "1";
             }
         }
         catch (Exception)
         {
-            // Extra not readable: the TLS rows are SKIP, and build-player.sh --network fails on the missing PASS rows.
+            // Extra not readable: the rows are SKIP, and build-player.sh --network/--suspend fails on the missing PASS rows.
             return false;
         }
 #else

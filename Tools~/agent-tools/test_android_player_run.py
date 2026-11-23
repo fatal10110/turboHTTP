@@ -3,7 +3,9 @@
 Reuses the fakes of test_wsl_interop.py (stub cmd.exe, wslpath, Unity.exe; plan files make a tool fail N times)
 with an adb.exe stub that also answers the calls --run makes: getprop, dumpsys window, am start, pidof (API 26+,
 FAKE_ADB_SDK, default 31), ps (older levels: a header, the player unless FAKE_ADB_GONE, the end marker the script asks
-for) and logcat -d (which prints <state>.logcat, the player's log lines). --apk runs a prepared APK without a build.
+for), logcat -d (which prints <state>.logcat, the player's log lines) and input keyevent KEYCODE_HOME (which appends
+<state>.logcat.resume to that log once: what a backgrounded player logs after it resumes). --apk runs a prepared
+APK without a build.
 """
 import pathlib
 import re
@@ -16,6 +18,10 @@ PKG = "com.turbohttp.playersmoke"
 ADB = wsl.PRELUDE + r"""echo "$*" >> "$FAKE_WSL.adb.calls"
 [ "$(plan_next adb)" = ok ] || outage
 case "$*" in
+  *KEYCODE_HOME*)
+    if [ -f "$FAKE_WSL.logcat.resume" ]; then
+      cat "$FAKE_WSL.logcat.resume" >> "$FAKE_WSL.logcat"; rm -f "$FAKE_WSL.logcat.resume"
+    fi ;;
   *" install "*|install*) printf 'Success\r\n' ;;
   *get-state*) printf 'device\r\n' ;;
   *"getprop ro.build.version.sdk"*) printf '%s\r\n' "${FAKE_ADB_SDK:-31}" ;;
@@ -47,6 +53,14 @@ H2_ROOT_DER = b"\x30\x03\x02\x01\x01"
 H2_ROOT_B64 = "MAMCAQE="
 
 
+# #1132: the suspend row's ready line (a keep-alive ping in flight) and its result after the resume.
+SUSPEND_READY = "TURBOHTTP_SMOKE SUSPEND ws-suspend-resume ready ping-in-flight pings=1 port=40000"
+SUSPEND_PASS = ("TURBOHTTP_SMOKE ROW ws-suspend-resume PASS #1132 state=Open echo=ok pauses=1 resumes=1 "
+                "background=10.2s ping-in-flight-at-pause=yes max-ping-gap=10.9s pings=9 grace-waits=1")
+LAUNCHER_START = (f"shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER "
+                  f"-n {PKG}/com.unity3d.player.UnityPlayerActivity")
+
+
 def h2_log(provider, protocol="h2"):
     backend = "BouncyCastle" if provider == "bouncycastle" else "SslStream"
     return [f"TURBOHTTP_SMOKE ROW h2-{row}-{provider} PASS #1210 backend={backend} protocol={protocol} ms=1"
@@ -75,7 +89,7 @@ class AndroidPlayerRunTests(unittest.TestCase):
         self.apk = self.root / "builds" / "TurboHttpSmoke.apk"
         self.apk.parent.mkdir()
         self.apk.write_bytes(b"PK fake apk")
-        self.env.update(TURBOHTTP_SMOKE_POLL_S="0", TURBOHTTP_SMOKE_WAIT_S="20")
+        self.env.update(TURBOHTTP_SMOKE_POLL_S="0", TURBOHTTP_SMOKE_WAIT_S="20", TURBOHTTP_SMOKE_SUSPEND_S="0")
         for name in ("TURBOHTTP_H2_ROWS_URL", "TURBOHTTP_H2_ROWS_ROOT"):
             self.env.pop(name, None)
 
@@ -90,6 +104,9 @@ class AndroidPlayerRunTests(unittest.TestCase):
 
     def logcat(self, lines):
         pathlib.Path(f"{self.state}.logcat").write_text("".join(UNITY_LINE + line + "\n" for line in lines))
+
+    def resume_logcat(self, lines):
+        pathlib.Path(f"{self.state}.logcat.resume").write_text("".join(UNITY_LINE + line + "\n" for line in lines))
 
     def run_apk(self, *args, **env):
         return self.run_script("build-player.sh", "--target", "android-il2cpp", "--apk", str(self.apk), *args, **env)
@@ -187,6 +204,50 @@ class AndroidPlayerRunTests(unittest.TestCase):
                     + PASS_LOG[3:])
         self.assertEqual(self.run_apk("--network").returncode, 0)
 
+    def test_suspend_backgrounds_the_app_after_the_ready_line_and_requires_the_row_pass(self):
+        # #1132: the row logs the ready line, then waits for the resume; its PASS is logged only after it.
+        self.logcat(PASS_LOG[:2] + [SUSPEND_READY])
+        self.resume_logcat([SUSPEND_PASS] + PASS_LOG[2:])
+        result = self.run_apk("--suspend")
+        out = result.stdout + result.stderr
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("TURBOHTTP_SMOKE ROW ws-suspend-resume PASS #1132", out)
+        calls = self.calls("adb")
+        starts = [i for i, c in enumerate(calls) if "am start" in c]
+        self.assertEqual(len(starts), 2, calls)
+        self.assertIn("--es turbohttp_smoke_suspend 1", calls[starts[0]])
+        home = [i for i, c in enumerate(calls) if "KEYCODE_HOME" in c]
+        self.assertEqual(home, [calls.index("shell input keyevent KEYCODE_HOME")], calls)
+        self.assertLess(starts[0], home[0])
+        self.assertLess(home[0], starts[1])
+        self.assertEqual(calls[starts[1]], LAUNCHER_START)
+        self.assertEqual(calls[-1], f"shell am force-stop {PKG}")
+
+    def test_suspend_fails_without_the_row_pass_or_the_ready_line(self):
+        cases = (
+            # The row FAILed after the resume (the #1132 regression: PongTimeout).
+            ([SUSPEND_READY], ["TURBOHTTP_SMOKE ROW ws-suspend-resume FAIL #1132 connection not Open after the resume "
+                               "(#1132: closed with PongTimeout)", "TURBOHTTP_SMOKE FAIL rows=ws-suspend-resume"],
+             "no 'TURBOHTTP_SMOKE ROW ws-suspend-resume PASS'"),
+            # A player that never got the option: the row is SKIP and the aggregate PASS is not enough.
+            ([], ["TURBOHTTP_SMOKE ROW ws-suspend-resume SKIP #1132 suspend off"] + PASS_LOG[2:],
+             "so the app was never backgrounded"),
+        )
+        for before, after, message in cases:
+            with self.subTest(message):
+                calls = len(self.calls("adb"))
+                if before:
+                    self.logcat(PASS_LOG[:2] + before)
+                    self.resume_logcat(after)
+                else:
+                    self.logcat(PASS_LOG[:2] + after)
+                result = self.run_apk("--suspend")
+                self.assertEqual(result.returncode, 1, result.stdout + result.stderr)
+                self.assertIn(message, result.stdout)
+                self.assertIn("no 'TURBOHTTP_SMOKE ROW ws-suspend-resume PASS'", result.stdout)
+                home = [c for c in self.calls("adb")[calls:] if "KEYCODE_HOME" in c]
+                self.assertEqual(len(home), 1 if before else 0)
+
     def test_bouncycastle_requires_the_provider_and_its_tls_row_with_network(self):
         self.logcat(PASS_LOG)
         result = self.run_apk("--bouncycastle")
@@ -265,6 +326,8 @@ class AndroidPlayerRunTests(unittest.TestCase):
     def test_usage_errors(self):
         for args in (["--target", "win64-mono", "--run"], ["--target", "android-il2cpp", "--arch", "armv7"],
                      ["--target", "android-il2cpp", "--network"], ["--target", "android-il2cpp", "--serial"],
+                     ["--target", "android-il2cpp", "--suspend"], ["--target", "win64-il2cpp", "--suspend"],
+                     ["--target", "win64-mono", "--network", "--suspend"],
                      ["--target", "android-il2cpp", "--apk", str(self.root / "missing.apk")],
                      ["--target", "win64-il2cpp", "--stripping", "Disabled"], ["--target", "win64-mono", "--stripping"],
                      ["--target", "win64-mono", "--stripping", "Minimal"],
