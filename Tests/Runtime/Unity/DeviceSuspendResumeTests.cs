@@ -2,6 +2,7 @@ using System;
 using System.Collections;
 using System.Collections.Generic;
 using System.Diagnostics;
+using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -37,6 +38,9 @@ namespace TurboHTTP.Tests.UnityModule
         private volatile bool _stop;
         private readonly List<(long Start, long End)> _freezes = new List<(long Start, long End)>();
         private Task _cleanup;
+        private readonly TaskCompletionSource<bool> _textFrame =
+            new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        private volatile string _textPayload;
 
         [UnityTest, Explicit("needs the run-ios-player.sh --suspend-cycles driver to background the app (#1132, #99)")]
         [Category("DeviceSuspend")]
@@ -101,9 +105,10 @@ namespace TurboHTTP.Tests.UnityModule
                         "closed after the last resume: " + connection.TerminalError);
                 }
 
+                // The pump owns the peer's frame queue: it hands the first data frame over.
                 yield return WaitForTask(connection.SendTextAsync("after-resume", CancellationToken.None), 10f, "send");
-                var echoed = peer.ReadFrameAsync(TimeSpan.FromSeconds(10));
-                yield return WaitForTask(echoed, 15f, "peer read");
+                yield return WaitForTask(_textFrame.Task, 15f, "the peer receiving the post-resume text");
+                Assert.AreEqual("after-resume", _textPayload);
 
                 int outstanding = 0;
                 double longest = 0;
@@ -150,8 +155,15 @@ namespace TurboHTTP.Tests.UnityModule
 
         private static async Task CleanupAsync(WebSocketConnection connection, InMemoryWebSocketPeer peer, Task pump)
         {
-            await connection.DisposeAsync().ConfigureAwait(false);
-            peer.Dispose();
+            try
+            {
+                await connection.DisposeAsync().ConfigureAwait(false);
+            }
+            finally
+            {
+                peer.Dispose();
+            }
+
             if (pump != null)
                 await pump.ConfigureAwait(false);
         }
@@ -192,6 +204,13 @@ namespace TurboHTTP.Tests.UnityModule
                 catch (ObjectDisposedException)
                 {
                     break;
+                }
+
+                if (frame.Opcode == WebSocketOpcode.Text)
+                {
+                    _textPayload = Encoding.UTF8.GetString(frame.Payload);
+                    _textFrame.TrySetResult(true);
+                    continue;
                 }
 
                 if (frame.Opcode != WebSocketOpcode.Ping)

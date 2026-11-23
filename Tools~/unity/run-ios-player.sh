@@ -38,6 +38,7 @@ while [ $# -gt 0 ]; do
     *) xcode="$1"; shift ;;
   esac
 done
+case "$launches" in ''|*[!0-9]*|0) echo "run-ios-player: --launches needs a number >= 1" >&2; exit 2 ;; esac
 [ -d "$xcode/Unity-iPhone.xcodeproj" ] || { echo "run-ios-player: no Unity-iPhone.xcodeproj in '$xcode'" >&2; exit 2; }
 if [ -n "$device" ] && [ -z "$team" ]; then echo "run-ios-player: --device needs --team (the build's signing team)" >&2; exit 2; fi
 if [ -z "$key" ]; then
@@ -56,8 +57,10 @@ if [ -n "$device" ]; then
   xb=(-allowProvisioningUpdates DEVELOPMENT_TEAM="$team" CODE_SIGN_STYLE=Automatic -destination "id=$device")
 else
   kind=sim; sdk=iphonesimulator
-  udid="$(xcrun simctl list devices available | grep -F "$sim (" | head -1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')"
-  case "$sim" in *-*-*-*-*) udid="$sim" ;; esac
+  case "$sim" in
+    *-*-*-*-*) udid="$sim" ;;
+    *) udid="$(xcrun simctl list devices available | { grep -F "$sim (" || true; } | head -1 | sed -E 's/.*\(([0-9A-F-]{36})\).*/\1/')" ;;
+  esac
   [ -n "$udid" ] || { echo "run-ios-player: no available simulator named '$sim'" >&2; exit 2; }
   xb=(-destination "generic/platform=iOS Simulator" CODE_SIGNING_ALLOWED=NO)
 fi
@@ -78,6 +81,7 @@ if [ "$kind" = sim ]; then
   xcrun simctl uninstall "$udid" "$bundle" 2>/dev/null || true
   xcrun simctl install "$udid" "$app"
 else
+  # Never uninstall first: with a free team, removing the developer's last app drops the profile trust.
   xcrun devicectl device install app --device "$device" "$app" >/dev/null
 fi
 
@@ -105,9 +109,14 @@ drive_suspend() {
   done
   cycles="$(grep -m1 -o 'TURBOHTTP_SUSPEND_READY cycles=[0-9]*' "$console" | sed 's/.*=//')"
   for c in $(seq 1 "${cycles:-0}"); do
-    sleep 6; echo "run-ios-player: suspend $c/$cycles"
-    activate com.apple.Preferences; sleep 10
-    activate "$bundle"
+    sleep 6
+    # A player that already ended (a failed assertion) must not be started again outside the launch bound.
+    grep -qE 'TURBOHTTP_SUSPEND_RESULT|TURBOHTTP_DEVICE_RUN finished' "$console" && return 0
+    echo "run-ios-player: suspend $c/$cycles"
+    activate com.apple.Preferences || echo "run-ios-player: could not open Settings"
+    sleep 10
+    grep -qE 'TURBOHTTP_SUSPEND_RESULT|TURBOHTTP_DEVICE_RUN finished' "$console" && return 0
+    activate "$bundle" || echo "run-ios-player: could not bring the player back"
   done
 }
 
@@ -132,6 +141,9 @@ for i in $(seq 1 "$launches"); do
   if [ -n "$driver" ]; then kill "$driver" 2>/dev/null || true; wait "$driver" 2>/dev/null || true; fi
   [ "$rc" = 124 ] && echo "run-ios-player: launch $i did not quit within ${timeout_s}s; terminated"
   grep -E 'TURBOHTTP_DEVICE_(HANG|FAIL) |TURBOHTTP_SUSPEND_(RESUMED|RESULT)' "$console" | head -20 || true
+  # The player deletes results.xml when its run starts (RunStarted): a launch that never started a run would
+  # otherwise pull the previous launch's file, which devicectl keeps across installs.
+  if ! grep -q 'TURBOHTTP_DEVICE_RUN started' "$console"; then rm -f "$out"; fi
   if [ ! -s "$out" ]; then echo "run-ios-player: launch $i left no results.xml (console $console)"; status=1; continue; fi
   grep -q 'partial="true"' "$out" && { echo "run-ios-player: launch $i results are partial (the run did not finish)"; status=1; }
   python3 "$repo/Tools~/unity/summarize_results.py" "$out" "$key" "$filtered" "$repo/Tools~/unity/skip-baseline.txt" || status=1

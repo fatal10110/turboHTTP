@@ -58,7 +58,7 @@
 # Loop384 cases). Run record: Development~/docs/implementation-journal/2026-11-host-run-win64-standalone.md. The IL2CPP backend is not recorded yet: this host has no Windows 10 SDK or MSVC (#1225); its
 # first complete run checks these numbers and, if it differs, keeps the larger skip count and the smaller total.
 #
-# Player-iOS 23: no script reads this key yet (the iOS simulator handoff summarises its own results);
+# Player-iOS 23: read by run-ios-player.sh for a Unity 6 project;
 # recorded from iOS simulator run 7 (#99: main 2ec74e2, iOS 26.4, Unity 6000.3.26f1, IL2CPP High), all 21
 # skips [env] (22 with item 17 from #881). The Player-Android list plus 5 [env] cases where the runtime reports no unobserved faulted
 # task ("This runtime did not report a known unobserved faulted task."):
@@ -72,8 +72,8 @@
 # Raised from 22 to 23 (#1259): Player-Android item 18 (RefusingLoopbackPortTests.Port_CannotBeBoundByAnotherSocketWhileHeld,
 # [env] Windows only), a new test, not a test that stopped running.
 #
-# Player-iOS-2021.3 35: a Unity 2021.3 IL2CPP iOS player (the x86_64 simulator player; no script reads this key
-# yet). Reading a managed allocation counter kills that player with SIGILL (#414), so every test that needs the
+# Player-iOS-2021.3 35: a Unity 2021.3 IL2CPP iOS player (the x86_64 simulator player or an arm64 device; read
+# by run-ios-player.sh; the 2026-11-22 simulator and iPhone runs skipped 29). Reading a managed allocation counter kills that player with SIGILL (#414), so every test that needs the
 # per-thread counter skips there with "[env] Reading a managed allocation counter kills Unity 2021.3 IL2CPP iOS
 # players with SIGILL (#414).": the Player-iOS list 1-22, plus
 #   23-24 DecompressionLimitAndAllocationTests: BufferedGzip_10MbBody_AllocatesAboutTheBodySize,
