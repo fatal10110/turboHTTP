@@ -63,6 +63,12 @@ namespace TurboHTTP.Core.Internal
         internal Span<byte> GetWriteSpan(int count) => new Span<byte>(_array, _written, count);
 
         /// <summary>
+        /// Returns a <see cref="Memory{T}"/> over the unwritten portion of the rented array, so an
+        /// asynchronous read can fill the segment in place.
+        /// </summary>
+        internal Memory<byte> GetWriteMemory() => new Memory<byte>(_array, _written, _array.Length - _written);
+
+        /// <summary>
         /// Commits <paramref name="count"/> bytes as written and updates
         /// <see cref="ReadOnlySequenceSegment{T}.Memory"/> to reflect the new content.
         /// </summary>

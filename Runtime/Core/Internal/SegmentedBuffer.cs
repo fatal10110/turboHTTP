@@ -99,8 +99,28 @@ namespace TurboHTTP.Core.Internal
         }
 
         /// <summary>
-        /// Commits <paramref name="count"/> bytes obtained via <see cref="GetWriteSpan"/>.
-        /// <see cref="GetWriteSpan"/> must be called before this method.
+        /// <see cref="GetWriteSpan"/> for asynchronous reads: returns writable memory in the current segment
+        /// (at least <paramref name="sizeHint"/> bytes, starting a new segment when the current one has
+        /// less room). Must be followed by a call to <see cref="Advance"/> before the next write; the memory
+        /// is only valid until then and must not be used after <see cref="Dispose"/>.
+        /// </summary>
+        public Memory<byte> GetWriteMemory(int sizeHint = 0)
+        {
+            ThrowIfDisposed();
+            int needed = sizeHint <= 0 ? 1 : sizeHint;
+            if (_tail == null || _tail.AvailableCapacity < needed)
+                AppendNewSegment(Math.Max(needed, _segmentSize));
+            return _tail.GetWriteMemory();
+        }
+
+        /// <summary>
+        /// Bytes that fit in the current segment without starting a new one (0 before the first write).
+        /// </summary>
+        public int WritableCapacity => _tail == null ? 0 : _tail.AvailableCapacity;
+
+        /// <summary>
+        /// Commits <paramref name="count"/> bytes obtained via <see cref="GetWriteSpan"/> or
+        /// <see cref="GetWriteMemory"/>, one of which must be called before this method.
         /// </summary>
         public void Advance(int count)
         {
@@ -112,6 +132,34 @@ namespace TurboHTTP.Core.Internal
                 throw new InvalidOperationException("Advance called before GetWriteSpan.");
             _tail.Advance(count);
             _totalWritten += count;
+        }
+
+        /// <summary>
+        /// Returns the tail segment to the pool when nothing was written into it (a read into
+        /// <see cref="GetWriteMemory"/> that reported the end), so the buffer holds no empty segment.
+        /// </summary>
+        public void TrimEmptyTail()
+        {
+            ThrowIfDisposed();
+            if (_tail == null || _tail.Written != 0)
+                return;
+
+            var empty = _tail;
+            if (_head == empty)
+            {
+                _head = null;
+                _tail = null;
+            }
+            else
+            {
+                var previous = _head;
+                while (previous.Next != empty)
+                    previous = (PooledSegment)previous.Next;
+                previous.SetNext(null);
+                _tail = previous;
+            }
+
+            empty.ReturnToPool();
         }
 
         // ── Read API ───────────────────────────────────────────────────────────

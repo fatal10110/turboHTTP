@@ -19,6 +19,13 @@ namespace TurboHTTP.Core
         private readonly CancellationToken _cancellationToken;
         private readonly long _maxBodyBytes;
 
+        // Largest declared body that sizes its first segment (below the 85 KB large-object threshold);
+        // larger or unknown bodies use SegmentedBuffer.DefaultSegmentSize segments.
+        internal const int MaxPresizedBodyBytes = 64 * 1024;
+
+        // Buffer for the end-of-body read once a declared body has filled its segment exactly.
+        private const int EndProbeBytes = 256;
+
         private UHttpRequest _request;
         private UHttpResponse _stagedResponse;
         private bool _completionClaimed;
@@ -172,18 +179,56 @@ namespace TurboHTTP.Core
                 }
                 else
                 {
-                    rented = ByteArrayPool.Rent(16 * 1024);
+                    // Reads land in the segment memory itself (no intermediate copy, #1265). The declared
+                    // length only sizes the first segment, bounded by MaxPresizedBodyBytes and the cap; the
+                    // loop still reads until the source reports the end, so a short or long body behaves
+                    // as it did with a fixed read buffer (framing is enforced by the source).
+                    var declaredLength = body.Length;
+                    var sizeHint = InitialSegmentSize(declaredLength);
                     bufferedBody = new SegmentedBuffer();
                     long totalRead = 0;
                     while (true)
                     {
-                        var read = await body.ReadAsync(rented, _cancellationToken).ConfigureAwait(false);
+                        int read;
+                        if (declaredLength.HasValue
+                            && totalRead == declaredLength.Value
+                            && bufferedBody.WritableCapacity == 0)
+                        {
+                            // The declared body is in and its segment is full: look for the end through a
+                            // small buffer instead of starting a segment that would stay empty.
+                            rented ??= ByteArrayPool.Rent(EndProbeBytes);
+                            read = await body.ReadAsync(rented, _cancellationToken).ConfigureAwait(false);
+                            if (read == 0)
+                                break;
+
+                            totalRead += read;
+                            ThrowIfOverBufferedLimit(totalRead);
+                            bufferedBody.Write(new ReadOnlySpan<byte>(rented, 0, read));
+                            continue;
+                        }
+
+                        var destination = bufferedBody.GetWriteMemory(sizeHint);
+                        sizeHint = 0;
+                        read = await body.ReadAsync(destination, _cancellationToken).ConfigureAwait(false);
                         if (read == 0)
                             break;
 
                         totalRead += read;
                         ThrowIfOverBufferedLimit(totalRead);
-                        bufferedBody.Write(new ReadOnlySpan<byte>(rented, 0, read));
+                        bufferedBody.Advance(read);
+                    }
+
+                    // The read that reported the end may have started a segment (an empty body, or an
+                    // unknown length that ended on a segment boundary): return it now instead of holding
+                    // it for the response's lifetime.
+                    if (totalRead == 0)
+                    {
+                        bufferedBody.Dispose();
+                        bufferedBody = null;
+                    }
+                    else
+                    {
+                        bufferedBody.TrimEmptyTail();
                     }
                 }
 
@@ -271,6 +316,26 @@ namespace TurboHTTP.Core
                     }
                 }
             }
+        }
+
+        /// <summary>
+        /// First segment size for a read-loop body: the declared length when it exceeds the default segment
+        /// but stays within <see cref="MaxPresizedBodyBytes"/> and the buffered cap, so a known small body
+        /// lands in one segment through one read; 0 (the default segment size) otherwise. The length is
+        /// peer-declared, so it never sizes more than <see cref="MaxPresizedBodyBytes"/>.
+        /// </summary>
+        private int InitialSegmentSize(long? declaredLength)
+        {
+            if (!declaredLength.HasValue)
+                return 0;
+
+            var length = declaredLength.Value;
+            if (length <= SegmentedBuffer.DefaultSegmentSize || length > MaxPresizedBodyBytes)
+                return 0;
+            if (_maxBodyBytes > 0 && length > _maxBodyBytes)
+                return 0;
+
+            return (int)length;
         }
 
         private void ThrowIfOverBufferedLimit(long bufferedBytes)
