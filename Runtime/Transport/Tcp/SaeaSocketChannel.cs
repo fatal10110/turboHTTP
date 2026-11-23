@@ -391,8 +391,8 @@ namespace TurboHTTP.Transport.Tcp
             }
             else
             {
-                // Windows (close first): a shutdown did not end a pending receive in the Windows
-                // Editor (#405); the close aborts it. Windows IL2CPP is unmeasured (#843).
+                // Windows (close first): a shutdown does not end a pending receive on Mono or IL2CPP
+                // (#405, #843); the close aborts it and leaves no stale selector job (#843).
                 try { _socket.Dispose(); } catch { }
             }
 
