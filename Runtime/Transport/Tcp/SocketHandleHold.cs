@@ -28,10 +28,10 @@ namespace TurboHTTP.Transport.Tcp
     /// </para>
     /// <para>
     /// Only selector platforms hold (<see cref="HoldsPendingIo"/>). On Windows a shutdown does not end
-    /// a pending receive (measured in the Windows Editor, #405; Windows IL2CPP is unmeasured, #843),
-    /// so a hold would keep the request's abandoned read (and the connection gate waiting on it)
-    /// until <see cref="HoldTimeout"/>; there the close itself aborts the pending operation, as
-    /// before #384.
+    /// a pending receive (measured in the Windows Editor, #405, and in Windows Mono and IL2CPP
+    /// players, #843), so a hold would keep the request's abandoned read (and the connection gate
+    /// waiting on it) until <see cref="HoldTimeout"/>; there the close itself ends the pending
+    /// operation and leaves no stale selector job behind (#843), as before #384.
     /// </para>
     /// <para>
     /// The owning stream brackets every read and write with <see cref="EnterIo"/> and

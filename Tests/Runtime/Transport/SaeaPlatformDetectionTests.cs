@@ -17,9 +17,9 @@ namespace TurboHTTP.Tests.Transport
         [TestCase((int)SocketOsFamily.Linux, (int)SocketRuntimeKind.Mono, false)]
         [TestCase((int)SocketOsFamily.Linux, (int)SocketRuntimeKind.Il2Cpp, false)]
         [TestCase((int)SocketOsFamily.Unknown, (int)SocketRuntimeKind.Il2Cpp, false)]
-        // Windows Editor (Mono), measured in #405: shutdown left the receive pending.
+        // Windows Mono (Editor #405, player #843) and IL2CPP (player #843): a shutdown leaves the
+        // receive pending, a close ends it and leaves no stale selector job (SocketCloseOrderProbeTests).
         [TestCase((int)SocketOsFamily.Windows, (int)SocketRuntimeKind.Mono, true)]
-        // Windows IL2CPP: unmeasured (#843), keeps its previous close-first order.
         [TestCase((int)SocketOsFamily.Windows, (int)SocketRuntimeKind.Il2Cpp, true)]
         [TestCase((int)SocketOsFamily.Windows, (int)SocketRuntimeKind.DotNet, true)]
         public void CloseAbortsPendingIoFor_FollowsTheMeasuredOrder(int os, int runtime, bool closeFirst)
@@ -27,8 +27,9 @@ namespace TurboHTTP.Tests.Transport
             Assert.AreEqual(closeFirst, SaeaPlatformDetection.CloseAbortsPendingIoFor((SocketOsFamily)os, (SocketRuntimeKind)runtime));
         }
 
-        [TestCase((int)SocketOsFamily.Windows, (int)SocketRuntimeKind.Il2Cpp, false)]
+        [TestCase((int)SocketOsFamily.Windows, (int)SocketRuntimeKind.Il2Cpp, true)]
         [TestCase((int)SocketOsFamily.Unknown, (int)SocketRuntimeKind.Mono, false)]
+        [TestCase((int)SocketOsFamily.Unknown, (int)SocketRuntimeKind.Il2Cpp, false)]
         [TestCase((int)SocketOsFamily.Windows, (int)SocketRuntimeKind.Mono, true)]
         [TestCase((int)SocketOsFamily.Apple, (int)SocketRuntimeKind.Il2Cpp, true)]
         [TestCase((int)SocketOsFamily.Linux, (int)SocketRuntimeKind.Il2Cpp, true)]
