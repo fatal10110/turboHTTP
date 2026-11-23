@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
@@ -156,26 +157,33 @@ namespace TurboHTTP.Tests.Transport
             {
                 using var pair = await SocketChannelLifecycleTests.LoopbackPair.CreateAsync();
                 var channel = new SaeaSocketChannel(pair.Client);
-                channel.SimulateStuckReceiveForTest(drainTimeoutMs: 200);
+                var bound = TimeSpan.FromMilliseconds(200);
+                channel.SimulateStuckReceiveForTest(drainTimeoutMs: (int)bound.TotalMilliseconds);
                 long leakedBefore = SaeaSocketChannel.BuffersLeakedOnDispose;
 
                 TurboDiagnostics.SetSink(null);
                 try
                 {
+                    // The hold: neither the close nor the release is observed before the bound, however
+                    // late this thread runs (#1291).
+                    var sinceDispose = Stopwatch.StartNew();
                     channel.Dispose();
-                    Assert.IsTrue(IsOpen(pair.Client), "the descriptor was closed under a pending receive");
-                    Assert.IsFalse(channel.IsReleased);
+                    await HoldBoundAssert.ReleasedNotBeforeTheBoundAsync(
+                        sinceDispose, bound, () => channel.IsReleased || !IsOpen(pair.Client), "the pending receive's descriptor");
 
-                    await AbandonedSocketIoTests.WaitUntilAsync(() => channel.IsReleased, "the bound never closed the socket");
+                    // The release: the socket closed and the buffers given up. Wait on the leak counter,
+                    // the bound's last write, not IsReleased, its first (#1291).
+                    await AbandonedSocketIoTests.WaitUntilAsync(
+                        () => !IsOpen(pair.Client) && SaeaSocketChannel.BuffersLeakedOnDispose > leakedBefore,
+                        "the bound never closed the socket and gave up the buffers");
                 }
                 finally
                 {
                     TurboDiagnostics.ResetSink();
                 }
 
-                Assert.IsFalse(IsOpen(pair.Client), "the bound closes the socket");
+                Assert.IsTrue(channel.IsReleased);
                 Assert.IsFalse(channel.BuffersReleased, "buffers must not return to the pool while the OS may write");
-                Assert.Greater(SaeaSocketChannel.BuffersLeakedOnDispose, leakedBefore);
             });
         }
 

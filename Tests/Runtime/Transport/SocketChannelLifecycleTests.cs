@@ -34,16 +34,18 @@ namespace TurboHTTP.Tests.Transport
                     Assert.AreSame(dispose, finished, "Dispose blocked on the operation that never ends");
                     await dispose;
 
-                    // The buffers are given up at the bound, after Dispose returned (#384).
-                    await AbandonedSocketIoTests.WaitUntilAsync(() => channel.IsReleased, "the bound never released the channel");
+                    // The buffers are given up at the bound, after Dispose returned (#384). Wait on the
+                    // leak counter, the bound's last write, not IsReleased, its first (#1291).
+                    await AbandonedSocketIoTests.WaitUntilAsync(
+                        () => SaeaSocketChannel.BuffersLeakedOnDispose > leakedBefore, "the bound never gave up the buffers");
                 }
                 finally
                 {
                     TurboDiagnostics.ResetSink();
                 }
 
+                Assert.IsTrue(channel.IsReleased);
                 Assert.IsFalse(channel.BuffersReleased, "buffers must not return to the pool while the OS may write");
-                Assert.Greater(SaeaSocketChannel.BuffersLeakedOnDispose, leakedBefore);
             });
         }
 
