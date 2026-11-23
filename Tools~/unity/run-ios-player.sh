@@ -71,7 +71,8 @@ if ! xcodebuild -project "$xcode/Unity-iPhone.xcodeproj" -scheme Unity-iPhone -c
   grep -E 'error:|BUILD FAILED' "$build_log" | head -20
   echo "run-ios-player: xcodebuild failed; see $build_log" >&2; exit 2
 fi
-app="$(ls -d "$dd/Build/Products/Release-$sdk/"*.app | head -1)"
+apps=("$dd/Build/Products/Release-$sdk/"*.app); app="${apps[0]}"
+[ -d "$app" ] || { echo "run-ios-player: xcodebuild left no .app in $dd/Build/Products/Release-$sdk" >&2; exit 2; }
 bundle="$(/usr/libexec/PlistBuddy -c 'Print :CFBundleIdentifier' "$app/Info.plist")"
 echo "run-ios-player: built $(basename "$app") ($bundle, $(lipo -archs "$app/$(/usr/libexec/PlistBuddy -c 'Print :CFBundleExecutable' "$app/Info.plist")"))"
 
