@@ -6,8 +6,8 @@
 #   UNITY_PATH=<Unity 2021.3 editor binary> \
 #     Tools~/unity/build-player.sh --target win64-mono|win64-il2cpp|android-il2cpp [--stripping Disabled|Low|Medium|High]
 #       [--bouncycastle] [--background] [--network]
-#     Tools~/unity/build-player.sh --target android-il2cpp [--bouncycastle] --run [--serial <adb serial>] [--arch arm64|x86_64] [--network]
-#     Tools~/unity/build-player.sh --target android-il2cpp [--bouncycastle] --apk <built APK> [--serial <adb serial>] [--network]
+#     Tools~/unity/build-player.sh --target android-il2cpp [--bouncycastle] --run [--serial <adb serial>] [--arch arm64|x86_64] [--network] [--suspend]
+#     Tools~/unity/build-player.sh --target android-il2cpp [--bouncycastle] --apk <built APK> [--serial <adb serial>] [--network] [--suspend]
 #
 # The project gets Tools~/unity/player-smoke/ as Assets/TurboHttpSmoke/; the smoke itself has no .asmdef
 # (it compiles into Assembly-CSharp) and only H2Rows/ is its own assembly. TurboHttpPlayerSmoke.cs runs the rows of TurboHttpSmokeRows.cs WITHOUT any EnsureRegistered() call
@@ -49,9 +49,15 @@
 # base64 DER (Windows: -turbohttpSmokeH2Url/-turbohttpSmokeH2Root; Android: intent extras
 # turbohttp_smoke_h2_url/_root, and adb reverse for a loopback URL). With --bouncycastle the four
 # h2-*-bouncycastle rows must PASS over HTTP/2 (protocol=h2); the h2-*-sslstream rows must PASS when no root
-# is given and are SKIP with one (SslStream trusts the platform store only). CI never builds players (no Unity license, #188, #100): this script, run in a host editor, is
-# the player-build gate (testing.md, "Host-editor gates"). TURBOHTTP_SMOKE_WAIT_S (default 300 s, 900 s with
-# --network) also bounds the Windows player run.
+# is given and are SKIP with one (SslStream trusts the platform store only). --suspend (android-il2cpp with --run
+# or --apk, #1132) asks the player for the ws-suspend-resume row (intent extra turbohttp_smoke_suspend=1): a WebSocket
+# with a 1 s ping interval and a 2 s pong timeout to a loopback echo server inside the player. When the row logs
+# "TURBOHTTP_SMOKE SUSPEND ws-suspend-resume ready" (a keep-alive ping in flight), the script backgrounds the app
+# once (input keyevent KEYCODE_HOME), waits TURBOHTTP_SMOKE_SUSPEND_S (default 10 s, longer than the pong timeout)
+# and brings it back with a launcher intent; the row must then PASS (connection still Open, echo round trip).
+# Without --suspend the row is SKIP. CI never builds players (no Unity license, #188, #100): this script, run in a host editor, is
+# the player-build gate (testing.md, "Host-editor gates"). TURBOHTTP_SMOKE_WAIT_S (default 300 s, 600 s with
+# --suspend, 900 s with --network) also bounds the Windows player run.
 #
 # Exit codes: 0 pass, 1 build, check or smoke failure (FAIL row, or no marker), 2 usage/setup error (no
 # device, lock screen, install or launch failed), 3 Unity, a build module or the
@@ -68,10 +74,10 @@ repo="$(cd "$(dirname "$0")/../.." && pwd)"
 . "$repo/Tools~/unity/wsl-interop.sh"
 # shellcheck source=Tools~/unity/android-adb.sh
 . "$repo/Tools~/unity/android-adb.sh"
-target=""; stripping=""; bouncycastle=0; background=0; run=0; network=0; serial=""; arch=""; apk=""
+target=""; stripping=""; bouncycastle=0; background=0; run=0; network=0; suspend=0; serial=""; arch=""; apk=""
 usage="usage: $0 --target win64-mono|win64-il2cpp|android-il2cpp [--stripping Disabled|Low|Medium|High]
        [--bouncycastle] [--background] [--network]
-       [--run] [--serial <adb serial>] [--arch arm64|x86_64] [--apk <built APK>]   (the last four: android-il2cpp)"
+       [--run] [--serial <adb serial>] [--arch arm64|x86_64] [--apk <built APK>] [--suspend]   (the last five: android-il2cpp)"
 while [ $# -gt 0 ]; do
   case "$1" in
     --target|--stripping|--serial|--arch|--apk)
@@ -88,6 +94,7 @@ while [ $# -gt 0 ]; do
     --background) background=1; shift ;;
     --run) run=1; shift ;;
     --network) network=1; shift ;;
+    --suspend) suspend=1; shift ;;
     *) echo "$usage" >&2; exit 2 ;;
   esac
 done
@@ -118,6 +125,11 @@ case "$arch" in ""|arm64|x86_64) ;; *) echo "build-player: --arch arm64|x86_64" 
 if [ "$target" = android-il2cpp ] && [ "$network" = 1 ] && [ "$run" = 0 ]; then
   echo "build-player: --network on android-il2cpp needs --run (the rows run on the device)" >&2; exit 2
 fi
+if [ "$suspend" = 1 ] && { [ "$target" != android-il2cpp ] || [ "$run" = 0 ]; }; then
+  echo "build-player: --suspend applies to --target android-il2cpp with --run or --apk (the script backgrounds the app over adb; iOS: testing.md)" >&2; exit 2
+fi
+suspend_s="${TURBOHTTP_SMOKE_SUSPEND_S:-10}"
+case "$suspend_s" in ''|*[!0-9]*) echo "build-player: TURBOHTTP_SMOKE_SUSPEND_S must be whole seconds, got '$suspend_s'" >&2; exit 2 ;; esac
 if [ -n "$apk" ] && [ ! -s "$apk" ]; then echo "build-player: --apk $apk: no such APK" >&2; exit 2; fi
 
 unity="${UNITY_PATH:-}"
@@ -145,10 +157,11 @@ esac
 topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi; }
 
 fail=0
-smoke_wait_s="${TURBOHTTP_SMOKE_WAIT_S:-$([ "$network" = 1 ] && echo 900 || echo 300)}"
+smoke_wait_s="${TURBOHTTP_SMOKE_WAIT_S:-$(if [ "$network" = 1 ]; then echo 900; elif [ "$suspend" = 1 ]; then echo 600; else echo 300; fi)}"
 h2_port=""
 # Prints the player's row lines and aggregate marker from log $1 and sets fail=1 unless the aggregate is
-# PASS, with --bouncycastle reports bc=present, and with --network has a PASS row per TLS provider built in.
+# PASS, with --bouncycastle reports bc=present, with --network has a PASS row per TLS provider built in, and with
+# --suspend has the ws-suspend-resume PASS row.
 check_smoke_log() {
   local plog="$1" marker row rows=tls-sslstream
   grep -E "TURBOHTTP_SMOKE ROW " "$plog" 2>/dev/null | sed 's/.*TURBOHTTP_SMOKE ROW/  TURBOHTTP_SMOKE ROW/' || true
@@ -177,6 +190,10 @@ check_smoke_log() {
             { echo "build-player: FAIL --network: $row did not run over HTTP/2"; fail=1; } ;;
       esac
     done
+  fi
+  if [ "$suspend" = 1 ]; then
+    grep -qE "TURBOHTTP_SMOKE ROW ws-suspend-resume PASS" "$plog" 2>/dev/null ||
+      { echo "build-player: FAIL --suspend: no 'TURBOHTTP_SMOKE ROW ws-suspend-resume PASS'"; fail=1; }
   fi
 }
 
@@ -299,7 +316,7 @@ if [ "$run" = 1 ]; then
   smoke_running() { android_process_state "$pkg_id" "$sdk"; }
   # Installs APK $1, launches it, waits for the aggregate marker, keeps logcat in $2 and checks it (fail=1).
   android_run() {
-    local apk_file="$1" logcat="$2" rc out deadline gone=0 extra=()
+    local apk_file="$1" logcat="$2" rc out deadline gone=0 suspended=0 extra=()
     adbr install -r "$(topath "$apk_file")" >/dev/null || adb_failed "$?" "install -r $apk_file"
     adbr shell am force-stop "$pkg_id" >/dev/null || adb_failed "$?" "am force-stop"
     adbr shell input keyevent KEYCODE_WAKEUP >/dev/null || adb_failed "$?" "input keyevent KEYCODE_WAKEUP"
@@ -323,6 +340,7 @@ if [ "$run" = 1 ]; then
           adbr reverse "tcp:$h2_port" "tcp:$h2_port" >/dev/null || adb_failed "$?" "reverse tcp:$h2_port" ;;
       esac
     fi
+    [ "$suspend" = 1 ] && extra+=(--es turbohttp_smoke_suspend 1)
     out="$(adbr shell am start -W -n "$pkg_id/com.unity3d.player.UnityPlayerActivity" ${extra[@]+"${extra[@]}"})" ||
       adb_failed "$?" "am start"
     case "$out" in *Error*) echo "build-player: am start failed: $out" >&2; exit 2 ;; esac
@@ -332,6 +350,20 @@ if [ "$run" = 1 ]; then
       rc=0
       adbr logcat -d -s Unity:V AndroidRuntime:E DEBUG:V > "$logcat" || rc=$?
       wsl_exit_if_interop "$rc" build-player "adb.exe did not start (logcat)"
+      # #1132: once the row has a keep-alive ping in flight, background the app past the pong timeout, then resume it.
+      if [ "$suspend" = 1 ] && [ "$suspended" = 0 ] && grep -q "TURBOHTTP_SMOKE SUSPEND ws-suspend-resume ready" "$logcat"; then
+        suspended=1
+        echo "build-player: --suspend: keep-alive ping in flight; backgrounding $pkg_id for $suspend_s s (KEYCODE_HOME)"
+        adbr shell input keyevent KEYCODE_HOME >/dev/null || adb_failed "$?" "input keyevent KEYCODE_HOME"
+        sleep "$suspend_s"
+        # A launcher intent brings the existing task back to the front, as tapping the app icon does.
+        out="$(adbr shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
+          -n "$pkg_id/com.unity3d.player.UnityPlayerActivity")" || adb_failed "$?" "am start (resume)"
+        case "$out" in *Error*) echo "build-player: am start (resume) failed: $out" >&2; exit 2 ;; esac
+        echo "build-player: --suspend: $pkg_id back in the foreground; waiting for the row"
+        gone=0
+        continue
+      fi
       grep -qE "TURBOHTTP_SMOKE (PASS|FAIL)" "$logcat" && break
       # Gone on two adb checks in a row without a marker: crashed or quit early. A failed check does not count.
       case "$(smoke_running)" in
@@ -352,6 +384,10 @@ if [ "$run" = 1 ]; then
     adbr shell am force-stop "$pkg_id" >/dev/null || true
     if [ -n "$h2_port" ]; then adbr reverse --remove "tcp:$h2_port" >/dev/null || true; fi
     check_smoke_log "$logcat"
+    if [ "$suspend" = 1 ] && [ "$suspended" = 0 ]; then
+      echo "build-player: FAIL --suspend: no 'TURBOHTTP_SMOKE SUSPEND ws-suspend-resume ready' line, so the app was never backgrounded"
+      fail=1
+    fi
   }
 
   if [ -n "$apk" ]; then
