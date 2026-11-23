@@ -54,3 +54,38 @@ Player-StandaloneWindows64 3603 -> 3612.
 
 Not run: the iOS simulator and device (#99), the Android emulator and phone suites at these commits,
 the certification matrix (release candidates only).
+
+## 2026-11-23: after waves run w1123 (main 628c1b2)
+
+Waves run w1123 merged #1264, #1267, #1268, #1269 and #1270.
+
+- EditMode: 87/87, 0 skipped.
+- PlayMode: 3625 total, 3618 passed, **0 failed**, 3 counted skips (baseline 3), 4 not-selected `[Explicit]`, 145 s.
+- ExternalNetwork: 51 total, 41 passed, 0 failed, 10 `[env]` skips (the 8 HTTP/2 row tests without a row server,
+  2 "SslStream has no ALPN"). The new `ValidRsaChain_Succeeds` rows (#1269) passed on all three backends.
+- Win64 IL2CPP standalone test player: 3625 total, 3615 passed, 1 failed, 5 counted skips (baseline 5), 514 s.
+  - `WebSocketProxyTests.ProxyConnectionFailure_ThrowsProxyConnectionFailed`: the released-port race again,
+    2 of 2 full Win64 IL2CPP runs. #1259 moved to v1.0 GA.
+  - The #1251 test, which failed 3/3 on this player before #1264, passed.
+- Android emulators, x86_64 IL2CPP, Managed Stripping High (`run-emulator-tests.sh --api 33,23 --jobs 1`):
+  - API 23: 3625 total, 3604 passed, 0 failed, 17 counted skips (baseline 17), 345 s.
+  - API 33, run 1: 3591 passed, 13 failed, 1591 s. All 13 failures are WebSocket tests in one window
+    (11:34-11:55 UTC): async tests slowed to tens of seconds or hit their 300 s bound, while synchronous tests
+    stayed at 0 s, and the run recovered afterwards. That points at thread-pool starvation in the player.
+    Not reproduced: the WebSocket tests alone passed 360/360 in 34 s on API 33, and a second full run had no
+    such window.
+  - API 33, run 2: 3602 passed, 2 failed, 21 skipped (17 counted), 417 s.
+    - `Http2ConnectionTests.StreamLifecycle_StreamingResponseMoreThan100MB_ReadsToEndWithDefaultOptions`:
+      `OperationCanceledException` at its fixed 180 s bound (passed in run 1 and on API 23). Filed #1272.
+    - `WebSocketMetricsTests.Metrics_CaptureConcurrentSendReceiveTraffic`: `Expected 20, was 19`. The receive
+      loop enqueues a message before it counts it. Filed #1271.
+  - Android rows from these runs were posted on #633, #846, #821, #162, #344, #364, #1184 and #1261 (Android
+    halves pass), and on #1169 (`UHttpClientPolicyTests` 20/20 on both levels).
+- Android player smoke on the API 33 emulator (`build-player.sh --target android-il2cpp --stripping High --run`):
+  PASS, including `android-cleartext-policy PASS #875 PlatformPolicy installed`. #875 closed.
+
+`skip-baseline.txt` min-totals raised from these runs: PlayMode 3612 -> 3625, Player-Android 2628 -> 3625,
+Player-StandaloneWindows64 3612 -> 3625.
+
+Not run: the Win64 Mono player, the API 26/29/36 emulators, the phone, the iOS simulator and device (#99), and
+a suspend/resume run (#1132 needs a harness that backgrounds the player).
