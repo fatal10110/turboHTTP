@@ -19,7 +19,7 @@ namespace TurboHTTP.Tests.Transport.Tls
     /// identities is <see cref="TlsNegativeSuiteTests"/>; this fixture covers the real public chain,
     /// the platform trust store and the device network.
     ///
-    /// Hosts (chains checked 2026-11-04):
+    /// Hosts (chains checked 2026-11-04; <c>www.digicert.com</c> 2026-11-23):
     /// <list type="bullet">
     /// <item><c>self-signed.badssl.com</c>: a self-signed <c>*.badssl.com</c> leaf.</item>
     /// <item><c>untrusted-root.badssl.com</c>: leaf under "BadSSL Untrusted Root Certificate Authority".</item>
@@ -30,6 +30,10 @@ namespace TurboHTTP.Tests.Transport.Tls
     /// CA. GlobalSign Root CA is in every store we target, including Android 6 (API 23), which lacks
     /// ISRG Root X1/X2 and Amazon Root CA 1, so Let's Encrypt and Amazon hosts are not used for the
     /// valid rows.</item>
+    /// <item><c>www.digicert.com</c> (valid, RSA, #286): RSA 2048 EV leaf, DigiCert EV RSA CA G2, DigiCert
+    /// Global Root G2 (also in the Android 6 store). The ECDSA row above leaves the RSA signature and key
+    /// path of each verifier unexercised; this one covers it. <c>/</c> answers a 301 to a health path on
+    /// the same host, so the row asserts a completed exchange, not a status.</item>
     /// </list>
     /// A run that cannot reach a host (DNS, connect, timeout) is an environment skip, never a pass.
     /// </summary>
@@ -39,6 +43,9 @@ namespace TurboHTTP.Tests.Transport.Tls
     public class TlsPublicHostTests
     {
         internal const string ValidChainUrl = "https://www.google.com/";
+
+        /// <summary>A public chain whose leaf key is RSA (#286); <see cref="ValidChainUrl"/> serves ECDSA.</summary>
+        internal const string ValidRsaChainUrl = "https://www.digicert.com/";
 
         private static readonly TimeSpan RequestBound = TimeSpan.FromSeconds(20);
         private static readonly TimeSpan TestBound = TimeSpan.FromSeconds(40);
@@ -98,6 +105,20 @@ namespace TurboHTTP.Tests.Transport.Tls
 
             Assert.IsNull(outcome.Failure, outcome.Failure?.ToString());
             Assert.AreEqual(HttpStatusCode.OK, outcome.Status);
+        }
+
+        [Test]
+        public void ValidRsaChain_Succeeds(
+            [Values(TlsBackend.SslStream, TlsBackend.BouncyCastle, TlsBackend.Auto)] TlsBackend backend)
+        {
+            RequireBackend(backend);
+            var outcome = Send(backend, ValidRsaChainUrl);
+            IgnoreIfUnreachable(outcome, backend, ValidRsaChainUrl);
+
+            // The chain is under test, not the site: any HTTP response (it answers / with a 301) means
+            // the RSA chain was trusted and the handshake completed.
+            Assert.IsNull(outcome.Failure, outcome.Failure?.ToString());
+            Assert.That((int)outcome.Status, Is.InRange(100, 599), "no HTTP response was read");
         }
 
         private void AssertCertificateError(TlsBackend backend, string url)
