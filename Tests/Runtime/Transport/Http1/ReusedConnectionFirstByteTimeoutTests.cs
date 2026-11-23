@@ -42,7 +42,25 @@ namespace TurboHTTP.Tests.Transport.Http1
         public void Loop384_TwoSilentIdle_MaxTwoPerHost_200x() =>
             RunLoop("two-silent", silentConnections: 2, maxPerHost: 2, expectedAccepts: 3);
 
-        private static void RunLoop(string name, int silentConnections, int maxPerHost, int expectedAccepts)
+        // #1184: the same loops in SAEA mode. The pool builds every connection as a SaeaStream over a
+        // SaeaSocketChannel and the injected idle connections are built the same way, so the abandoned
+        // read goes through the SAEA descriptor hold of #455 instead of HoldingNetworkStream (#405).
+        [Test, Explicit("200 iterations, about 45 s; device and simulator validation of the SAEA hold (#1184)")]
+        [Category("Stress")]
+        public void Loop384_Saea_OneSilentIdle_MaxOnePerHost_200x() =>
+            RunLoop("saea-one-silent", silentConnections: 1, maxPerHost: 1, expectedAccepts: 2, SocketIoMode.Saea);
+
+        [Test, Explicit("200 iterations, about 45 s; device and simulator validation of the SAEA hold (#1184)")]
+        [Category("Stress")]
+        public void Loop384_Saea_TwoSilentIdle_MaxTwoPerHost_200x() =>
+            RunLoop("saea-two-silent", silentConnections: 2, maxPerHost: 2, expectedAccepts: 3, SocketIoMode.Saea);
+
+        private static void RunLoop(
+            string name,
+            int silentConnections,
+            int maxPerHost,
+            int expectedAccepts,
+            SocketIoMode socketIoMode = SocketIoMode.NetworkStream)
         {
             var failures = new List<string>();
             for (int i = 1; i <= LoopIterations; i++)
@@ -58,10 +76,11 @@ namespace TurboHTTP.Tests.Transport.Http1
                         {
                             var pool = new TcpConnectionPool(
                                 maxConnectionsPerHost: maxPerHost,
+                                socketIoMode: socketIoMode,
                                 reusedConnectionFirstByteTimeout: ShortFirstByte);
                             using var client = CreateClient(new RawSocketTransport(pool));
                             for (int c = 0; c < silentConnections; c++)
-                                await InjectIdleConnectionAsync(pool, server.Port);
+                                await InjectIdleConnectionAsync(pool, server.Port, socketIoMode);
 
                             using var response = await client.Get(server.Url("/"))
                                 .WithTimeout(LoopRequestTimeout)
@@ -134,6 +153,31 @@ namespace TurboHTTP.Tests.Transport.Http1
                 Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
                 // Accept 1 is the injected silent connection, accept 2 the fresh retry.
                 Assert.AreEqual(2, server.AcceptCount, "the GET must move to a fresh connection");
+            });
+        }
+
+        [Test]
+        public void SaeaMode_TwoSilentIdleConnections_IdempotentGet_RetriesOnNewlyConnectedSocket()
+        {
+            AssertAsync.Run(async () =>
+            {
+                // One iteration of the SAEA loop (#1184) in the default suite, so the SAEA injection
+                // and the SAEA retry path stay exercised between device runs of the Explicit loops.
+                using var server = new SilentThenOkServer(silentConnections: 2);
+                var pool = new TcpConnectionPool(
+                    maxConnectionsPerHost: 2,
+                    socketIoMode: SocketIoMode.Saea,
+                    reusedConnectionFirstByteTimeout: ShortFirstByte);
+                using var client = CreateClient(new RawSocketTransport(pool));
+                await InjectIdleConnectionAsync(pool, server.Port, SocketIoMode.Saea);
+                await InjectIdleConnectionAsync(pool, server.Port, SocketIoMode.Saea);
+
+                using var response = await client.Get(server.Url("/"))
+                    .WithTimeout(TimeSpan.FromSeconds(5))
+                    .SendBufferedAsync();
+
+                Assert.AreEqual(HttpStatusCode.OK, response.StatusCode);
+                Assert.AreEqual(3, server.AcceptCount, "the retry must take a newly connected socket");
             });
         }
 
@@ -225,13 +269,32 @@ namespace TurboHTTP.Tests.Transport.Http1
             });
         }
 
-        private static async Task InjectIdleConnectionAsync(TcpConnectionPool pool, int port)
+        private static async Task InjectIdleConnectionAsync(
+            TcpConnectionPool pool,
+            int port,
+            SocketIoMode socketIoMode = SocketIoMode.NetworkStream)
         {
             var tcp = new TcpClient();
             await tcp.ConnectAsync(IPAddress.Loopback, port);
-            // The stream the pool itself builds in NetworkStream mode (#448): a plain NetworkStream would
-            // release the descriptor at once when the watchdog abandons its read, bypassing #405.
-            var connection = new PooledConnection(tcp.Client, new HoldingNetworkStream(tcp.Client), "127.0.0.1", port, false);
+            // The stream the pool itself builds for the mode (TcpConnectionPool's stream switch):
+            // NetworkStream mode uses HoldingNetworkStream (#448; a plain NetworkStream would release
+            // the descriptor at once when the watchdog abandons its read, bypassing #405), SAEA mode a
+            // SaeaStream over a SaeaSocketChannel, whose descriptor hold is #455 (#1184).
+            Stream stream;
+            switch (socketIoMode)
+            {
+                case SocketIoMode.NetworkStream:
+                    stream = new HoldingNetworkStream(tcp.Client);
+                    break;
+                case SocketIoMode.Saea:
+                    stream = new SaeaStream(new SaeaSocketChannel(tcp.Client));
+                    break;
+                default:
+                    tcp.Dispose();
+                    throw new ArgumentOutOfRangeException(nameof(socketIoMode), socketIoMode, "no injection for this mode");
+            }
+
+            var connection = new PooledConnection(tcp.Client, stream, "127.0.0.1", port, false);
 
             var idleField = typeof(TcpConnectionPool).GetField(
                 "_idleConnections",
