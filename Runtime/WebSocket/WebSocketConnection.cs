@@ -158,6 +158,12 @@ namespace TurboHTTP.WebSocket
         internal TimeSpan? KeepAliveGracePeriodOverride { get; set; }
 
         /// <summary>
+        /// Tests only (#1271): awaited by the receive loop right after a message entered the delivery queue,
+        /// when <see cref="ReceiveAsync"/> can already return it. Set before connecting; null otherwise.
+        /// </summary>
+        internal Func<Task> MessageEnqueuedTestHook { get; set; }
+
+        /// <summary>
         /// Reports that the application resumed from a suspension (iOS/Android backgrounding, #1132). A keep-alive
         /// deadline that was running during the suspension restarts instead of closing a live connection with
         /// PongTimeout: timers that expired while the process was frozen can fire before the read completion

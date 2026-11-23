@@ -294,10 +294,21 @@ namespace TurboHTTP.WebSocket
 
                         var wsMessage = new WebSocketMessage(messageType, buffer, payloadLength, decodedText);
 
+                        // Count the message and touch activity before it enters the delivery queue: once queued,
+                        // ReceiveAsync can return it on another thread, and the consumer must see it counted (#1271).
+                        // A parked enqueue therefore counts a message the application has not dequeued yet.
+                        _metrics?.RecordMessageReceived();
+                        TouchActivity(applicationMessage: true);
+
                         try
                         {
                             if (!_receiveQueue.TryEnqueue(wsMessage))
+                            {
                                 await EnqueueWhileParkedAsync(wsMessage, ct).ConfigureAwait(false);
+
+                                // Restart the idle timer once a parked delivery completes, as before the reorder.
+                                TouchActivity(applicationMessage: true);
+                            }
                         }
                         catch
                         {
@@ -305,9 +316,11 @@ namespace TurboHTTP.WebSocket
                             throw;
                         }
 
-                        _metrics?.RecordMessageReceived();
+                        var enqueuedHook = MessageEnqueuedTestHook;
+                        if (enqueuedHook != null)
+                            await enqueuedHook().ConfigureAwait(false);
+
                         TryPublishMetricsUpdate();
-                        TouchActivity(applicationMessage: true);
                     }
                     finally
                     {
