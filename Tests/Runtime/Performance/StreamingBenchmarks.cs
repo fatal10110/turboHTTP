@@ -28,7 +28,7 @@ namespace TurboHTTP.Tests.Performance
     /// <list type="bullet">
     /// <item>Buffered small body: since 22a a buffered response is the streaming response collected by the
     /// dispatch bridge, so the cost 22a added to the 22.3 buffered path is the bridge over a streaming read of the
-    /// same body into a caller buffer. Budget: buffered p50 &lt;= streaming p50 x 1.05
+    /// same body into a new <c>byte[]</c> (the body a 22.3 buffered response held). Budget: buffered p50 &lt;= streaming p50 x 1.05
     /// (<see cref="SmallBodyLatencyBudgetPercent"/>) for 1 KiB and 32 KiB GETs.</item>
     /// <item>Streaming throughput: 1 MiB streaming download MiB/s &gt;= raw-socket MiB/s x 0.90
     /// (<see cref="RawThroughputBudgetPercent"/>, the upper end of the plan's 5-10 %).</item>
@@ -80,10 +80,11 @@ namespace TurboHTTP.Tests.Performance
                     var url = server.Url("/bytes/" + size.ToString(CultureInfo.InvariantCulture));
                     var buffered = new LatencySamples("h1-get-" + Label(size) + "-buffered", size);
                     var streaming = new LatencySamples("h1-get-" + Label(size) + "-streaming", size);
-                    var sink = new byte[size];
+                    // buffer: null: each streaming request reads its body into a new byte[], as 22.3 buffering did.
+                    // (Not a local const: a constant array local in the PDB fails Unity's IL2CPP linker.)
 
                     await GetBufferedAsync(client, url, size);
-                    await GetStreamingAsync(client, url, sink, size);
+                    await GetStreamingAsync(client, url, buffer: null, size);
 
                     // Alternating order per round, so drift on the host weighs on both rows alike.
                     for (var round = 0; round < Rounds; round++)
@@ -91,11 +92,11 @@ namespace TurboHTTP.Tests.Performance
                         if (round % 2 == 0)
                         {
                             await MeasureRoundAsync(buffered, SmallIterations, () => GetBufferedAsync(client, url, size));
-                            await MeasureRoundAsync(streaming, SmallIterations, () => GetStreamingAsync(client, url, sink, size));
+                            await MeasureRoundAsync(streaming, SmallIterations, () => GetStreamingAsync(client, url, buffer: null, size));
                         }
                         else
                         {
-                            await MeasureRoundAsync(streaming, SmallIterations, () => GetStreamingAsync(client, url, sink, size));
+                            await MeasureRoundAsync(streaming, SmallIterations, () => GetStreamingAsync(client, url, buffer: null, size));
                             await MeasureRoundAsync(buffered, SmallIterations, () => GetBufferedAsync(client, url, size));
                         }
                     }
@@ -231,6 +232,7 @@ namespace TurboHTTP.Tests.Performance
 
         private static async Task GetStreamingAsync(UHttpClient client, string url, byte[] buffer, int expectedBytes)
         {
+            buffer ??= new byte[expectedBytes];
             var response = await client.Get(url).SendStreamingAsync().ConfigureAwait(false);
             try
             {
@@ -239,7 +241,7 @@ namespace TurboHTTP.Tests.Performance
                 var offset = 0;
                 while (true)
                 {
-                    // Small bodies land in one caller array (the buffered row's byte[]); large ones reuse the buffer.
+                    // A body-sized array takes the body; a smaller buffer is reused (the throughput rows).
                     if (offset == buffer.Length)
                         offset = 0;
                     var read = await response.Body.ReadAsync(buffer, offset, buffer.Length - offset).ConfigureAwait(false);
