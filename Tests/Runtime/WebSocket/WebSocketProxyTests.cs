@@ -1,6 +1,4 @@
 using System;
-using System.Net;
-using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
@@ -166,11 +164,9 @@ namespace TurboHTTP.Tests.WebSocket
                 using var server = new WebSocketTestServer();
                 await using var client = new WebSocketClient(new RawSocketWebSocketTransport());
 
-                int closedPort;
-                var listener = new TcpListener(IPAddress.Loopback, 0);
-                listener.Start();
-                closedPort = ((IPEndPoint)listener.LocalEndpoint).Port;
-                listener.Stop();
+                // Held for the whole test: a released ephemeral port can be taken by another test's
+                // listener, which accepts the connect and leaves the handshake to time out (#1259).
+                using var closedPort = new RefusingLoopbackPort();
 
                 var options = CreateOptions();
                 // A refused loopback connect takes about 2 s on Windows (SYN retries); the handshake
@@ -178,7 +174,7 @@ namespace TurboHTTP.Tests.WebSocket
                 // connection failure (#226).
                 options.HandshakeTimeout = TimeSpan.FromSeconds(15);
                 options.ProxySettings = new WebSocketProxySettings(
-                    new Uri("http://127.0.0.1:" + closedPort));
+                    new Uri("http://127.0.0.1:" + closedPort.Port));
 
                 var ex = AssertAsync.ThrowsAsync<WebSocketException>(async () =>
                     await client.ConnectAsync(
