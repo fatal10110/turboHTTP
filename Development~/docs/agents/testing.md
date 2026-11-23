@@ -251,13 +251,27 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    the `ws-suspend-resume` row (SKIP without it): a WebSocket with a 1 s ping interval and a 2 s pong timeout to
    a loopback echo server inside the player, which answers each ping after 1 s. When the row logs
    `TURBOHTTP_SMOKE SUSPEND ws-suspend-resume ready` (a ping in flight), the script presses Home
-   (`input keyevent KEYCODE_HOME`), waits `TURBOHTTP_SMOKE_SUSPEND_S` (default 10 s; 30 s also crosses the
-   cached-apps freezer delay of recent Android versions) and brings the app back with a launcher intent; the row
-   must PASS: the connection is still Open about 8 s after `OnApplicationPause(false)` and an echo round trip
-   works (FAIL on any close, PongTimeout being the #1132 regression). Its line reports `background=`,
-   `ping-in-flight-at-pause=`, `max-ping-gap=` (about the background time when the OS froze the process; about
-   2 s when it kept running), `grace-waits=`/`liveness-extensions=` (the library's keep-alive counters, read by
-   reflection) and `resume-signal=` (the resume reached the keep-alive). The server is in the same process, so
+   (`input keyevent KEYCODE_HOME`), freezes the process, waits `TURBOHTTP_SMOKE_SUSPEND_S` (default 10 s, at
+   least 5 s, else exit 2), thaws it and brings the app back with a launcher intent. Home alone is not a
+   suspension: an API 33 emulator kept the backgrounded smoke running (`max-ping-gap=2.0s` over 46 s, #1281).
+   The freeze method is chosen before the launch and printed (`freeze method ...`): `root` (`kill -STOP`, 1 s
+   after Home so Unity sees the pause, then `kill -CONT` before the launcher intent, from a root shell: adbd
+   already root or `adb root` allowed, as on emulator `google_apis` images but not `google_apis_playstore` or
+   production phones), else `run-as` (the same signals as the app's uid; only a debuggable APK, which the smoke
+   is not), else `freezer` (the cached-apps freezer is on, API 31+: the system freezes the cached app after its
+   debounce and thaws it on the resume; the app is frozen for only about `TURBOHTTP_SMOKE_SUSPEND_S` minus that
+   debounce while the gap check needs half of `TURBOHTTP_SMOKE_SUSPEND_S`, so set it to at least twice the
+   debounce plus a margin, e.g. 30 s for a 10 s debounce; the script prints `freeze_debounce_timeout` from
+   `dumpsys activity settings` and warns when the value is lower). When none works
+   the script exits 2 naming each refusal. After the run it prints
+   `--suspend: freeze=<method> frozen=<s>s; background=... max-ping-gap=... grace-waits=... resume-signal=...`.
+   The row must PASS: the connection is still Open about 8 s after `OnApplicationPause(false)` and an echo round
+   trip works (FAIL on any close, PongTimeout being the #1132 regression), and its `max-ping-gap` must be at
+   least half of `TURBOHTTP_SMOKE_SUSPEND_S`, else the script FAILs the run (exit 1, "the process was not
+   frozen"): a process that kept running is no evidence for #1132. Its line reports `background=`,
+   `ping-in-flight-at-pause=`, `max-ping-gap=` (about the freeze when the process was frozen; about 2 s when it
+   kept running), `grace-waits=`/`liveness-extensions=` (the library's keep-alive counters, read by
+   reflection: the grace path) and `resume-signal=` (the resume reached the keep-alive). The server is in the same process, so
    the row exercises the ordering of timers and read completions after a process-wide freeze, not network
    delay; whether a ping is in flight at the freeze is not controlled (about half the time). Quote the row lines in the #99 journal. Never
    stop a running device run from the shell: killing Unity's process tree also kills its adb server.
@@ -310,6 +324,8 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
       aggregate line. PASS needs the connection still Open and an echo round trip; record the whole row
       line (`background=`, `ping-in-flight-at-pause=`, `max-ping-gap=`: about the background time when the
       app was suspended, `grace-waits=`, `resume-signal=`) with the simulator runtime and editor version.
+      A `max-ping-gap` of about 2 s means the app kept running in the background (#1281): no evidence
+      for #1132, whatever the row says.
       Repeat a few times for a run with `ping-in-flight-at-pause=yes`.
 
    An iPhone follows the same steps: install from Xcode, set `TURBOHTTP_SMOKE_SUSPEND=1` in the scheme's
