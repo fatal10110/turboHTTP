@@ -32,9 +32,10 @@ namespace TurboHTTP.Tests
 
                 var ex = Assert.Throws<SocketException>(() => connect.GetAwaiter().GetResult());
                 TestContext.WriteLine($"Refused after {watch.ElapsedMilliseconds} ms: {ex.SocketErrorCode}");
-                // IL2CPP on Darwin reports the raw errno (ECONNREFUSED is 61) instead of the mapped value (#1287).
+                // IL2CPP on Darwin (macOS, iOS) reports the raw errno, ECONNREFUSED 61, instead of the
+                // mapped value (#1287).
                 var refused = ex.SocketErrorCode == SocketError.ConnectionRefused
-                    || (RefusingLoopbackPort.IsDarwin && (int)ex.SocketErrorCode == DarwinEconnrefused);
+                    || (int)ex.SocketErrorCode == DarwinEconnrefused;
                 Assert.IsTrue(refused, "Expected a refused connect, got " + ex.SocketErrorCode);
             });
         }

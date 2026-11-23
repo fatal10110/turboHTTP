@@ -22,9 +22,10 @@ namespace TurboHTTP.Tests
     /// while neither listens; that runtime is only used by the Unity-free unit job.
     /// </para>
     /// <para>
-    /// Darwin (macOS, iOS) drops a SYN to a bound socket that does not listen, so the connect times out
-    /// (about 8 s) instead of being refused (#1286). There no socket is held and <see cref="Port"/> is 1:
-    /// TurboHTTP tests only bind port 0, and Darwin refuses a connect to a port with no socket at once.
+    /// Only Windows needs the held socket. Darwin (macOS, iOS) drops a SYN to a bound socket that does not
+    /// listen, so the connect timed out (about 8 s) instead of being refused (#1286). Off Windows no socket
+    /// is held and <see cref="Port"/> is 1: TurboHTTP tests only bind port 0, and every other OS refuses a
+    /// connect to a port with no socket at once.
     /// </para>
     /// <para>
     /// A refused loopback connect is not instant on Windows: the client retries the SYN after the
@@ -34,15 +35,15 @@ namespace TurboHTTP.Tests
     /// </remarks>
     internal sealed class RefusingLoopbackPort : IDisposable
     {
-        private const int UnboundDarwinPort = 1;
+        private const int UnboundPort = 1;
 
         private readonly Socket _socket;
 
         public RefusingLoopbackPort()
         {
-            if (IsDarwin)
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
             {
-                Port = UnboundDarwinPort;
+                Port = UnboundPort;
                 return;
             }
 
@@ -67,10 +68,5 @@ namespace TurboHTTP.Tests
 
         /// <summary>Releases the port.</summary>
         public void Dispose() => _socket?.Dispose();
-
-        // iOS reports no OSPlatform.OSX; OSDescription carries the kernel name (uname) there.
-        internal static bool IsDarwin =>
-            RuntimeInformation.IsOSPlatform(OSPlatform.OSX)
-            || RuntimeInformation.OSDescription.StartsWith("Darwin", StringComparison.OrdinalIgnoreCase);
     }
 }
