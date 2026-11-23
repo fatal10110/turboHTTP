@@ -73,10 +73,20 @@ reading one over-budget row as a regression. The other rows print their deltas f
 ## The committed baseline
 
 No numeric Phase 22.3 baseline survives in the repository (the 22.3 journal has no numbers and the earlier
-22a figures came from a temporary harness), so `baseline.json` records the first run of this harness: the
-library at the commit in its `commit` field, on the machine in its `machine` field. It is the reference for
-later regressions, not a comparison with 22.3.
+22a figures came from a temporary harness), so `baseline.json` records a run of this harness: the library at
+the commit in its `commit` field, on the machine in its `machine` field. It is the reference for later
+regressions, not a comparison with 22.3.
 
-What this harness does not cover: IL2CPP or Mono numbers (it runs on CoreCLR; the NUnit allocation gates in
-`Tests/Runtime/Performance/` are the in-Unity check), device memory and thread-pool behavior (Phase 22a.6
+The first baseline (6452794, 2026-11-08) was re-recorded on 2026-11-23 (#102). By then the three gated HTTP/1.1
+rows allocated 790-890 B more per request (about 5.7 %, over the 5 % + 64 B budget), the HTTP/2 rows about
+400 B more (within their slack). A bisect of `h1-get-1k-buffered` put the growth in several correctness fixes,
+not one defect: 14054 B at 6452794, 14230 B before #1193, about 14600 B from #1193 (one stale-connection retry,
+the unarmed retry connection) and about 14890 B from #1196 or #1198 (the proxy decided per dispatch; not split
+further). Reducing it again is #120. Re-record only for a growth that is understood like this, and say so in the PR.
+
+The in-Unity counterpart is `Tests/Runtime/Performance/StreamingBenchmarks.cs`: HTTP/1.1 only, budgets checked
+against references measured in the same run (advisory unless `TURBOHTTP_BENCH_GATE_LATENCY=1`).
+
+What this harness does not cover: IL2CPP or Mono numbers (it runs on CoreCLR; the NUnit allocation gates and
+`StreamingBenchmarks` in `Tests/Runtime/Performance/` are the in-Unity check), device memory and thread-pool behavior (Phase 22a.6
 Steps 3 and 5, tracked in #99), and real packet loss (`Tools~/soak` covers stalls and resets).
