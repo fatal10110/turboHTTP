@@ -1,7 +1,9 @@
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using NUnit.Framework;
 using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Connection;
+using TurboHTTP.Transport.Tcp;
 using Table = TurboHTTP.Core.Internal.SocketErrorNormalizer.ErrnoTable;
 
 namespace TurboHTTP.Tests.Transport
@@ -128,9 +130,85 @@ namespace TurboHTTP.Tests.Transport
         }
 
         [Test]
-        public void DetectTable_IsStable()
+        public void CurrentTable_FollowsBuildPlatform()
         {
-            Assert.AreEqual(SocketErrorNormalizer.CurrentTable, SocketErrorNormalizer.DetectTable());
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            var expected = Table.None;
+#elif UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX || UNITY_IOS
+            var expected = Table.Darwin;
+#elif UNITY_ANDROID || UNITY_STANDALONE_LINUX || UNITY_EDITOR_LINUX
+            var expected = Table.Linux;
+#else
+            // The .NET harness: this assembly has no platform define, but the shadow-built Core it loads
+            // is the editor variant (UNITY_EDITOR_OSX), so only stability is checked here.
+            var expected = SocketErrorNormalizer.PlatformTable();
+#endif
+            Assert.AreEqual(expected, SocketErrorNormalizer.CurrentTable);
+            Assert.AreEqual(expected, SocketErrorNormalizer.PlatformTable());
+        }
+
+#if !UNITY_5_3_OR_NEWER
+        // The runtime fallback, on the .NET host that runs the harness (Linux CI, Windows or macOS dev boxes).
+        [Test]
+        public void DetectTable_MatchesHostOs()
+        {
+            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                Assert.AreEqual(Table.None, SocketErrorNormalizer.DetectTable());
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
+                Assert.AreEqual(Table.Darwin, SocketErrorNormalizer.DetectTable());
+            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
+                Assert.AreEqual(Table.Linux, SocketErrorNormalizer.DetectTable());
+            else
+                TestRequirements.IgnoreEnvironment("host OS has no errno table");
+        }
+#endif
+
+        // SAEA completions (SocketIoMode.Saea): a raw EINTR or ECANCELED must cancel like the mapped value.
+        [TestCase(4, Linux)]       // EINTR
+        [TestCase(125, Linux)]     // ECANCELED
+        [TestCase(4, Darwin)]      // EINTR
+        [TestCase(89, Darwin)]     // ECANCELED
+        [TestCase((int)SocketError.OperationAborted, None)]
+        [TestCase((int)SocketError.Interrupted, Linux)]
+        public void SaeaCompletion_RawCancelErrno_Cancels(int value, int table)
+        {
+            var task = Resolve((SocketError)value, (Table)table);
+
+            Assert.IsTrue(task.IsCanceled, "status " + task.Status);
+        }
+
+        [TestCase(111, Linux, SocketError.ConnectionRefused)]
+        [TestCase(54, Darwin, SocketError.ConnectionReset)]
+        [TestCase((int)SocketError.ConnectionReset, None, SocketError.ConnectionReset)]
+        public void SaeaCompletion_RawFailureErrno_FaultsWithNormalizedError(int value, int table, SocketError expected)
+        {
+            var task = Resolve((SocketError)value, (Table)table);
+
+            Assert.IsTrue(task.IsFaulted, "status " + task.Status);
+            var socketException = task.Exception.InnerException as SocketException;
+            Assert.IsNotNull(socketException, "inner " + task.Exception.InnerException);
+            Assert.AreEqual(expected, socketException.SocketErrorCode);
+        }
+
+        [Test]
+        public void SaeaCompletion_Success_ReturnsBytesTransferred()
+        {
+            var operation = ResolveValueTask(SocketError.Success, Table.Linux, bytesTransferred: 42);
+
+            Assert.IsTrue(operation.IsCompletedSuccessfully);
+            Assert.AreEqual(42, operation.Result); // already completed: reads the result, never blocks
+        }
+
+        private static System.Threading.Tasks.Task<int> Resolve(SocketError error, Table table)
+            => ResolveValueTask(error, table, 0).AsTask();
+
+        // The source has already ended when this returns, so its status is read without waiting.
+        private static System.Threading.Tasks.ValueTask<int> ResolveValueTask(SocketError error, Table table, int bytesTransferred)
+        {
+            var source = new SaeaCompletionSource();
+            source.Reset();
+            SaeaSocketChannel.ResolveFromSaea(error, bytesTransferred, source, table);
+            return source.AsValueTask();
         }
 
         // NAT64 fallback (#167): an IPv6-only network must be recognized from the raw errno too, or the

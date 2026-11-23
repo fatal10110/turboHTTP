@@ -45,8 +45,26 @@ namespace TurboHTTP.Core.Internal
             Darwin,
         }
 
-        /// <summary>The table of the OS this process runs on, detected once.</summary>
-        internal static readonly ErrnoTable CurrentTable = DetectTable();
+        /// <summary>The table of the OS this process runs on, chosen once.</summary>
+        internal static readonly ErrnoTable CurrentTable = PlatformTable();
+
+        /// <summary>
+        /// The table of the build platform. Unity builds take it from the platform defines, the same
+        /// split as SaeaPlatformDetection.CurrentOs, because a runtime on iOS need not describe itself
+        /// as Darwin; other hosts (the .NET test runner, unknown Unity platforms) use <see cref="DetectTable"/>.
+        /// </summary>
+        internal static ErrnoTable PlatformTable()
+        {
+#if UNITY_EDITOR_WIN || UNITY_STANDALONE_WIN
+            return ErrnoTable.None;
+#elif UNITY_EDITOR_OSX || UNITY_STANDALONE_OSX || UNITY_IOS
+            return ErrnoTable.Darwin;
+#elif UNITY_ANDROID || UNITY_STANDALONE_LINUX || UNITY_EDITOR_LINUX
+            return ErrnoTable.Linux;
+#else
+            return DetectTable();
+#endif
+        }
 
         /// <summary>The normalized <see cref="SocketException.SocketErrorCode"/> of <paramref name="exception"/>.</summary>
         internal static SocketError Normalize(SocketException exception)
