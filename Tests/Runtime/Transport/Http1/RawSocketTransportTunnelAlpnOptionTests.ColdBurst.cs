@@ -206,12 +206,14 @@ namespace TurboHTTP.Tests.Transport.Http1
 
             public Task<UHttpResponse> SendAsync(string path, CancellationToken ct)
             {
-                var request = new UHttpRequest(HttpMethod.GET, new Uri($"https://{OriginHost}{path}"))
-                    .WithProxy(new ProxySettings
-                    {
-                        Address = new Uri($"http://127.0.0.1:{_proxyPort}"),
-                        UseEnvironmentVariables = false
-                    });
+                // The proxy hop is http:// loopback: opt in, as players default to no cleartext (#1261).
+                var request = TestHelpers.AllowLoopbackCleartext(
+                    new UHttpRequest(HttpMethod.GET, new Uri($"https://{OriginHost}{path}"))
+                        .WithProxy(new ProxySettings
+                        {
+                            Address = new Uri($"http://127.0.0.1:{_proxyPort}"),
+                            UseEnvironmentVariables = false
+                        }));
                 var context = new RequestContext(request);
                 Contexts.Add(context);
                 return TransportDispatchHelper.CollectResponseAsync(Transport.DispatchAsync, request, context, ct);

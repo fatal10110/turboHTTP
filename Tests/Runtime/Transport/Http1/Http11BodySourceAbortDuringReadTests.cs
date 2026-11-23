@@ -3,7 +3,6 @@ using System.Buffers;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
-using System.Runtime.CompilerServices;
 using System.Text;
 using System.Threading;
 using System.Threading.Tasks;
@@ -192,53 +191,120 @@ namespace TurboHTTP.Tests.Transport.Http1
             }, Guard);
         }
 
+        // #1251: checks the property itself, that the caller's (possibly long-lived) token no longer runs the
+        // reader's callback once the late read ended, instead of a WeakReference after GC.Collect. The caller's
+        // read faults inside the queued FailAbandonedBodyRead work item and the test's continuations run inline
+        // on that stack, whose frames hold the reader: IL2CPP's conservative stack scan (and unoptimized
+        // CoreCLR frames) keep it alive whatever the token does.
         [Test]
         public void Abort_PendingReadWithCallerToken_DoesNotLeaveTheReaderOnTheCallersToken()
         {
             AssertAsync.Run(async () =>
             {
-                using var cts = new CancellationTokenSource();
-                var stream = new AbandonedReadStream();
-                using var socket = NewSocket();
+                var savedSettle = AbandonedSocketIo.SettleTimeout;
+                // Far beyond the wait below: the entry ends when the late read's continuation ran, not by
+                // expiring. Finite, so a failing run does not hold back the sockets of later tests for good.
+                AbandonedSocketIo.SettleTimeout = TimeSpan.FromMinutes(1);
+                try
+                {
+                    var probe = new TokenCallbackProbe();
+                    using (var control = new CancellationTokenSource())
+                    {
+                        probe.Mark(() => control.Token.Register(() => { }));
+                        Assert.AreEqual(1, probe.CancelAndCountRuns(control),
+                            "the probe must see a callback registered under its mark run");
+                    }
 
-                var reader = await AbortThenEndLateAsync(stream, socket, cts.Token).ConfigureAwait(false);
+                    using var cts = new CancellationTokenSource();
+                    var stream = new AbandonedReadStream();
+                    using var socket = NewSocket();
+                    var source = NewSource(stream, socket, Http11ResponseBodyKind.ContentLength, 100);
 
-                GC.Collect();
-                GC.WaitForPendingFinalizers();
-                GC.Collect();
-                Assert.IsFalse(reader.IsAlive,
-                    "the abandoned read's registration on the caller's token still roots the reader");
-                GC.KeepAlive(cts);
+                    // The read registers on the caller's token under the probe's mark.
+                    Task<int> read = null;
+                    probe.Mark(() => read = source.ReadAsync(new byte[100], cts.Token).AsTask());
+                    await stream.ReadPending.ConfigureAwait(false);
+                    source.Abort();
+                    Assert.IsInstanceOf<ObjectDisposedException>(await CaptureAsync(read).ConfigureAwait(false));
+
+                    // The platform ends the abandoned read late. Its continuation drops the registration and
+                    // then ends the abandoned-read entry, so a settled AbandonedSocketIo means it ran, inline
+                    // here (Mono) or queued (CoreCLR).
+                    stream.EndRead(0);
+                    var settled = AbandonedSocketIo.WaitForSettledAsync(CancellationToken.None);
+                    var winner = await Task.WhenAny(settled, Task.Delay(SettleGuard)).ConfigureAwait(false);
+                    Assert.AreSame(settled, winner, "the late read's continuation never ran");
+
+                    Assert.AreEqual(0, probe.CancelAndCountRuns(cts),
+                        "the abandoned read's registration on the caller's token still roots the reader");
+                }
+                finally
+                {
+                    AbandonedSocketIo.SettleTimeout = savedSettle;
+                }
             }, Guard);
         }
 
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        private static async Task<WeakReference> AbortThenEndLateAsync(
-            AbandonedReadStream stream,
-            Socket socket,
-            CancellationToken callerToken)
+        /// <summary>
+        /// Tells whether cancelling a token still runs a callback registered on it, without a reference to
+        /// the callback or a GC. <see cref="CancellationToken.Register(Action{object}, object)"/> captures the
+        /// execution context and the token runs the callback in it, so a callback registered under
+        /// <see cref="Mark"/> switches this <see cref="AsyncLocal{T}"/> to the mark when it runs.
+        /// </summary>
+        private sealed class TokenCallbackProbe
         {
-            var source = NewTrackedSource(stream, socket, out var weak);
-            var read = source.ReadAsync(new byte[100], callerToken).AsTask();
-            await stream.ReadPending.ConfigureAwait(false);
-            source.Abort();
-            Assert.IsInstanceOf<ObjectDisposedException>(await CaptureAsync(read).ConfigureAwait(false));
+            private static readonly object Marked = new object();
+            private readonly AsyncLocal<object> _mark;
+            private int _cancellingThread;
+            private int _runs;
 
-            // The platform ends the abandoned read late; its continuation runs inline here.
-            stream.EndRead(0);
-            return weak;
-        }
+            public TokenCallbackProbe()
+            {
+                _mark = new AsyncLocal<object>(OnMarkChanged);
+            }
 
-        // Not inlined, so no frame of the test holds the reader itself.
-        [MethodImpl(MethodImplOptions.NoInlining)]
-        private static Http11ResponseBodySource NewTrackedSource(
-            AbandonedReadStream stream,
-            Socket socket,
-            out WeakReference reader)
-        {
-            var bufferedReader = new Http11ResponseParser.BufferedStreamReader(stream);
-            reader = new WeakReference(bufferedReader);
-            return NewSource(bufferedReader, stream, socket, Http11ResponseBodyKind.ContentLength, 100, keepAlive: false);
+            /// <summary>Runs <paramref name="register"/> with the mark in the execution context.</summary>
+            public void Mark(Action register)
+            {
+                _mark.Value = Marked;
+                try
+                {
+                    register();
+                }
+                finally
+                {
+                    _mark.Value = null;
+                }
+            }
+
+            /// <summary>Cancels <paramref name="cts"/> and returns how many marked callbacks it ran.</summary>
+            public int CancelAndCountRuns(CancellationTokenSource cts)
+            {
+                // Counts only this thread: Cancel runs the callbacks inline, and work items or continuations
+                // that flowed the mark elsewhere are not the token's callbacks.
+                Volatile.Write(ref _runs, 0);
+                Volatile.Write(ref _cancellingThread, Environment.CurrentManagedThreadId);
+                try
+                {
+                    cts.Cancel();
+                }
+                finally
+                {
+                    Volatile.Write(ref _cancellingThread, 0);
+                }
+
+                return Volatile.Read(ref _runs);
+            }
+
+            private void OnMarkChanged(AsyncLocalValueChangedArgs<object> args)
+            {
+                if (args.ThreadContextChanged &&
+                    ReferenceEquals(args.CurrentValue, Marked) &&
+                    Volatile.Read(ref _cancellingThread) == Environment.CurrentManagedThreadId)
+                {
+                    Interlocked.Increment(ref _runs);
+                }
+            }
         }
 
         // #643: RFC 9112 Section 9.3. A second response in the same write as the first leaves bytes

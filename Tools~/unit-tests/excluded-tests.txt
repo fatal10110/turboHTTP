@@ -9,7 +9,3 @@ TurboHTTP.Tests.WebSocket.JsonWebSocketSerializerBridgeTests.RoundTrip_Serializa
 
 # #1250: stalls for its 60 s bound on .NET 8 with the thread pool clamped (passes on Mono).
 TurboHTTP.Tests.Transport.Tls.BouncyCastleHandshakeThreadPoolTests.ConcurrentHandshakes_OverSaea_WithClampedThreadPool_CompleteWithoutBlockingIo
-
-# #1251: intermittent on .NET 8: the weak reference is sometimes still alive after GC.Collect (the late read's
-# continuation can still be queued on CoreCLR, while Mono runs it inline).
-TurboHTTP.Tests.Transport.Http1.Http11BodySourceAbortDuringReadTests.Abort_PendingReadWithCallerToken_DoesNotLeaveTheReaderOnTheCallersToken
