@@ -477,39 +477,36 @@ namespace TurboHTTP.Tests.Transport.Http2
         [Test]
         public void StreamLifecycle_StreamingResponseMoreThan100MB_ReadsToEndWithDefaultOptions()
         {
+            // Bounded by progress, not by a wall-clock total (#1272): a slow emulator needs minutes
+            // for 100 MiB, so the watchdog fires only when no body bytes arrive for a minute (a stall,
+            // a flow-control deadlock), and the outer bound is a last resort well above that.
             AssertAsync.Run(async () =>
             {
                 const long total = (100L * 1024 * 1024) + 1;
-                using var cts = new CancellationTokenSource(180000);
-                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(cts.Token);
+                using var watchdog = new ProgressWatchdog(TimeSpan.FromSeconds(60));
+                var (conn, serverStream, _) = await CreateInitializedConnectionAsync(watchdog.Token);
                 var serverCodec = new Http2FrameCodec(serverStream);
 
                 var request = new UHttpRequest(HttpMethod.GET, new Uri("https://test.example.com/huge"));
-                var responseTask = conn.SendStreamingRequestAsync(request, new RequestContext(request), cts.Token)
+                var responseTask = conn.SendStreamingRequestAsync(request, new RequestContext(request), watchdog.Token)
                     .AsTask();
-                var headers = await ReadFrameMatchingAsync(serverCodec, f => f.Type == Http2FrameType.Headers, cts.Token);
-                await serverCodec.WriteFrameAsync(BuildResponseHeadersFrame(headers.StreamId, 200), cts.Token);
-                await using var response = await WithWatchdogResult(responseTask, cts.Token);
+                var headers = await ReadFrameMatchingAsync(serverCodec, f => f.Type == Http2FrameType.Headers, watchdog.Token);
+                await serverCodec.WriteFrameAsync(BuildResponseHeadersFrame(headers.StreamId, 200), watchdog.Token);
+                await using var response = await WithWatchdogResult(responseTask, watchdog.Token);
 
+                // The server only writes within the windows the client's reads reopen, so the client's
+                // read progress covers the server too.
                 var serverTask = Task.Run(
-                    () => SendBodyHonoringFlowControlAsync(serverCodec, headers.StreamId, total, cts.Token),
-                    cts.Token);
+                    () => SendBodyHonoringFlowControlAsync(serverCodec, headers.StreamId, total, watchdog.Token),
+                    watchdog.Token);
 
-                var buffer = new byte[64 * 1024];
-                long received = 0;
-                while (true)
-                {
-                    int read = await response.Body.ReadAsync(buffer, cts.Token);
-                    if (read == 0)
-                        break;
-                    received += read;
-                }
+                long received = await watchdog.ReadToEndAsync(response.Body, new byte[64 * 1024]);
 
-                await WithWatchdog(serverTask, cts.Token);
+                await WithWatchdog(serverTask, watchdog.Token);
                 Assert.AreEqual(total, received);
                 Assert.IsTrue(conn.IsAlive);
                 conn.Dispose();
-            });
+            }, TimeSpan.FromMinutes(30));
         }
 
         // --- helpers ---
