@@ -123,7 +123,8 @@ namespace TurboHTTP.Tests.Transport
                         sinceTrack, bound, () => settled.IsCompleted, "the settle gate of an operation that never ends");
                     await settled;
                     await WaitUntilAsync(() => AbandonedSocketIo.PendingCount == 0, "the entry never expired");
-                    Assert.AreEqual(expired + 1, AbandonedSocketIo.ExpiredCount, "the entry was recorded and expired at the bound");
+                    // Greater, not +1: an entry another fixture left pending may expire in the same window.
+                    Assert.Greater(AbandonedSocketIo.ExpiredCount, expired, "the entry was recorded and expired at the bound");
                 }, Guard);
             }
             finally

@@ -35,9 +35,11 @@ namespace TurboHTTP.Tests.Transport
                     await dispose;
 
                     // The buffers are given up at the bound, after Dispose returned (#384). Wait on the
-                    // leak counter, the bound's last write, not IsReleased, its first (#1291).
+                    // leak counter, the bound's last write, not only IsReleased, its first (#1291). The
+                    // counter is static, so another channel's bound may move it: wait on both.
                     await AbandonedSocketIoTests.WaitUntilAsync(
-                        () => SaeaSocketChannel.BuffersLeakedOnDispose > leakedBefore, "the bound never gave up the buffers");
+                        () => channel.IsReleased && SaeaSocketChannel.BuffersLeakedOnDispose > leakedBefore,
+                        "the bound never gave up the buffers");
                 }
                 finally
                 {
