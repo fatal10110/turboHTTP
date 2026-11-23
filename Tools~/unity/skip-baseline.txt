@@ -105,14 +105,14 @@ Player-iOS-2021.3 35
 # run's record), and lower it only with the removed tests and the reason in the PR.
 #   EditMode 87        periodic host-editor run after waves run w1122 (main b842808 and the release commit
 #                        69ad7b4, 2026-11-22, Unity 2021.3.45f2, Mono)
-#   PlayMode 3612      the same runs
-#   Player-Android 2628  #365 run on main e0a5bf7 (API 29 x86_64 emulator, Stripping High, 2026-11-04)
-#   Player-StandaloneWindows64 3612  Win64 IL2CPP player (Stripping High), main b842808, 2026-11-22, Unity
+#   PlayMode 3625      periodic host-editor run after waves run w1123 (main 628c1b2, 2026-11-23)
+#   Player-Android 3625  API 23 and API 33 x86_64 emulators, Stripping High, main 628c1b2, 2026-11-23
+#   Player-StandaloneWindows64 3625  Win64 IL2CPP player (Stripping High), main 628c1b2, 2026-11-23, Unity
 #                        2021.3.45f2 (the Mono player's 3603 on 2026-11-16 predates the tests added since)
 # Player-iOS and Player-iOS-2021.3 have no entry yet (no complete unfiltered run of them is recorded), so an
 # unfiltered run of them fails until its total is recorded here.
 # min-total <run target> <min cases>
 min-total EditMode 87
-min-total PlayMode 3612
-min-total Player-Android 2628
-min-total Player-StandaloneWindows64 3612
+min-total PlayMode 3625
+min-total Player-Android 3625
+min-total Player-StandaloneWindows64 3625
