@@ -297,6 +297,11 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    personal team can provision it), then `run-ios-player.sh <handoff>/xcode --device <udid> --team <id>`
    (`xcrun devicectl list devices`). `--suspend-cycles` drives `DeviceSuspendResumeTests` (#1132): it
    backgrounds the app (Settings) and brings it back after the player logs `TURBOHTTP_SUSPEND_READY`.
+   Network rows (#99): build with `--integration --filter 'DeviceNetworkChangeTests.SameClients'` and run on a
+   phone with cellular data. The instruction for each step is shown on the screen (Wi-Fi off, Airplane Mode on,
+   Airplane off + Wi-Fi on), and each step starts when the route changes. With `--filter
+   'DeviceNetworkChangeTests.Nat64'` on a DNS64/NAT64 Wi-Fi network (macOS Internet Sharing, Option-click,
+   "Create NAT64 Network"), the run checks a name and an IPv4 literal on both backends.
    The iOS 26.4 simulator keeps a backgrounded player's process running (only the player loop stops), so a
    suspension is only real on a device: `DeviceSuspendResumeTests` fails on the simulator by design.
 

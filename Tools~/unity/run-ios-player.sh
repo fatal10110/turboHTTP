@@ -135,9 +135,17 @@ for i in $(seq 1 "$launches"); do
     [ "$rc" = 124 ] && xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true
     cp "$data/Documents/results.xml" "$out" 2>/dev/null || true
   else
+    started=$SECONDS
     bounded xcrun devicectl device process launch --console --terminate-existing --device "$device" "$bundle" >"$console" 2>&1 || rc=$?
-    xcrun devicectl device copy from --device "$device" --domain-type appDataContainer --domain-identifier "$bundle" \
-      --source Documents/results.xml --destination "$out" >/dev/null 2>&1 || true
+    # The console link can drop while the player keeps running (a network change, Airplane Mode): keep pulling
+    # until the run's results are complete or the launch bound is used up.
+    while :; do
+      xcrun devicectl device copy from --device "$device" --domain-type appDataContainer --domain-identifier "$bundle" \
+        --source Documents/results.xml --destination "$out" >/dev/null 2>&1 || true
+      if [ -s "$out" ] && ! grep -q 'partial="true"' "$out"; then break; fi
+      [ $((SECONDS - started)) -ge "$timeout_s" ] && break
+      sleep 10
+    done
   fi
   if [ -n "$driver" ]; then kill "$driver" 2>/dev/null || true; wait "$driver" 2>/dev/null || true; fi
   [ "$rc" = 124 ] && echo "run-ios-player: launch $i did not quit within ${timeout_s}s; terminated"
