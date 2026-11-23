@@ -16,6 +16,7 @@ namespace TurboHTTP.Tests
         // Safety bound only: a refused loopback connect ends in about 2 s on Windows (#226), at once
         // elsewhere; a connect that is accepted or hangs fails the test instead of the run.
         private static readonly TimeSpan ConnectBound = TimeSpan.FromSeconds(15);
+        private const int DarwinEconnrefused = 61;
 
         [Test]
         public void Connect_IsRefused()
@@ -31,7 +32,11 @@ namespace TurboHTTP.Tests
 
                 var ex = Assert.Throws<SocketException>(() => connect.GetAwaiter().GetResult());
                 TestContext.WriteLine($"Refused after {watch.ElapsedMilliseconds} ms: {ex.SocketErrorCode}");
-                Assert.AreEqual(SocketError.ConnectionRefused, ex.SocketErrorCode);
+                // IL2CPP on Darwin (macOS, iOS) reports the raw errno, ECONNREFUSED 61, instead of the
+                // mapped value (#1287).
+                var refused = ex.SocketErrorCode == SocketError.ConnectionRefused
+                    || (int)ex.SocketErrorCode == DarwinEconnrefused;
+                Assert.IsTrue(refused, "Expected a refused connect, got " + ex.SocketErrorCode);
             });
         }
 
