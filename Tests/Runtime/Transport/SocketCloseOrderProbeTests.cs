@@ -216,11 +216,28 @@ namespace TurboHTTP.Tests.Transport
             {
                 if (api == Saea)
                 {
+                    // The args outlive this method while the receive is pending; whoever reads
+                    // the result (the Completed handler, or this frame on a synchronous
+                    // completion or a throw) disposes them once.
                     var args = new SocketAsyncEventArgs();
-                    args.SetBuffer(buffer, 0, buffer.Length);
-                    args.Completed += (_, e) => done.TrySetResult(new ReceiveOutcome(e.SocketError, e.BytesTransferred, null));
-                    if (!socket.ReceiveAsync(args))
-                        done.TrySetResult(new ReceiveOutcome(args.SocketError, args.BytesTransferred, null));
+                    bool pending = false;
+                    try
+                    {
+                        args.SetBuffer(buffer, 0, buffer.Length);
+                        args.Completed += (_, e) =>
+                        {
+                            done.TrySetResult(new ReceiveOutcome(e.SocketError, e.BytesTransferred, null));
+                            e.Dispose();
+                        };
+                        pending = socket.ReceiveAsync(args);
+                        if (!pending)
+                            done.TrySetResult(new ReceiveOutcome(args.SocketError, args.BytesTransferred, null));
+                    }
+                    finally
+                    {
+                        if (!pending)
+                            args.Dispose();
+                    }
                 }
                 else
                 {
