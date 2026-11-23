@@ -22,7 +22,8 @@
 # --background, which on Android also checks that the TurboHttpBackground.androidlib classes and the
 # WorkManager dependency reached the APK without any Gradle template edit (#89).
 #
-# Checks: TurboHTTP.Core/Transport/WebSocket.Transport/Complete/JSON/Retry/Auth are in every build.
+# Checks: TurboHTTP.Core/Transport/WebSocket.Transport/Unity.WebSocket/Complete/JSON/Retry/Auth are in every
+# build (Unity.WebSocket although the smoke never references it: its AlwaysLinkAssembly root, #1280).
 # Without --bouncycastle, TurboHTTP.Transport.BouncyCastle and TurboHTTP.SecureProtocol are absent from
 # every build at every stripping level (IL2CPP: the linker output, Library/Bee/artifacts/*/ManagedStripped;
 # Mono: <name>_Data/Managed; #8 AC2, #196 AC1): both asmdefs are constrained by TURBOHTTP_BOUNCYCASTLE, so
@@ -645,7 +646,7 @@ fi
 echo "build-player: assemblies in $managed:"
 for f in "$managed"/TurboHTTP*.dll; do [ -f "$f" ] && echo "  ${f##*/}"; done
 has() { [ -f "$managed/$1.dll" ]; }
-for asm in TurboHTTP.Core TurboHTTP.Transport TurboHTTP.WebSocket.Transport TurboHTTP.Complete \
+for asm in TurboHTTP.Core TurboHTTP.Transport TurboHTTP.WebSocket.Transport TurboHTTP.Unity.WebSocket TurboHTTP.Complete \
            TurboHTTP.JSON TurboHTTP.Retry TurboHTTP.Auth; do
   has "$asm" || { echo "build-player: FAIL $asm.dll missing"; fail=1; }
 done

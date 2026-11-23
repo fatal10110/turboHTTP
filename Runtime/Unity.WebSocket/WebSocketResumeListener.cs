@@ -1,5 +1,6 @@
 using TurboHTTP.WebSocket;
 using UnityEngine;
+using UnityEngine.Scripting;
 
 namespace TurboHTTP.Unity.WebSocket
 {
@@ -9,6 +10,12 @@ namespace TurboHTTP.Unity.WebSocket
     /// <see cref="UnityWebSocketClient"/>) restarts deadlines that ran across a suspension instead of closing with
     /// PongTimeout.
     /// </summary>
+    /// <remarks>
+    /// Nothing outside this assembly references the listener: <c>[assembly: AlwaysLinkAssembly]</c> makes
+    /// UnityLinker process the assembly, and <see cref="PreserveAttribute"/> keeps the type, its startup hook
+    /// and its player messages at every stripping level (#1280).
+    /// </remarks>
+    [Preserve]
     internal sealed class WebSocketResumeListener : MonoBehaviour
     {
         private static WebSocketResumeListener s_instance;
@@ -16,6 +23,7 @@ namespace TurboHTTP.Unity.WebSocket
         /// <summary>The installed listener, or null outside play mode (tests).</summary>
         internal static WebSocketResumeListener Instance => s_instance;
 
+        [Preserve]
         [RuntimeInitializeOnLoadMethod(RuntimeInitializeLoadType.AfterSceneLoad)]
         internal static void Install()
         {
@@ -29,6 +37,7 @@ namespace TurboHTTP.Unity.WebSocket
             s_instance = go.AddComponent<WebSocketResumeListener>();
         }
 
+        [Preserve]
         private void OnDestroy()
         {
             if (s_instance == this)
@@ -36,6 +45,7 @@ namespace TurboHTTP.Unity.WebSocket
         }
 
         // Internal for tests; Unity calls it as a player message regardless of access.
+        [Preserve]
         internal void OnApplicationPause(bool pauseStatus)
         {
             if (!pauseStatus)
