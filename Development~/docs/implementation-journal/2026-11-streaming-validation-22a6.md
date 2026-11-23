@@ -100,3 +100,34 @@ model the benchmark keeps.
 - Mono player, non-development IL2CPP player, Android and iOS: the device rows stay with #99 (Step 3 checkpoints,
   Step 4 memory on device, Step 5 threshold tuning on a low-memory Android device).
 - `StreamingBenchmarks` with `TURBOHTTP_BENCH_GATE_LATENCY=1`: it would fail on #1265 today.
+
+## Run record: buffered collector reads into its segments (#1265), 2026-11-23
+
+The buffered collector now reads into the `SegmentedBuffer` segments instead of a rented 16 KiB buffer plus a copy, and
+a declared length between 16 KiB and 64 KiB sizes the first segment (one data read for a 32 KiB body). Gated runs
+(`TURBOHTTP_BENCH_GATE_LATENCY=1`, passed to the Windows Unity process through `WSLENV`; every verdict line printed
+"gated"), filter `Http11SmallBodies_BufferedAgainstStreaming_WithinLatencyBudget`, `Tools~/unity/run-tests.sh`, Unity
+2021.3.45f2. The host was shared with other lanes (load average 2-7 at the starts), so these are not quiet-host numbers.
+
+| Row | Editor Mono run 1 | Editor Mono run 2 | IL2CPP dev player run 1 | IL2CPP dev player run 2 |
+| --- | --- | --- | --- | --- |
+| h1-get-1k buffered / streaming (us) | 210.4 / 221.4 | 216.4 / 213.4 | 251.0 / 251.3 | 253.2 / 257.1 |
+| ratio (budget <= 1.05) | 0.950 | 1.014 | 0.999 | 0.985 |
+| h1-get-32k buffered / streaming (us) | 269.9 / 287.5 | 268.2 / 284.3 | 316.4 / 328.0 | 324.4 / 322.0 |
+| ratio (budget <= 1.05) | 0.939 | 0.943 | 0.965 | 1.007 |
+| h1-post-1k buffered (us) | 219.6 | 210.2 | 239.8 | 258.7 |
+| Result | Passed | Passed | Passed | Passed |
+
+Results files: `results-PlayMode-20261123-164817.xml`, `results-PlayMode-20261123-165014.xml`,
+`results-StandaloneWindows64-IL2CPP-20261123-170615.xml`, `results-StandaloneWindows64-IL2CPP-20261123-170758.xml`.
+One more IL2CPP attempt (16:53) built the player and then timed out waiting for it ("No activity received from the
+player in 600 seconds"), with no result; it is not counted.
+
+`Tools~/bench/run.sh` (CoreCLR, default set against `baseline.json`): within budget, allocation per request
+h1-get-32k-buffered 16276 -> 15550 B, h1-get-1k-buffered 14895 -> 14932 B (+37 B, within the gate). A first run on the
+same head failed with a 120 s request timeout in the `h2-get-1m-streaming` row (the streaming path; the collector is not
+on it); the rerun passed.
+
+Not run: the 1 MiB streaming / raw ratio on a non-development IL2CPP player. `run-tests.sh` builds Unity Test
+Framework players, which are development builds; `build-player.sh` builds non-development players but runs only the
+player-smoke rows. #1265 keeps that criterion open.
