@@ -16,9 +16,9 @@ namespace TurboHTTP.Tests.UnityModule
 {
     /// <summary>
     /// #99 device rows: network change (Wi-Fi to cellular), airplane mode and back to Wi-Fi, with the same
-    /// clients (and so the same pooled connections) throughout. A person changes the network when the phone
-    /// vibrates and the console logs <c>TURBOHTTP_NETWORK_STEP</c>; each phase starts when
-    /// <see cref="Application.internetReachability"/> reports the new state. After a switch the request on the
+    /// clients (and so the same pooled connections) throughout. A person changes the network when the screen
+    /// shows the instruction and the console logs <c>TURBOHTTP_NETWORK_STEP</c>; each phase starts when the route to a
+    /// public destination changes (its source address; Application.internetReachability does not follow changes). After a switch the request on the
     /// old pool must succeed (stale connections are not reused into a hang); with no network it must fail
     /// fast as a <see cref="UHttpException"/>. Run by name on a device: <c>--filter DeviceNetworkChangeTests
     /// --integration</c>.
@@ -68,7 +68,6 @@ namespace TurboHTTP.Tests.UnityModule
 
                 Debug.Log("TURBOHTTP_NETWORK_DONE");
                 StepBanner.Text = "Network test done";
-                Handheld.Vibrate();
             }
             finally
             {
@@ -121,7 +120,6 @@ namespace TurboHTTP.Tests.UnityModule
         {
             Debug.Log("TURBOHTTP_NETWORK_STEP " + n + " " + instruction);
             StepBanner.Text = "STEP " + n + ": " + instruction;
-            Handheld.Vibrate();
             float deadline = Time.realtimeSinceStartup + StepBoundSeconds;
             string source = RouteSource(), last = source;
             while (!reached(source) && Time.realtimeSinceStartup <= deadline)
@@ -224,8 +222,8 @@ namespace TurboHTTP.Tests.UnityModule
             outcome.Milliseconds = clock.ElapsedMilliseconds;
         }
 
-        // The cue for the person running the test (a phone may have vibration off): the current instruction
-        // in large text over the player.
+        // The cue for the person running the test: the current instruction in large text over the player
+        // (Handheld.Vibrate is not in standalone player builds, and phones may have vibration off).
         private sealed class StepBanner : MonoBehaviour
         {
             internal static volatile string Text = "";

@@ -47,6 +47,7 @@ namespace TurboHTTP.Tests.Transport.Tls
         [Category("Integration")]
         [Category("ExternalNetwork")]
         public void WrapAsync_ValidServer_Succeeds()        {
+            string version = null;
             Task.Run(async () =>
             {
                 TestRequirements.RequireBouncyCastle();
@@ -56,7 +57,11 @@ namespace TurboHTTP.Tests.Transport.Tls
                 Assert.IsNotNull(result.SecureStream);
                 Assert.AreEqual("BouncyCastle", result.ProviderName);
                 Assert.That(result.TlsVersion, Is.EqualTo("1.2").Or.EqualTo("1.3"));
+                version = result.TlsVersion;
             }).GetAwaiter().GetResult();
+
+            // #607: the negotiated version per backend and runtime, for PlatformNotes.
+            TestContext.WriteLine("TLS BouncyCastle host=www.google.com version=" + version);
         }
 
         [Test]
