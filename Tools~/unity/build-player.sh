@@ -373,7 +373,7 @@ if [ "$run" = 1 ]; then
     out="$(adbr shell "run-as $pkg_id id 2>&1; true")" || adb_failed "$?" "shell run-as $pkg_id id"
     runas=${out%%$'\n'*}
     if [[ $out == *"uid="* ]] && [[ $out != *"run-as:"* ]]; then
-      freeze_method=run-as; freeze_cmd=(shell run-as "$pkg_id" kill)
+      freeze_method='run-as'; freeze_cmd=(shell run-as "$pkg_id" kill)
       echo "build-player: --suspend: freeze method run-as (kill -STOP/-CONT as $pkg_id)"
       return 0
     fi
