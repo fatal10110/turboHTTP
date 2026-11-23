@@ -53,8 +53,12 @@
 # or --apk, #1132) asks the player for the ws-suspend-resume row (intent extra turbohttp_smoke_suspend=1): a WebSocket
 # with a 1 s ping interval and a 2 s pong timeout to a loopback echo server inside the player. When the row logs
 # "TURBOHTTP_SMOKE SUSPEND ws-suspend-resume ready" (a keep-alive ping in flight), the script backgrounds the app
-# once (input keyevent KEYCODE_HOME), waits TURBOHTTP_SMOKE_SUSPEND_S (default 10 s, longer than the pong timeout)
-# and brings it back with a launcher intent; the row must then PASS (connection still Open, echo round trip).
+# once (input keyevent KEYCODE_HOME), freezes its process, waits TURBOHTTP_SMOKE_SUSPEND_S (default 10 s, at least
+# 5, longer than the pong timeout), thaws it and brings it back with a launcher intent; the row must then PASS
+# (connection still Open, echo round trip) with a max-ping-gap of at least half the freeze, else the process kept
+# running and the run FAILs (#1281). The freeze (chosen before the launch, exit 2 when none works): kill -STOP/-CONT
+# as root (adb root: emulator google_apis images), else through run-as (a debuggable APK; the smoke is not one),
+# else the cached-apps freezer when it is on (API 31+; the system freezes the cached app after its debounce).
 # Without --suspend the row is SKIP. CI never builds players (no Unity license, #188, #100): this script, run in a host editor, is
 # the player-build gate (testing.md, "Host-editor gates"). TURBOHTTP_SMOKE_WAIT_S (default 300 s, 600 s with
 # --suspend, 900 s with --network) also bounds the Windows player run.
@@ -130,6 +134,11 @@ if [ "$suspend" = 1 ] && { [ "$target" != android-il2cpp ] || [ "$run" = 0 ]; };
 fi
 suspend_s="${TURBOHTTP_SMOKE_SUSPEND_S:-10}"
 case "$suspend_s" in ''|*[!0-9]*) echo "build-player: TURBOHTTP_SMOKE_SUSPEND_S must be whole seconds, got '$suspend_s'" >&2; exit 2 ;; esac
+# #1281: a running process shows a max-ping-gap of about 2 s (1 s pings, answered after 1 s), so only a freeze of
+# 5 s or more tells a frozen process (gap about the freeze) from a running one (gap below half of it).
+if [ "$suspend" = 1 ] && [ "$suspend_s" -lt 5 ]; then
+  echo "build-player: --suspend needs TURBOHTTP_SMOKE_SUSPEND_S of at least 5 s (a running process shows a 2 s ping gap), got $suspend_s" >&2; exit 2
+fi
 if [ -n "$apk" ] && [ ! -s "$apk" ]; then echo "build-player: --apk $apk: no such APK" >&2; exit 2; fi
 
 unity="${UNITY_PATH:-}"
@@ -157,6 +166,8 @@ esac
 topath() { if [ "$win" = 1 ]; then wslpath -m "$1"; else printf '%s\n' "$1"; fi; }
 
 fail=0
+# --suspend (#1281): how the process is frozen (android_run sets it) and for how many seconds it was.
+freeze_method=""; frozen_s=""
 smoke_wait_s="${TURBOHTTP_SMOKE_WAIT_S:-$(if [ "$network" = 1 ]; then echo 900; elif [ "$suspend" = 1 ]; then echo 600; else echo 300; fi)}"
 h2_port=""
 # Prints the player's row lines and aggregate marker from log $1 and sets fail=1 unless the aggregate is
@@ -192,8 +203,27 @@ check_smoke_log() {
     done
   fi
   if [ "$suspend" = 1 ]; then
-    grep -qE "TURBOHTTP_SMOKE ROW ws-suspend-resume PASS" "$plog" 2>/dev/null ||
-      { echo "build-player: FAIL --suspend: no 'TURBOHTTP_SMOKE ROW ws-suspend-resume PASS'"; fail=1; }
+    row="$(grep -m1 -E "TURBOHTTP_SMOKE ROW ws-suspend-resume PASS" "$plog" 2>/dev/null || true)"
+    if [ -z "$row" ]; then
+      echo "build-player: FAIL --suspend: no 'TURBOHTTP_SMOKE ROW ws-suspend-resume PASS'"; fail=1
+    else
+      # #1281: the row's server sees the pings; a frozen process sends none, so its largest gap is about the freeze.
+      # A gap below half of the TURBOHTTP_SMOKE_SUSPEND_S freeze means the process kept running: no evidence for
+      # #1132. (F1 prints a comma under some device locales.)
+      local gap field summary=""
+      gap="$(printf '%s\n' "$row" | sed -n 's/.* max-ping-gap=\([0-9]*[.,]\{0,1\}[0-9]*\)s.*/\1/p' | tr , .)"
+      for field in background max-ping-gap grace-waits liveness-extensions resume-signal; do
+        summary="$summary $(printf '%s\n' "$row" | grep -oE " $field=[^ ]*" | head -n1 | tr -d ' ' || true)"
+      done
+      echo "build-player: --suspend: freeze=${freeze_method:-none} frozen=${frozen_s:-?}s;${summary}"
+      if [ -z "$gap" ]; then
+        echo "build-player: FAIL --suspend: the ws-suspend-resume row reports no max-ping-gap, so the freeze is unproven"; fail=1
+      elif awk -v g="$gap" -v f="$suspend_s" 'BEGIN { exit !(g * 2 < f) }'; then
+        echo "build-player: FAIL --suspend: the process was not frozen: max-ping-gap=${gap}s is below half the" \
+          "${suspend_s} s freeze (${freeze_method:-no method}); a process that kept running is no evidence for #1132"
+        fail=1
+      fi
+    fi
   fi
 }
 
@@ -314,10 +344,98 @@ if [ "$run" = 1 ]; then
   sdk="$(adbr shell getprop ro.build.version.sdk || true)"
   # y while the smoke's process exists, n on a complete answer without it, empty when unknown (android-adb.sh).
   smoke_running() { android_process_state "$pkg_id" "$sdk"; }
+  # #1281: KEYCODE_HOME alone does not freeze the smoke on an emulator (it kept pinging for 46 s), so --suspend
+  # freezes it itself. Picks freeze_method before the launch: root (kill -STOP/-CONT from a root shell: adbd
+  # already root, or `adb root` restarts it as root, as emulator google_apis images allow), else run-as (the app's
+  # own uid; debuggable APKs only, which the smoke is not), else freezer (the cached-apps freezer is on, API 31+:
+  # the system freezes the cached app after its debounce and thaws it on the resume). Exits 2 when none works.
+  freeze_cmd=()
+  suspend_choose_freeze() {
+    local out rc=0 root_out="" runas freezer="missing (API < 31)" level="$sdk"
+    case "$level" in '' | *[!0-9]*) level=0 ;; esac
+    out="$(adbr shell id)" || adb_failed "$?" "shell id"
+    if [[ $out != *"uid=0("* ]]; then
+      # A refusal ("adbd cannot run as root in production builds") exits 0 too: the id after it decides.
+      root_out="$(adbr root)" || rc=$?
+      wsl_exit_if_interop "$rc" build-player "adb.exe did not start (adb root)"
+      if [ "$rc" = 0 ]; then
+        # adbd restarts as root and the device is briefly offline; adbr retries the id while it is.
+        adbr wait-for-device >/dev/null || adb_failed "$?" "wait-for-device (after adb root)"
+        out="$(adbr shell id)" || adb_failed "$?" "shell id (after adb root)"
+      fi
+    fi
+    if [[ $out == *"uid=0("* ]]; then
+      freeze_method=root; freeze_cmd=(shell kill)
+      echo "build-player: --suspend: freeze method root (kill -STOP/-CONT from adb root's shell)"
+      return 0
+    fi
+    out="$(adbr shell "run-as $pkg_id id 2>&1; true")" || adb_failed "$?" "shell run-as $pkg_id id"
+    runas=${out%%$'\n'*}
+    if [[ $out == *"uid="* ]] && [[ $out != *"run-as:"* ]]; then
+      freeze_method=run-as; freeze_cmd=(shell run-as "$pkg_id" kill)
+      echo "build-player: --suspend: freeze method run-as (kill -STOP/-CONT as $pkg_id)"
+      return 0
+    fi
+    if [ "$level" -ge 31 ]; then
+      out="$(adbr shell "dumpsys activity settings | grep use_freezer=; true")" || adb_failed "$?" "dumpsys activity settings"
+      if [[ $out == *"use_freezer=true"* ]]; then
+        freeze_method=freezer
+        echo "build-player: --suspend: freeze method freezer (the cached-apps freezer freezes the backgrounded app" \
+          "after its debounce; max-ping-gap tells for how long)"
+        return 0
+      fi
+      freezer="off (use_freezer=true not in dumpsys activity settings)"
+    fi
+    echo "build-player: --suspend cannot freeze $pkg_id on ${serial:-the adb device}: no root shell (adb root:" \
+      "${root_out:-no answer}), run-as fails (${runas:-no answer}; the smoke APK is not debuggable) and the cached-apps" \
+      "freezer is $freezer. Use an emulator image that allows adb root (google_apis, not google_apis_playstore)." >&2
+    exit 2
+  }
+  # The smoke's first pid (pidof from API 26, else ps), empty when unknown; adbr's status when adb fails.
+  smoke_pid() {
+    local out line rc=0 level="$sdk" pid
+    case "$level" in '' | *[!0-9]*) level=0 ;; esac
+    if [ "$level" -ge 26 ]; then
+      out="$(adbr shell "pidof $pkg_id || echo none")" || return "$?"
+      out="${out#"${out%%[![:space:]]*}"}"
+      echo "${out%%[!0-9]*}"
+      return 0
+    fi
+    out="$(adbr shell "ps -A 2>/dev/null; ps 2>/dev/null; echo turbohttp-ps-end")" || return "$?"
+    while IFS= read -r line; do
+      case "$line" in *[[:space:]]"$pkg_id") read -r _ pid _ <<<"$line"; echo "$pid"; return 0 ;; esac
+    done <<<"$out"
+  }
+  # Freezes the backgrounded smoke (sets freeze_pid and freeze_t0); the freezer method leaves it to the system.
+  freeze_pid=""; freeze_t0=0
+  suspend_freeze() {
+    local rc=0
+    if [ "$freeze_method" = freezer ]; then frozen_s="<=$suspend_s"; return 0; fi
+    # Let Unity see the pause first (OnApplicationPause(true) runs on its main thread after onPause).
+    sleep 1
+    freeze_pid="$(smoke_pid)" || rc=$?
+    wsl_exit_if_interop "$rc" build-player "adb.exe did not start (pidof)"
+    if [ -z "$freeze_pid" ]; then
+      echo "build-player: --suspend: no pid for $pkg_id after KEYCODE_HOME, so it cannot be frozen; see $logcat" >&2
+      adbr shell am force-stop "$pkg_id" >/dev/null || true
+      exit 2
+    fi
+    adbr "${freeze_cmd[@]}" -STOP "$freeze_pid" >/dev/null || adb_failed "$?" "kill -STOP $freeze_pid ($freeze_method)"
+    freeze_t0="$(date +%s)"
+    echo "build-player: --suspend: froze $pkg_id (pid $freeze_pid, kill -STOP, $freeze_method) for $suspend_s s"
+  }
+  # Thaws it before the launcher intent (sets frozen_s, the seconds between kill -STOP and kill -CONT).
+  suspend_thaw() {
+    [ "$freeze_method" != freezer ] || return 0
+    adbr "${freeze_cmd[@]}" -CONT "$freeze_pid" >/dev/null || adb_failed "$?" "kill -CONT $freeze_pid ($freeze_method)"
+    frozen_s=$(( $(date +%s) - freeze_t0 ))
+    echo "build-player: --suspend: thawed $pkg_id (pid $freeze_pid, kill -CONT) after $frozen_s s frozen"
+  }
   # Installs APK $1, launches it, waits for the aggregate marker, keeps logcat in $2 and checks it (fail=1).
   android_run() {
     local apk_file="$1" logcat="$2" rc out deadline gone=0 suspended=0 extra=()
     adbr install -r "$(topath "$apk_file")" >/dev/null || adb_failed "$?" "install -r $apk_file"
+    if [ "$suspend" = 1 ]; then suspend_choose_freeze; fi
     adbr shell am force-stop "$pkg_id" >/dev/null || adb_failed "$?" "am force-stop"
     adbr shell input keyevent KEYCODE_WAKEUP >/dev/null || adb_failed "$?" "input keyevent KEYCODE_WAKEUP"
     adbr shell wm dismiss-keyguard >/dev/null || true
@@ -353,9 +471,12 @@ if [ "$run" = 1 ]; then
       # #1132: once the row has a keep-alive ping in flight, background the app past the pong timeout, then resume it.
       if [ "$suspend" = 1 ] && [ "$suspended" = 0 ] && grep -q "TURBOHTTP_SMOKE SUSPEND ws-suspend-resume ready" "$logcat"; then
         suspended=1
-        echo "build-player: --suspend: keep-alive ping in flight; backgrounding $pkg_id for $suspend_s s (KEYCODE_HOME)"
+        echo "build-player: --suspend: keep-alive ping in flight; backgrounding $pkg_id for $suspend_s s (KEYCODE_HOME, $freeze_method)"
+        # Home first, so Unity sees the pause and the resume; the freeze makes the background a real suspension.
         adbr shell input keyevent KEYCODE_HOME >/dev/null || adb_failed "$?" "input keyevent KEYCODE_HOME"
+        suspend_freeze
         sleep "$suspend_s"
+        suspend_thaw
         # A launcher intent brings the existing task back to the front, as tapping the app icon does.
         out="$(adbr shell am start -a android.intent.action.MAIN -c android.intent.category.LAUNCHER \
           -n "$pkg_id/com.unity3d.player.UnityPlayerActivity")" || adb_failed "$?" "am start (resume)"

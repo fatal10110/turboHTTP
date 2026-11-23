@@ -6,6 +6,11 @@ FAKE_ADB_SDK, default 31), ps (older levels: a header, the player unless FAKE_AD
 for), logcat -d (which prints <state>.logcat, the player's log lines) and input keyevent KEYCODE_HOME (which appends
 <state>.logcat.resume to that log once: what a backgrounded player logs after it resumes). --apk runs a prepared
 APK without a build.
+
+#1281, the --suspend freeze: `adb root` restarts adbd as root unless FAKE_ADB_ROOT=deny (a production build's
+refusal, exit 0 as adb does); `shell id` answers uid=0 once it did (or with <state>.adb.root present); `run-as <pkg>
+id` answers the app's uid with FAKE_ADB_RUNAS, else "package not debuggable"; `dumpsys activity settings` reports
+use_freezer=true with FAKE_ADB_FREEZER. A fake `sleep` logs its seconds to <state>.sleep.calls and returns at once.
 """
 import pathlib
 import re
@@ -23,6 +28,17 @@ case "$*" in
       cat "$FAKE_WSL.logcat.resume" >> "$FAKE_WSL.logcat"; rm -f "$FAKE_WSL.logcat.resume"
     fi ;;
   *" install "*|install*) printf 'Success\r\n' ;;
+  root)
+    if [ "${FAKE_ADB_ROOT:-allow}" = deny ]; then printf 'adbd cannot run as root in production builds\r\n'
+    else touch "$FAKE_WSL.adb.root"; printf 'restarting adbd as root\r\n'; fi ;;
+  wait-for-device) ;;
+  *"run-as "*" id"*)
+    if [ -n "${FAKE_ADB_RUNAS:-}" ]; then printf 'uid=10123(u0_a123) gid=10123(u0_a123)\r\n'
+    else printf 'run-as: package not debuggable: com.turbohttp.playersmoke\r\n'; fi ;;
+  "shell id")
+    if [ -f "$FAKE_WSL.adb.root" ]; then printf 'uid=0(root) gid=0(root)\r\n'; else printf 'uid=2000(shell) gid=2000(shell)\r\n'; fi ;;
+  *"dumpsys activity settings"*)
+    if [ -n "${FAKE_ADB_FREEZER:-}" ]; then printf '  use_freezer=true\r\n'; fi ;;
   *get-state*) printf 'device\r\n' ;;
   *"getprop ro.build.version.sdk"*) printf '%s\r\n' "${FAKE_ADB_SDK:-31}" ;;
   *getprop*) printf '%s\r\n' "${FAKE_ADB_ABI:-x86_64}" ;;
@@ -89,7 +105,9 @@ class AndroidPlayerRunTests(unittest.TestCase):
         self.apk = self.root / "builds" / "TurboHttpSmoke.apk"
         self.apk.parent.mkdir()
         self.apk.write_bytes(b"PK fake apk")
-        self.env.update(TURBOHTTP_SMOKE_POLL_S="0", TURBOHTTP_SMOKE_WAIT_S="20", TURBOHTTP_SMOKE_SUSPEND_S="0")
+        # #1281: --suspend needs a freeze of 5 s or more; the fake sleep returns at once and logs the seconds.
+        self.write_exe(self.root / "bin" / "sleep", '#!/usr/bin/env bash\necho "$*" >> "$FAKE_WSL.sleep.calls"\n')
+        self.env.update(TURBOHTTP_SMOKE_POLL_S="0", TURBOHTTP_SMOKE_WAIT_S="20", TURBOHTTP_SMOKE_SUSPEND_S="10")
         for name in ("TURBOHTTP_H2_ROWS_URL", "TURBOHTTP_H2_ROWS_ROOT"):
             self.env.pop(name, None)
 
@@ -247,6 +265,105 @@ class AndroidPlayerRunTests(unittest.TestCase):
                 self.assertIn("no 'TURBOHTTP_SMOKE ROW ws-suspend-resume PASS'", result.stdout)
                 home = [c for c in self.calls("adb")[calls:] if "KEYCODE_HOME" in c]
                 self.assertEqual(len(home), 1 if before else 0)
+
+    def suspend_run(self, row=SUSPEND_PASS, **env):
+        self.logcat(PASS_LOG[:2] + [SUSPEND_READY])
+        self.resume_logcat([row] + PASS_LOG[2:])
+        result = self.run_apk("--suspend", **env)
+        return result, result.stdout + result.stderr
+
+    def test_suspend_freezes_as_root_between_home_and_the_launcher_resume(self):
+        # #1281: an emulator google_apis image: adb root, then kill -STOP after Home and kill -CONT before the resume.
+        result, out = self.suspend_run()
+        self.assertEqual(result.returncode, 0, out)
+        calls = self.calls("adb")
+        self.assertLess(calls.index("root"), calls.index("wait-for-device"))
+        self.assertLess(calls.index("wait-for-device"), next(i for i, c in enumerate(calls) if "am start" in c))
+        order = [calls.index(c) for c in ("shell input keyevent KEYCODE_HOME", "shell kill -STOP 4242",
+                                          "shell kill -CONT 4242", LAUNCHER_START)]
+        self.assertEqual(order, sorted(order), calls)
+        self.assertIn("10", self.calls("sleep"))
+        self.assertIn("freeze method root", out)
+        self.assertIn("froze com.turbohttp.playersmoke (pid 4242, kill -STOP, root) for 10 s", out)
+        self.assertRegex(out, r"thawed com\.turbohttp\.playersmoke \(pid 4242, kill -CONT\) after \d+ s frozen")
+        self.assertRegex(out, r"--suspend: freeze=root frozen=\d+s; background=10\.2s max-ping-gap=10\.9s "
+                              r"grace-waits=1")
+        # adbd already root (a second run): no adb root; API 23 finds the pid with ps.
+        pathlib.Path(f"{self.state}.adb.calls").unlink()
+        result, out = self.suspend_run(FAKE_ADB_SDK="23")
+        self.assertEqual(result.returncode, 0, out)
+        calls = self.calls("adb")
+        self.assertNotIn("root", calls)
+        self.assertIn("shell kill -STOP 4242", calls)
+        self.assertIn("shell kill -CONT 4242", calls)
+
+    def test_suspend_falls_back_to_run_as_then_to_the_cached_apps_freezer(self):
+        result, out = self.suspend_run(FAKE_ADB_ROOT="deny", FAKE_ADB_RUNAS="1")
+        self.assertEqual(result.returncode, 0, out)
+        calls = self.calls("adb")
+        self.assertIn("freeze method run-as", out)
+        order = [calls.index(c) for c in ("shell input keyevent KEYCODE_HOME", f"shell run-as {PKG} kill -STOP 4242",
+                                          f"shell run-as {PKG} kill -CONT 4242", LAUNCHER_START)]
+        self.assertEqual(order, sorted(order), calls)
+        self.assertNotIn("shell kill -STOP 4242", calls)
+        # The freezer: the system freezes and thaws the app, so the script sends no signal.
+        pathlib.Path(f"{self.state}.adb.calls").unlink()
+        result, out = self.suspend_run(FAKE_ADB_ROOT="deny", FAKE_ADB_FREEZER="1", FAKE_ADB_SDK="33")
+        self.assertEqual(result.returncode, 0, out)
+        self.assertIn("freeze method freezer", out)
+        self.assertIn("--suspend: freeze=freezer frozen=<=10s;", out)
+        self.assertFalse([c for c in self.calls("adb") if "kill -" in c])
+
+    def test_suspend_exits_2_before_the_launch_when_no_freeze_works(self):
+        for sdk, freezer in (("33", "off (use_freezer=true not in dumpsys activity settings)"),
+                             ("23", "missing (API < 31)")):
+            with self.subTest(sdk):
+                pathlib.Path(f"{self.state}.adb.calls").unlink(missing_ok=True)
+                result, out = self.suspend_run(FAKE_ADB_ROOT="deny", FAKE_ADB_SDK=sdk)
+                self.assertEqual(result.returncode, 2, out)
+                self.assertIn("--suspend cannot freeze com.turbohttp.playersmoke", result.stderr)
+                self.assertIn("adb root: adbd cannot run as root in production builds", result.stderr)
+                self.assertIn("run-as fails (run-as: package not debuggable", result.stderr)
+                self.assertIn(f"cached-apps freezer is {freezer}", " ".join(result.stderr.split()))
+                self.assertNotIn("PASS", result.stdout)
+                calls = self.calls("adb")
+                self.assertFalse([c for c in calls if "am start" in c or "KEYCODE_HOME" in c], calls)
+                self.assertEqual(any("dumpsys activity" in c for c in calls), sdk == "33")
+
+    def test_suspend_exits_2_when_the_backgrounded_app_has_no_pid(self):
+        result, out = self.suspend_run(FAKE_ADB_GONE="1")
+        self.assertEqual(result.returncode, 2, out)
+        self.assertIn("no pid for com.turbohttp.playersmoke after KEYCODE_HOME", result.stderr)
+        calls = self.calls("adb")
+        self.assertFalse([c for c in calls if "kill -" in c], calls)
+        self.assertEqual(calls[-1], f"shell am force-stop {PKG}")
+
+    def test_suspend_refuses_a_pass_from_a_process_that_was_not_frozen(self):
+        # #1281: the API 33 emulator runs: the row PASSed with a 2 s gap (the ping interval) after a long background.
+        not_frozen = SUSPEND_PASS.replace("max-ping-gap=10.9s", "max-ping-gap=2.0s")
+        result, out = self.suspend_run(not_frozen)
+        self.assertEqual(result.returncode, 1, out)
+        self.assertIn("TURBOHTTP_SMOKE ROW ws-suspend-resume PASS #1132", out)
+        self.assertIn("FAIL --suspend: the process was not frozen: max-ping-gap=2.0s is below half the 10 s freeze "
+                      "(root)", out)
+        self.assertIn("build-player: FAIL (run of", out)
+        # Half the freeze passes; a comma decimal (a device locale) is read; a row without the gap fails.
+        for row, code in ((SUSPEND_PASS.replace("max-ping-gap=10.9s", "max-ping-gap=5.0s"), 0),
+                          (SUSPEND_PASS.replace("max-ping-gap=10.9s", "max-ping-gap=4,9s"), 1),
+                          (SUSPEND_PASS.replace("max-ping-gap=10.9s", "max-ping-gap=10,9s"), 0),
+                          (SUSPEND_PASS.replace(" max-ping-gap=10.9s", ""), 1)):
+            with self.subTest(row):
+                result, out = self.suspend_run(row)
+                self.assertEqual(result.returncode, code, out)
+        self.assertIn("reports no max-ping-gap", out)
+
+    def test_suspend_needs_a_freeze_of_at_least_5_seconds(self):
+        for seconds in ("0", "4"):
+            with self.subTest(seconds):
+                result = self.run_apk("--suspend", TURBOHTTP_SMOKE_SUSPEND_S=seconds)
+                self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
+                self.assertIn("at least 5 s", result.stderr)
+        self.assertEqual(self.calls("adb"), [])
 
     def test_bouncycastle_requires_the_provider_and_its_tls_row_with_network(self):
         self.logcat(PASS_LOG)
