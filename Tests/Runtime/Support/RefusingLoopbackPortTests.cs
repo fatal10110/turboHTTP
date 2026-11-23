@@ -2,6 +2,7 @@ using System;
 using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
+using System.Runtime.InteropServices;
 using System.Threading.Tasks;
 using NUnit.Framework;
 
@@ -37,7 +38,12 @@ namespace TurboHTTP.Tests
         public void Port_CannotBeBoundByAnotherSocketWhileHeld()
         {
             // The old pattern (start and stop a listener on port 0) releases the port, so another
-            // socket can bind it before the connect; the held port stays reserved.
+            // socket can bind it before the connect; the held port stays reserved. Only Windows
+            // guarantees that for every runtime that runs these tests: .NET on Unix sets
+            // SO_REUSEADDR on every socket, so Linux lets two non-listening sockets share a port.
+            if (!RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
+                Assert.Ignore("Exclusive port binding is only guaranteed on Windows (#1259 failed in Windows players).");
+
             using var port = new RefusingLoopbackPort();
             using var other = new Socket(AddressFamily.InterNetwork, SocketType.Stream, ProtocolType.Tcp);
             other.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, false);
