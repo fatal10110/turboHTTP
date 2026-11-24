@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.Net;
 using System.Net.Sockets;
 using System.Threading;
@@ -151,7 +152,8 @@ namespace TurboHTTP.Tests.Transport
         {
             AssertAsync.Run(async () =>
             {
-                SocketHandleHold.HoldTimeout = TimeSpan.FromMilliseconds(100);
+                var bound = TimeSpan.FromMilliseconds(100);
+                SocketHandleHold.HoldTimeout = bound;
                 var (client, server) = await ConnectPairAsync();
                 using (server)
                 {
@@ -160,8 +162,13 @@ namespace TurboHTTP.Tests.Transport
 
                     Assert.IsTrue(hold.EnterIo());
                     hold.ExitIo(true, read.Task, write: false);
+
+                    // The hold: the release is not observed before the bound, however late this thread
+                    // runs (#1291).
+                    var sinceClose = Stopwatch.StartNew();
                     hold.Close();
-                    Assert.IsFalse(hold.IsReleased);
+                    await HoldBoundAssert.ReleasedNotBeforeTheBoundAsync(
+                        sinceClose, bound, () => hold.IsReleased || IsClosed(client), "the handle with a pending read");
 
                     // ReleaseKind, not IsReleased: the bound releases on the timer thread, and IsReleased flips
                     // before that thread disposes the socket; ReleaseKind is written after the dispose (#442).
