@@ -31,8 +31,8 @@ Unity 2021.3.45f2 unless noted.
 | IPv6-only network (NAT64) | OPEN: not verified in v1.0, owner decision 2026-11-23; #1283 (v1.1), test ready | OPEN: #1283 | N/A (Editor cannot prove it) |
 | Network switch Wi-Fi to LTE, airplane mode | PASS: `DeviceNetworkChangeTests` (iOS-H). HTTP/2 recovery is slow (18.5 s / 26.3 s), tracked as #717 | OPEN: not run on the phone (#1284) | N/A |
 | App suspend/resume: WebSocket keep-alive deadlines | PASS: `DeviceSuspendResumeTests` 5/5 launches, real process freezes (#1132). The connection is in memory (`InMemoryWebSocketPeer`): no socket, TLS or HTTP/2 | OPEN: the emulator smoke does not freeze the process (#1281); phone run #1284 | N/A: the iOS simulator does not freeze a backgrounded app |
-| App suspend/resume with real sockets: HTTP/2 PING liveness, pooled reuse, wss | OPEN: no device run yet (#1289). The network row is a route change, not a freeze | OPEN: #1289, #1284 | N/A |
-| WebSocket (ws/wss, permessage-deflate), background/foreground | PASS: WebSocket suites incl. `WebSocketBouncyCastleTlsTests`, deflate suites. Background/foreground: keep-alive deadlines only, in memory (#1132); ws/wss sockets across a freeze: OPEN (#1289). permessage-deflate IL2CPP rows beyond the suite: v1.1 (#104) | PASS (full suite) | PASS |
+| App suspend/resume with real sockets: HTTP/2 PING liveness, pooled reuse, wss | PASS: `DeviceRealSocketSuspendResumeTests` (iOS-H, 2026-11-24): 4 suspensions of 30 s, each freezing the process past the 1 s / 2 s keep-alive deadlines (longest 28.8 s). Each cycle held an h2 download (BouncyCastle, dl.google.com) open across the freeze, so its liveness PINGs were armed; after every resume it delivered 4 MiB more (about 3.6 s). The first GET on the idle pooled h2 connection to www.google.com (still pooled at every resume), sent after its reuse PING, returned 200 in 194-257 ms. The wss connection (echo.websocket.org) echoed. 0 failures, retries or reconnects (#1289) | OPEN: #1284 | N/A |
+| WebSocket (ws/wss, permessage-deflate), background/foreground | PASS: WebSocket suites incl. `WebSocketBouncyCastleTlsTests`, deflate suites. Background/foreground: keep-alive deadlines in memory (#1132) and a real wss socket across four 30 s freezes (#1289). permessage-deflate IL2CPP rows beyond the suite: v1.1 (#104) | PASS (full suite) | PASS |
 | SAEA and PollSelect socket modes | PASS: channel suites, `SaeaShutdownOrderTests` 6/6; SAEA Loop384 200×3 on the sim (#1184) | PASS: 34/34 socket-mode filter (#410, #415) | PASS |
 | Texture/Audio handlers, MainThreadDispatcher | PASS: handler suites, `UnityReliabilitySuiteTests`, `UnityStressSuiteTests`, `UnityPerformanceBudgetTests` | PASS (full suite) | PASS |
 | Allocation/latency benchmarks on device (22a.6) | N/A on 2021.3 iOS: the allocation counter kills the player (#414); the gates skip | FAIL on arm64 budgets, documented for GA (#323, #416) | PASS on the API 33 emulator (0 B/read) |
@@ -53,22 +53,23 @@ Unity 2021.3.45f2 unless noted.
 
 ## Minimum devices
 - iOS ARM64 at Stripping Low and High: PASS (iOS-L, iOS-H). The only full-suite failure in both, #1251, was a test defect, since replaced by #1264.
+- Oldest supported iOS: OPEN, not verified in v1.0 (owner decision 2026-11-24; #1302, v1.1). Only current iOS ran (iOS 27.0.1 device, iOS 26.4 simulator). Xcode 26.4 offers no older simulator runtime for download.
 - Android ARM64: High PASS on the phone (And-H). Stripping Low has not run on the phone yet: OPEN (#1284).
 
 ## Certification matrix (#105)
-`platform_matrix.py`, run on the full-suite results of 2026-11-23 (main 86bf65f + #1279):
+`platform_matrix.py`, run on the full-suite results of 2026-11-24 (main 00bff45 with #1288, plus the #1289 branch):
 
 | Cell | Row | Result |
 | --- | --- | --- |
-| ios-il2cpp | iPhone 13 Pro Max, iOS 27.0.1, arm64, High | 3654 tests: 3616 passed, 1 failed, 32 skipped (baseline 35); certification suites and budgets pass |
-| standalone-macos | macOS IL2CPP player, arm64, High | 3654 tests: 3633 passed, 1 failed, 15 skipped (new `Player-StandaloneOSX` baseline) |
-| standalone-macos | macOS Mono player, arm64, Stripping Disabled | 3654 tests: 3640 passed, 1 failed, 8 skipped |
+| ios-il2cpp | iPhone 13 Pro Max, iOS 27.0.1, arm64, IL2CPP, Stripping High | **pass**: 3798 tests, 3761 passed, 0 failed, 37 skipped (32 counted against baseline 35; 5 not-selected `[Explicit]`); certification suites and budgets pass |
+| standalone-macos | macOS IL2CPP player, Apple M2, macOS 26.7.1, arm64, Stripping High | **pass**: 3798 tests, 3778 passed, 0 failed, 20 skipped (15 counted, baseline 15) |
+| standalone-macos | macOS Mono player, same host, Stripping Disabled | **pass**: 3798 tests, 3785 passed, 0 failed, 13 skipped (8 counted) |
 
-- **Why the cells read "fail":** the one failure in each row is `RefusingLoopbackPortTests.Connect_IsRefused`, a test-helper defect on Darwin (#1286). Its fix, PR #1288, passes that test and the WebSocket proxy-failure test on all three targets. So apart from #1286, the iOS and macOS cells pass. A full rerun after #1288 merges would turn them green.
-- **Earlier full runs:** the 2026-11-22 iPhone rows (High and Low, main 0065546) failed only on #1251, a test later replaced by #1264.
+- **History:** the 2026-11-23 runs (main 86bf65f) had one failure in each row, `RefusingLoopbackPortTests.Connect_IsRefused` (#1286, a test-helper defect on Darwin, fixed by #1288). The 2026-11-22 iPhone rows (High and Low, main 0065546) failed only on #1251, a test later replaced by #1264.
+- Stripping Low on the iPhone ran on 2026-11-22 (main 0065546) and was not rerun here.
 
 ## Failures and their issues
-Every FAIL above has an issue: #323 / #416 (arm64 allocation budgets, documented for GA) and #1286 (test helper,
-fixed by #1288). Runtime finding from the same runs: IL2CPP on Darwin reports raw errno values in
+Every FAIL above has an issue: #323 / #416 (arm64 allocation budgets, documented for GA). #1286 (test helper) was
+fixed by #1288; the 2026-11-24 reruns pass. Runtime finding from the same runs: IL2CPP on Darwin reports raw errno values in
 `SocketException.SocketErrorCode` (#1287, v1.1, together with NAT64 #1283). The slow HTTP/2 recovery
 after a network change is a PASS with a known limitation, #717.
