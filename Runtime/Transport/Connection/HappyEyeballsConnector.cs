@@ -620,7 +620,7 @@ namespace TurboHTTP.Transport.Connection
                 // abandoned with the connect task observed, and the catch below disposes the
                 // socket, which ends the connect; its fault is never unobserved (#172).
                 var connectTask = socket.ConnectAsync(new IPEndPoint(address, port));
-                await AbandonableTask.WaitAsync(connectTask, cancellationToken).ConfigureAwait(false);
+                await WaitForConnectAsync(socket, connectTask, cancellationToken).ConfigureAwait(false);
 
                 return socket;
             }
@@ -633,6 +633,49 @@ namespace TurboHTTP.Transport.Connection
 
                 throw;
             }
+        }
+
+        /// <summary>
+        /// Awaits <paramref name="connectTask"/>, the pending connect of <paramref name="socket"/>,
+        /// abandoning it when <paramref name="cancellationToken"/> fires. On Windows a
+        /// <see cref="ConnectFailureWatch"/> also asks the socket for a failure the runtime's I/O
+        /// selector may never report (IL2CPP, 64 or more sockets registered, #1259): such a failure is
+        /// thrown as a <see cref="SocketException"/> with the socket's error instead of waiting for
+        /// the deadline. The caller disposes the socket on every failure, which ends the abandoned
+        /// connect; the abandoned task is observed and recorded in <c>AbandonedSocketIo</c> (#369).
+        /// </summary>
+        /// <exception cref="SocketException">The connect failed.</exception>
+        /// <exception cref="OperationCanceledException"><paramref name="cancellationToken"/> fired first.</exception>
+        internal static async Task WaitForConnectAsync(Socket socket, Task connectTask, CancellationToken cancellationToken)
+        {
+            if (connectTask.IsCompleted || !ConnectFailureWatch.IsNeeded)
+            {
+                await AbandonableTask.WaitAsync(connectTask, cancellationToken).ConfigureAwait(false);
+                return;
+            }
+
+            int error;
+            using (var watch = new ConnectFailureWatch(socket, cancellationToken))
+            {
+                try
+                {
+                    await AbandonableTask.WaitAsync(connectTask, watch.Token).ConfigureAwait(false);
+                    return;
+                }
+                catch (OperationCanceledException)
+                {
+                    // The watch token fires for the caller's token or for a found failure; the
+                    // caller's cancellation wins and keeps its own token.
+                    if (cancellationToken.IsCancellationRequested)
+                        throw new OperationCanceledException(cancellationToken);
+
+                    error = watch.Error;
+                    if (error == 0)
+                        throw;
+                }
+            }
+
+            throw new SocketException(error);
         }
     }
 }
