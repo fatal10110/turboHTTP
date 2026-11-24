@@ -6,6 +6,7 @@ using System.Reflection;
 using System.Text;
 using System.Threading;
 using NUnit.Framework;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Tls;
 
 namespace TurboHTTP.Tests.Transport.Tls
@@ -94,8 +95,12 @@ namespace TurboHTTP.Tests.Transport.Tls
 
         private static bool IsWouldBlock(IOException ex)
         {
-            return ex.InnerException is SocketException socket &&
-                   (socket.SocketErrorCode == SocketError.WouldBlock || socket.SocketErrorCode == SocketError.TimedOut);
+            if (!(ex.InnerException is SocketException socket))
+                return false;
+
+            // IL2CPP players may report the raw errno (EAGAIN 11 on Android, #1290).
+            var error = SocketErrorNormalizer.Normalize(socket);
+            return error == SocketError.WouldBlock || error == SocketError.TimedOut;
         }
 
         /// <summary>Sends a fatal handshake_failure alert (TLS 1.2 record framing).</summary>

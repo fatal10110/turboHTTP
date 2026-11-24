@@ -345,7 +345,7 @@ namespace TurboHTTP.Tests.Transport
             {
                 Assert.AreEqual(0, await receive, "the receive ends with end of stream");
             }
-            catch (SocketException e) when (e.SocketErrorCode == SocketError.Shutdown)
+            catch (SocketException e) when (SocketErrorNormalizer.Normalize(e) == SocketError.Shutdown)
             {
                 // WSAESHUTDOWN (Windows): ended by the shutdown while the descriptor was open.
             }

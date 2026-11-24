@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Connection;
 
 namespace TurboHTTP.Tests.Transport
@@ -164,7 +165,7 @@ namespace TurboHTTP.Tests.Transport
                     CancellationToken.None);
             });
 
-            Assert.AreEqual(SocketError.NetworkUnreachable, ex.SocketErrorCode);
+            Assert.AreEqual(SocketError.NetworkUnreachable, SocketErrorNormalizer.Normalize(ex));
         }
 
         [Test]
