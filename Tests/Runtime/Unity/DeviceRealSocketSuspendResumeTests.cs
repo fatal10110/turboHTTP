@@ -21,15 +21,17 @@ using Debug = UnityEngine.Debug;
 namespace TurboHTTP.Tests.UnityModule
 {
     /// <summary>
-    /// #1289 / #99 device row: real sockets across real application suspensions. One HTTP/2 connection
-    /// (BouncyCastle, ALPN h2, PING every second with a 2 s timeout) and one wss connection (keep-alive Ping
-    /// every second, 2 s pong timeout) to public servers stay in their pools while the app is backgrounded for
-    /// longer than every keep-alive deadline. After each resume the next request on the pooled HTTP/2
-    /// connection must succeed, or fail fast as <see cref="UHttpException"/> and succeed on the retry (no hang
-    /// until the request timeout). The wss connection must still echo, or have closed with a
-    /// <see cref="WebSocketException"/> and echo again after a reconnect (never a hang). Runs only under
-    /// <c>Tools~/unity/run-ios-player.sh --suspend-cycles</c> (build with <c>--filter DeviceRealSocketSuspendResumeTests
-    /// --integration</c>), which reads the cycle count, background time and gap from <c>TURBOHTTP_SUSPEND_READY</c>.
+    /// #1289 / #99 device row: real sockets across real application suspensions, against public servers with
+    /// BouncyCastle (ALPN h2; PING every second, 2 s timeout) and one wss connection (keep-alive Ping every
+    /// second, 2 s pong timeout). Each cycle holds a large HTTP/2 download open, unread, across the suspension,
+    /// so that connection's liveness PINGs are armed while the process is frozen. After each resume: the held
+    /// download must deliver more data or fail fast as <see cref="UHttpException"/>; the first GET on the idle
+    /// pooled connection (reuse probe: one PING first) must succeed, or fail fast and succeed on the retry; the
+    /// wss connection must echo, or leave Open within its keep-alive deadline and echo again after a reconnect.
+    /// "Fast" means not a timeout and within <see cref="FailFastBound"/>. Every suspension must freeze the process
+    /// past the keep-alive deadlines. Runs only under <c>Tools~/unity/run-ios-player.sh --suspend-cycles</c> (build
+    /// with <c>--filter DeviceRealSocketSuspendResumeTests --integration</c>), which reads the cycle count,
+    /// background time and gap from <c>TURBOHTTP_SUSPEND_READY</c>.
     /// </summary>
     [Category("Integration")]
     [Category("ExternalNetwork")]
@@ -40,6 +42,14 @@ namespace TurboHTTP.Tests.UnityModule
         private const int GapSeconds = 20;
         private const string HttpHost = "www.google.com";
         private static readonly Uri HttpUrl = new Uri("https://" + HttpHost + "/");
+        private const string HeldHost = "dl.google.com";
+        // A large public h2 download: held open unread across each suspension, then read again.
+        private static readonly Uri HeldUrl = new Uri("https://" + HeldHost + "/chrome/mac/universal/stable/GGRO/googlechrome.dmg");
+        private const int DrainBytes = 4 * 1024 * 1024;
+        private const float DrainBoundSeconds = 30f;
+        private static readonly TimeSpan HeldTimeout = TimeSpan.FromSeconds(180);
+        // A request that fails after a resume must end well inside its timeout: the keep-alive deadlines plus a margin.
+        private static readonly TimeSpan FailFastBound = TimeSpan.FromSeconds(10);
         private static readonly Uri EchoUrl = new Uri("wss://echo.websocket.org/");
         private static readonly TimeSpan KeepAlive = TimeSpan.FromSeconds(1);
         private static readonly TimeSpan KeepAliveTimeout = TimeSpan.FromSeconds(2);
@@ -63,12 +73,20 @@ namespace TurboHTTP.Tests.UnityModule
             WebSocketResumeListener.Install();
 
             var pool = new TcpConnectionPool(tlsBackend: TlsBackend.BouncyCastle);
-            var transport = new RawSocketTransport(pool, TlsBackend.BouncyCastle,
-                new Http2Options { PingInterval = KeepAlive, PingTimeout = KeepAliveTimeout });
+            // Liveness PINGs run only while a stream is open, so each cycle holds a large download open (unread,
+            // flow-controlled) across the suspension; the reuse probe makes the first request on an idle pooled
+            // connection after a resume send a PING first.
+            var transport = new RawSocketTransport(pool, TlsBackend.BouncyCastle, new Http2Options
+            {
+                PingInterval = KeepAlive,
+                PingTimeout = KeepAliveTimeout,
+                ReuseProbeIdleThreshold = KeepAlive
+            });
             var http = new UHttpClient(new UHttpClientOptions { Transport = transport, DisposeTransport = false });
             WebSocketClient ws = null;
             var receivers = new List<Task>();
             Receiver receiver = null;
+            UHttpStreamingResponse held = null;
             try
             {
                 var first = new Outcome();
@@ -85,9 +103,15 @@ namespace TurboHTTP.Tests.UnityModule
                 receivers.Add(Task.Run(() => ReceiveLoopAsync(firstWs, firstReceiver)));
                 yield return Echo(ws, "before-suspend");
 
+                var hold = new Holder();
+                yield return WaitForTask(Task.Run(() => OpenHeldAsync(http, hold)), (float)RequestBound.TotalSeconds + 5f, "held download");
+                held = hold.Response;
+                Assert.IsTrue(transport.HasHttp2Connection(HeldHost, 443),
+                    "BouncyCastle did not open an HTTP/2 connection to " + HeldHost + " (ALPN h2)");
+
                 new Thread(Heartbeat) { IsBackground = true, Name = "suspend-heartbeat" }.Start();
                 long lastResume = WebSocketConnection.ApplicationResumedTimestamp;
-                int resumes = 0, httpRetries = 0, wsReconnects = 0, h2Kept = 0;
+                int resumes = 0, httpRetries = 0, wsReconnects = 0, heldFailures = 0;
                 float deadline = Time.realtimeSinceStartup + RunBoundSeconds;
                 Debug.Log("TURBOHTTP_SUSPEND_READY cycles=" + Cycles + " bg=" + BackgroundSeconds + " gap=" + GapSeconds);
 
@@ -100,17 +124,31 @@ namespace TurboHTTP.Tests.UnityModule
                     lastResume = resumed;
                     resumes++;
 
-                    // HTTP/2: the pooled connection (or its replacement after a failed PING) serves the next request.
-                    bool kept = transport.HasHttp2Connection(HttpHost, 443);
-                    if (kept)
-                        h2Kept++;
+                    // HTTP/2 liveness: the stream held open across the freeze keeps its connection's PING loop armed.
+                    // After the resume it must deliver more than the flow-control windows buffered before the freeze,
+                    // or fail fast as UHttpException (the connection presumed dead), never hang.
+                    var drain = new Outcome();
+                    yield return WaitForTask(Task.Run(() => DrainAsync(held, drain)), DrainBoundSeconds + 5f,
+                        "held download after resume " + resumes);
+                    string heldResult = drain.Failure == null ? "ok" : Describe(drain.Failure);
+                    if (drain.Failure != null)
+                    {
+                        AssertFailedFast(drain, "held download after resume " + resumes);
+                        heldFailures++;
+                    }
+
+                    held.Dispose();
+                    held = null;
+
+                    // HTTP/2 reuse: the first request on the idle pooled connection sends the reuse PING first; it
+                    // succeeds, or fails fast and the retry succeeds.
                     var get = new Outcome();
                     yield return WaitForTask(Task.Run(() => GetAsync(http, get)), (float)RequestBound.TotalSeconds + 5f,
                         "GET after resume " + resumes);
                     string httpResult = get.Failure == null ? "ok" : Describe(get.Failure);
                     if (get.Failure != null)
                     {
-                        Assert.IsInstanceOf<UHttpException>(get.Failure, "GET after resume " + resumes);
+                        AssertFailedFast(get, "GET after resume " + resumes);
                         httpRetries++;
                         var retry = new Outcome();
                         yield return WaitForTask(Task.Run(() => GetAsync(http, retry)), (float)RequestBound.TotalSeconds + 5f,
@@ -119,36 +157,34 @@ namespace TurboHTTP.Tests.UnityModule
                         httpResult += ",retry-ok-" + retry.Milliseconds + "ms";
                     }
 
-                    // wss: the same connection echoes, or it closed with a WebSocketException and a new one echoes.
+                    // wss: the same connection echoes; otherwise it must leave Open within its keep-alive deadline
+                    // (no hang), and a new connection must echo.
                     string wsState = ws.State.ToString();
                     string wsResult = "echo-ok";
+                    bool echoed = false;
                     if (ws.State == WebSocketState.Open)
                     {
-                        var send = ws.SendAsync("resume-" + resumes, CancellationToken.None);
+                        string expected = "resume-" + resumes;
+                        var send = ws.SendAsync(expected, CancellationToken.None);
                         yield return WaitForTask(send, 10f, "wss send after resume " + resumes, allowFault: true);
-                        if (send.IsFaulted)
+                        if (!send.IsFaulted)
                         {
-                            Assert.IsInstanceOf<WebSocketException>(send.Exception?.GetBaseException(),
-                                "wss send after resume " + resumes);
-                        }
-                        else
-                        {
-                            // A connection that died in the background ends with its keep-alive deadline instead.
-                            string expected = "resume-" + resumes;
                             float echoDeadline = Time.realtimeSinceStartup + EchoBoundSeconds;
                             yield return new WaitUntil(() => HasEcho(expected) || ws.State != WebSocketState.Open
                                 || Time.realtimeSinceStartup > echoDeadline);
-                            if (ws.State == WebSocketState.Open)
-                                Assert.IsTrue(HasEcho(expected), "open wss did not echo '" + expected + "' within " + EchoBoundSeconds + " s");
+                            echoed = HasEcho(expected);
                         }
                     }
 
-                    if (ws.State != WebSocketState.Open)
+                    if (!echoed)
                     {
+                        float closeDeadline = Time.realtimeSinceStartup + (float)(KeepAlive + KeepAliveTimeout).TotalSeconds + 5f;
+                        yield return new WaitUntil(() => ws.State != WebSocketState.Open || Time.realtimeSinceStartup > closeDeadline);
+                        Assert.AreNotEqual(WebSocketState.Open, ws.State,
+                            "wss after resume " + resumes + " neither echoed nor closed within its keep-alive deadline");
                         var terminal = receiver.Failure;
-                        Assert.IsTrue(terminal == null || terminal is WebSocketException,
-                            "wss closed after resume " + resumes + " with " + terminal);
-                        wsResult = "closed:" + (terminal is WebSocketException wse ? wse.Error.ToString() : "clean") + ",reconnect";
+                        wsResult = "closed:" + (terminal == null ? "none" : terminal.GetBaseException().GetType().Name
+                            + (terminal is WebSocketException wse ? "/" + wse.Error : "")) + ",reconnect";
                         wsReconnects++;
                         ws.Dispose();
                         ws = new WebSocketClient();
@@ -161,31 +197,46 @@ namespace TurboHTTP.Tests.UnityModule
                         yield return Echo(ws, "reconnected-" + resumes);
                     }
 
-                    Debug.Log("TURBOHTTP_SUSPEND_RESUMED n=" + resumes + " h2-pooled=" + kept + " http=" + httpResult
-                        + " http-ms=" + get.Milliseconds + " wss-state=" + wsState + " wss=" + wsResult);
+                    Debug.Log("TURBOHTTP_SUSPEND_RESUMED n=" + resumes + " h2-held=" + heldResult + " held-ms=" + drain.Milliseconds
+                        + " http=" + httpResult + " http-ms=" + get.Milliseconds + " wss-state=" + wsState + " wss=" + wsResult);
+
+                    if (resumes < Cycles)
+                    {
+                        hold = new Holder();
+                        yield return WaitForTask(Task.Run(() => OpenHeldAsync(http, hold)), (float)RequestBound.TotalSeconds + 5f,
+                            "held download " + (resumes + 1));
+                        held = hold.Response;
+                    }
                 }
 
                 Assert.AreEqual(Cycles, resumes, "the driver did not suspend and resume the app " + Cycles + " times");
 
                 double longest = 0;
-                int freezes;
+                int freezes, longFreezes = 0;
+                double deadlines = (KeepAlive + KeepAliveTimeout).TotalSeconds;
                 lock (_gate)
                 {
                     freezes = _freezes.Count;
                     foreach (var freeze in _freezes)
-                        longest = Math.Max(longest, Seconds(freeze.End - freeze.Start));
+                    {
+                        double seconds = Seconds(freeze.End - freeze.Start);
+                        longest = Math.Max(longest, seconds);
+                        if (seconds > deadlines)
+                            longFreezes++;
+                    }
                 }
 
                 Debug.Log("TURBOHTTP_SUSPEND_RESULT resumes=" + resumes + " process-freezes=" + freezes
-                    + " longest-freeze=" + longest.ToString("F1") + "s h2-pooled-at-resume=" + h2Kept
-                    + " http-retries=" + httpRetries + " wss-reconnects=" + wsReconnects);
-                Assert.Greater(longest, KeepAliveTimeout.TotalSeconds + KeepAlive.TotalSeconds,
-                    "the process never froze past the keep-alive deadlines in the background (the OS kept it running)");
+                    + " past-deadlines=" + longFreezes + " longest-freeze=" + longest.ToString("F1")
+                    + "s held-failures=" + heldFailures + " http-retries=" + httpRetries + " wss-reconnects=" + wsReconnects);
+                Assert.GreaterOrEqual(longFreezes, Cycles,
+                    "not every suspension froze the process past the keep-alive deadlines (the OS kept it running)");
             }
             finally
             {
                 // An iterator cannot yield in finally: UnityTearDown awaits the cleanup.
                 _stop = true;
+                held?.Dispose();
                 _cleanup = CleanupAsync(http, transport, pool, ws, receivers);
             }
         }
@@ -242,6 +293,50 @@ namespace TurboHTTP.Tests.UnityModule
                     return;
                 }
             }
+        }
+
+        private static async Task OpenHeldAsync(UHttpClient client, Holder holder)
+        {
+            var response = await client.Get(HeldUrl.AbsoluteUri).WithTimeout(HeldTimeout).SendStreamingAsync()
+                .ConfigureAwait(false);
+            holder.Response = response;
+            Assert.AreEqual(HttpStatusCode.OK, response.StatusCode, "held download status");
+            var buffer = new byte[16 * 1024];
+            Assert.Greater(await response.Body.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false), 0,
+                "held download sent no body");
+        }
+
+        private static async Task DrainAsync(UHttpStreamingResponse response, Outcome outcome)
+        {
+            var clock = Stopwatch.StartNew();
+            try
+            {
+                var buffer = new byte[64 * 1024];
+                long total = 0;
+                while (total < DrainBytes)
+                {
+                    int read = await response.Body.ReadAsync(buffer, 0, buffer.Length).ConfigureAwait(false);
+                    if (read == 0)
+                        throw new InvalidOperationException("held download ended after " + total + " bytes");
+                    total += read;
+                }
+            }
+            catch (Exception ex)
+            {
+                outcome.Failure = ex;
+            }
+
+            outcome.Milliseconds = clock.ElapsedMilliseconds;
+        }
+
+        // A failure after a resume is allowed only as a fast UHttpException, never a request-timeout hang.
+        private static void AssertFailedFast(Outcome outcome, string what)
+        {
+            Assert.IsInstanceOf<UHttpException>(outcome.Failure, what);
+            Assert.AreNotEqual(UHttpErrorType.Timeout, ((UHttpException)outcome.Failure).HttpError.Type,
+                what + " hung until its timeout: " + outcome.Failure);
+            Assert.Less(outcome.Milliseconds, FailFastBound.TotalMilliseconds,
+                what + " took " + outcome.Milliseconds + " ms to fail: " + outcome.Failure);
         }
 
         private static async Task GetAsync(UHttpClient client, Outcome outcome)
@@ -312,6 +407,11 @@ namespace TurboHTTP.Tests.UnityModule
             Assert.IsTrue(task.IsCompleted, "Timed out waiting for " + what + ".");
             if (task.IsFaulted && !allowFault)
                 Assert.Fail(what + " failed: " + task.Exception?.GetBaseException());
+        }
+
+        private sealed class Holder
+        {
+            public volatile UHttpStreamingResponse Response;
         }
 
         private sealed class Receiver

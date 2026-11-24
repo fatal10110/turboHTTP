@@ -16,8 +16,8 @@
 # project and Player-iOS otherwise (Tools~/unity/skip-baseline.txt).
 # --suspend-cycles drives DeviceSuspendResumeTests (#1132) and DeviceRealSocketSuspendResumeTests (#1289, #99; build
 # with --filter <test class>): when the player logs TURBOHTTP_SUSPEND_READY cycles=<n> [bg=<s>] [gap=<s>] it
-# backgrounds the app (opens Settings) for bg seconds (default 10) and brings it back, n times, gap seconds
-# (default 6) after each resume.
+# waits gap seconds (default 6), backgrounds the app (opens Settings) for bg seconds (default 10) and brings it
+# back, n times (so gap also comes before the first suspension).
 # Results: <cache>/results-iOS-<sim|device>-<ts>.xml and the console log beside it
 # (<cache>: ${XDG_CACHE_HOME:-~/.cache}/turbohttp). Keep machine paths out of issues and PRs.
 # Exit codes: 0 every launch passed its gates, 1 a launch failed a test or a gate, 2 setup/build/install error.
@@ -115,7 +115,9 @@ drive_suspend() {
   cycles="$(printf '%s' "$ready" | sed -n 's/.*cycles=\([0-9]*\).*/\1/p')"
   bg="$(printf '%s' "$ready" | sed -n 's/.* bg=\([0-9]*\).*/\1/p')"
   gap="$(printf '%s' "$ready" | sed -n 's/.* gap=\([0-9]*\).*/\1/p')"
-  for c in $(seq 1 "${cycles:-0}"); do
+  # macOS seq counts down for "seq 1 0": a READY line without cycles= must run no cycle.
+  [ "${cycles:-0}" -ge 1 ] || return 0
+  for c in $(seq 1 "$cycles"); do
     sleep "${gap:-6}"
     # A player that already ended (a failed assertion) must not be started again outside the launch bound.
     grep -qE 'TURBOHTTP_SUSPEND_RESULT|TURBOHTTP_DEVICE_RUN finished' "$console" && return 0

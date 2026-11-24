@@ -142,7 +142,7 @@ Device behaviour (the Android JNI policy, iOS players) is pending physical-devic
 ### iOS (IL2CPP)
 
 #### iOS versions
-v1.0 was validated on current iOS only: an iPhone on iOS 27.0.1 and the iOS 26.4 simulator. Older iOS versions, down to the minimum your Unity version's iOS player supports (iOS 15.0 in the projects used here), are **not verified** in v1.0. The oldest-supported-iOS run is #1302 (v1.1). If your app supports older iOS versions, test TurboHTTP on the oldest one before release.
+v1.0 was validated on current iOS only: an iPhone on iOS 27.0.1 and the iOS 26.4 simulator. Older iOS versions are **not verified** in v1.0. (iOS 15.0 is only the deployment target of TurboHTTP's own test builds; it is not a stated minimum for the package.) The oldest-supported-iOS run is #1302 (v1.1). If your app supports older iOS versions, test TurboHTTP on the oldest one before release.
 
 #### Background Networking (experimental, opt-in)
 `options.UseBackgroundNetworking()` holds a `UIApplication` background task while each request runs
