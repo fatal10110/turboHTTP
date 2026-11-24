@@ -217,11 +217,12 @@ class DeviceRunLivenessTests(unittest.TestCase):
         # A macOS editor install: <version>/Unity.app/Contents/MacOS/Unity, the SDK's adb in <version>/PlaybackEngines.
         self.write_exe(version_dir / "Unity.app" / "Contents" / "MacOS" / "Unity", "#!/usr/bin/env bash\nexit 99\n")
         self.write_exe(version_dir / "PlaybackEngines" / "AndroidPlayer" / "SDK" / "platform-tools" / "adb", ADB)
-        # No adb on PATH: the script cannot fall back to the host's adb, so only the bundle layout finds the fake.
-        path = os.pathsep.join(d for d in os.environ["PATH"].split(os.pathsep)
-                               if d and not os.access(os.path.join(d, "adb"), os.X_OK))
+        # A failing adb first on PATH: a fallback to the PATH adb fails the run and never reaches a host's real adb.
+        # PATH is otherwise kept (a distro adb shares /usr/bin with bash, so dropping its directory drops bash).
+        stub_dir = self.root / "path-adb"
+        self.write_exe(stub_dir / "adb", "#!/usr/bin/env bash\necho 'adb from PATH, not the editor SDK' >&2\nexit 97\n")
         self.plan("gone live live finish live*")
-        return self.run_device(UNITY_PATH=str(unity_path), PATH=path)
+        return self.run_device(UNITY_PATH=str(unity_path), PATH=f"{stub_dir}{os.pathsep}{os.environ['PATH']}")
 
     def test_mac_editor_bundle_finds_the_adb_beside_unity_app(self):
         version_dir = self.root / "2021.3.45f2"
