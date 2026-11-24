@@ -31,8 +31,8 @@ Unity 2021.3.45f2 unless noted.
 | IPv6-only network (NAT64) | OPEN: not verified in v1.0, owner decision 2026-11-23; #1283 (v1.1), test ready | OPEN: #1283 | N/A (Editor cannot prove it) |
 | Network switch Wi-Fi to LTE, airplane mode | PASS: `DeviceNetworkChangeTests` (iOS-H). HTTP/2 recovery is slow (18.5 s / 26.3 s), tracked as #717 | OPEN: not run on the phone (#1284) | N/A |
 | App suspend/resume: WebSocket keep-alive deadlines | PASS: `DeviceSuspendResumeTests` 5/5 launches, real process freezes (#1132). The connection is in memory (`InMemoryWebSocketPeer`): no socket, TLS or HTTP/2 | OPEN: the emulator smoke does not freeze the process (#1281); phone run #1284 | N/A: the iOS simulator does not freeze a backgrounded app |
-| App suspend/resume with real sockets: HTTP/2 PING liveness, pooled reuse, wss | OPEN: no device run yet (#1289). The network row is a route change, not a freeze | OPEN: #1289, #1284 | N/A |
-| WebSocket (ws/wss, permessage-deflate), background/foreground | PASS: WebSocket suites incl. `WebSocketBouncyCastleTlsTests`, deflate suites. Background/foreground: keep-alive deadlines only, in memory (#1132); ws/wss sockets across a freeze: OPEN (#1289). permessage-deflate IL2CPP rows beyond the suite: v1.1 (#104) | PASS (full suite) | PASS |
+| App suspend/resume with real sockets: HTTP/2 PING liveness, pooled reuse, wss | PASS: `DeviceRealSocketSuspendResumeTests` (iOS-H, 2026-11-24): 4 suspensions of 30 s, process frozen up to 28.9 s against 1 s / 2 s keep-alive deadlines; after every resume the pooled h2 connection (BouncyCastle, www.google.com) served the next GET in 181-221 ms with no retry, and the wss connection (echo.websocket.org) was open and echoed with no reconnect (#1289) | OPEN: #1284 | N/A |
+| WebSocket (ws/wss, permessage-deflate), background/foreground | PASS: WebSocket suites incl. `WebSocketBouncyCastleTlsTests`, deflate suites. Background/foreground: keep-alive deadlines in memory (#1132) and a real wss socket across four 30 s freezes (#1289). permessage-deflate IL2CPP rows beyond the suite: v1.1 (#104) | PASS (full suite) | PASS |
 | SAEA and PollSelect socket modes | PASS: channel suites, `SaeaShutdownOrderTests` 6/6; SAEA Loop384 200×3 on the sim (#1184) | PASS: 34/34 socket-mode filter (#410, #415) | PASS |
 | Texture/Audio handlers, MainThreadDispatcher | PASS: handler suites, `UnityReliabilitySuiteTests`, `UnityStressSuiteTests`, `UnityPerformanceBudgetTests` | PASS (full suite) | PASS |
 | Allocation/latency benchmarks on device (22a.6) | N/A on 2021.3 iOS: the allocation counter kills the player (#414); the gates skip | FAIL on arm64 budgets, documented for GA (#323, #416) | PASS on the API 33 emulator (0 B/read) |
@@ -53,6 +53,7 @@ Unity 2021.3.45f2 unless noted.
 
 ## Minimum devices
 - iOS ARM64 at Stripping Low and High: PASS (iOS-L, iOS-H). The only full-suite failure in both, #1251, was a test defect, since replaced by #1264.
+- Oldest supported iOS: OPEN, not verified in v1.0 (owner decision 2026-11-24; #1302, v1.1). Only current iOS ran (iOS 27.0.1 device, iOS 26.4 simulator). Xcode 26.4 offers no older simulator runtime for download.
 - Android ARM64: High PASS on the phone (And-H). Stripping Low has not run on the phone yet: OPEN (#1284).
 
 ## Certification matrix (#105)

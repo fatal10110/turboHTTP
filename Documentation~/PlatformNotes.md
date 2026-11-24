@@ -9,7 +9,7 @@ TurboHTTP is designed to run reliably across major Unity platforms, supporting b
 | **Windows** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` | `SslStream` uses the runtime TLS stack (UnityTls) with a TLS 1.2 floor enforced by TurboHTTP; it negotiated TLS 1.2 where recorded (macOS, Android), and Windows is not recorded yet. See "Negotiated TLS versions" below. | Windows Mono player run done (#404); IL2CPP player rows pending (#1225) |
 | **macOS** | Mono / IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (SecTrust verifier validated in the Editor and in Mono and IL2CPP players on Apple Silicon, #286) | As Windows. | Editor, Mono and IL2CPP players run on an M2 Mac (#286); x86_64 not run |
 | **Linux** | Mono / IL2CPP | ⚠️ Partly validated | Unavailable (BouncyCastle rejects every certificate on Linux) | Only a Mono standalone player under WSL2 (Ubuntu) was run, with `SslStream`; that Unity runtime crashed in its Boehm GC in 10 of 140 launches before any test ran (a runtime issue, #423). No IL2CPP Linux run, no native Ubuntu or other-distribution run. | Open: #436 |
-| **iOS** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (validated on one device: HTTP/2 via ALPN, public chains) | Requires AOT-safe configuration. IPv6-only (NAT64) networks are **not verified** in v1.0 (see "IPv6 and NAT64" below). | Run on one iPhone (iOS 27, Stripping Low and High, network changes, suspend/resume; #99). NAT64: #1283 |
+| **iOS** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (validated on one device: HTTP/2 via ALPN, public chains) | Requires AOT-safe configuration. IPv6-only (NAT64) networks are **not verified** in v1.0 (see "IPv6 and NAT64" below). Only current iOS was validated; older iOS versions are **not verified** (see "iOS versions" below). | Run on one iPhone (iOS 27, Stripping Low and High, network changes, suspend/resume; #99). NAT64: #1283. Older iOS: #1302 |
 | **Android** | IL2CPP | ✅ Supported | With `TlsBackend.BouncyCastle` (not device-validated) | ARM64 only: ARMv7 (32-bit) is not supported in v1.0 (see "Android (IL2CPP)" below). Restrictions on cleartext apply. | Open: #99 |
 | **WebGL** | IL2CPP | ❌ Unsupported in v1.0 | n/a | Browsers provide no raw sockets. A WebGL player build fails at build time with an explanatory error instead of failing every request at runtime. Support is planned for a later release. | n/a |
 | **Consoles** | IL2CPP | Untested | Unknown | Not tested on any console. The socket implementation varies by platform SDK (see `ConnectionPoolOptions.SocketIoMode`). | None |
@@ -140,6 +140,9 @@ Device behaviour (the Android JNI policy, iOS players) is pending physical-devic
 ## Platform-Specific Configurations
 
 ### iOS (IL2CPP)
+
+#### iOS versions
+v1.0 was validated on current iOS only: an iPhone on iOS 27.0.1 and the iOS 26.4 simulator. Older iOS versions, down to the minimum your Unity version's iOS player supports (iOS 15.0 in the projects used here), are **not verified** in v1.0. The oldest-supported-iOS run is #1302 (v1.1). If your app supports older iOS versions, test TurboHTTP on the oldest one before release.
 
 #### Background Networking (experimental, opt-in)
 `options.UseBackgroundNetworking()` holds a `UIApplication` background task while each request runs

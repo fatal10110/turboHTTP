@@ -319,7 +319,10 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    build with `--team <Apple team id>` (a signed device build; the bundle id carries the team so a free
    personal team can provision it), then `run-ios-player.sh <handoff>/xcode --device <udid> --team <id>`
    (`xcrun devicectl list devices`). `--suspend-cycles` drives `DeviceSuspendResumeTests` (#1132): it
-   backgrounds the app (Settings) and brings it back after the player logs `TURBOHTTP_SUSPEND_READY`.
+   backgrounds the app (Settings) and brings it back after the player logs `TURBOHTTP_SUSPEND_READY`
+   (`cycles=<n>`, and optional `bg=<s>` background time and `gap=<s>` after each resume). With `--integration
+   --filter DeviceRealSocketSuspendResumeTests` it drives the real-socket row (#1289): a pooled HTTP/2 connection
+   and a wss connection to public servers across four 30 s suspensions.
    Network rows (#99): build with `--integration --filter 'DeviceNetworkChangeTests.SameClients'` and run on a
    phone with cellular data. The instruction for each step is shown on the screen (Wi-Fi off, Airplane Mode on,
    Airplane off + Wi-Fi on), and each step starts when the route changes. With `--filter

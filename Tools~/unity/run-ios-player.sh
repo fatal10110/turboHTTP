@@ -14,9 +14,10 @@
 # partial results are kept. --full applies the unfiltered skip and min-total gates (a whole-suite build);
 # without it the run counts as filtered. --baseline-key defaults to Player-iOS-2021.3 for a Unity 2021.3
 # project and Player-iOS otherwise (Tools~/unity/skip-baseline.txt).
-# --suspend-cycles drives DeviceSuspendResumeTests (#1132, #99; build with --filter DeviceSuspendResumeTests): when
-# the player logs TURBOHTTP_SUSPEND_READY cycles=<n> it backgrounds the app (opens Settings) for 10 s and brings it
-# back, n times, 6 s apart.
+# --suspend-cycles drives DeviceSuspendResumeTests (#1132) and DeviceRealSocketSuspendResumeTests (#1289, #99; build
+# with --filter <test class>): when the player logs TURBOHTTP_SUSPEND_READY cycles=<n> [bg=<s>] [gap=<s>] it
+# backgrounds the app (opens Settings) for bg seconds (default 10) and brings it back, n times, gap seconds
+# (default 6) after each resume.
 # Results: <cache>/results-iOS-<sim|device>-<ts>.xml and the console log beside it
 # (<cache>: ${XDG_CACHE_HOME:-~/.cache}/turbohttp). Keep machine paths out of issues and PRs.
 # Exit codes: 0 every launch passed its gates, 1 a launch failed a test or a gate, 2 setup/build/install error.
@@ -109,14 +110,18 @@ drive_suspend() {
   until grep -q 'TURBOHTTP_SUSPEND_READY' "$console" 2>/dev/null; do
     sleep 1; waited=$((waited + 1)); [ "$waited" -ge "$timeout_s" ] && return 0
   done
-  cycles="$(grep -m1 -o 'TURBOHTTP_SUSPEND_READY cycles=[0-9]*' "$console" | sed 's/.*=//')"
+  local ready bg gap
+  ready="$(grep -m1 -o 'TURBOHTTP_SUSPEND_READY.*' "$console")"
+  cycles="$(printf '%s' "$ready" | sed -n 's/.*cycles=\([0-9]*\).*/\1/p')"
+  bg="$(printf '%s' "$ready" | sed -n 's/.* bg=\([0-9]*\).*/\1/p')"
+  gap="$(printf '%s' "$ready" | sed -n 's/.* gap=\([0-9]*\).*/\1/p')"
   for c in $(seq 1 "${cycles:-0}"); do
-    sleep 6
+    sleep "${gap:-6}"
     # A player that already ended (a failed assertion) must not be started again outside the launch bound.
     grep -qE 'TURBOHTTP_SUSPEND_RESULT|TURBOHTTP_DEVICE_RUN finished' "$console" && return 0
     echo "run-ios-player: suspend $c/$cycles"
     activate com.apple.Preferences || echo "run-ios-player: could not open Settings"
-    sleep 10
+    sleep "${bg:-10}"
     grep -qE 'TURBOHTTP_SUSPEND_RESULT|TURBOHTTP_DEVICE_RUN finished' "$console" && return 0
     activate "$bundle" || echo "run-ios-player: could not bring the player back"
   done
