@@ -5,6 +5,7 @@ using System.Net.Sockets;
 using System.Threading;
 using System.Threading.Tasks;
 using NUnit.Framework;
+using TurboHTTP.Core.Internal;
 using TurboHTTP.Transport.Connection;
 
 namespace TurboHTTP.Tests.Transport
@@ -48,7 +49,7 @@ namespace TurboHTTP.Tests.Transport
                 socket.Connect(new IPEndPoint(IPAddress.Loopback, closedPort.Port));
                 Assert.Fail("a connect to a port that does not listen must not succeed");
             }
-            catch (SocketException e) when (e.SocketErrorCode == SocketError.WouldBlock)
+            catch (SocketException e) when (SocketErrorNormalizer.Normalize(e) == SocketError.WouldBlock)
             {
                 // The non-blocking connect is in progress.
             }
@@ -60,7 +61,8 @@ namespace TurboHTTP.Tests.Transport
                 var ex = AssertAsync.ThrowsAsync<SocketException>(() =>
                     HappyEyeballsConnector.WaitForConnectAsync(socket, lostConnect.Task, deadline.Token));
 
-                Assert.AreEqual(SocketError.ConnectionRefused, ex.SocketErrorCode);
+                // IL2CPP players may report the raw errno (ECONNREFUSED 111 on Android, #1290).
+                Assert.AreEqual(SocketError.ConnectionRefused, SocketErrorNormalizer.Normalize(ex));
                 Assert.IsFalse(deadline.IsCancellationRequested, "the refusal is reported before the deadline");
             }
             finally
@@ -115,7 +117,8 @@ namespace TurboHTTP.Tests.Transport
                         failure = aggregate.InnerExceptions[0];
 
                     Assert.IsInstanceOf<SocketException>(failure, "a refused connect is not reported as the deadline: " + failure);
-                    Assert.AreEqual(SocketError.ConnectionRefused, ((SocketException)failure).SocketErrorCode);
+                    // IL2CPP players may report the raw errno (ECONNREFUSED 111 on Android, #1290, #1296).
+                    Assert.AreEqual(SocketError.ConnectionRefused, SocketErrorNormalizer.Normalize((SocketException)failure));
                 }
                 finally
                 {

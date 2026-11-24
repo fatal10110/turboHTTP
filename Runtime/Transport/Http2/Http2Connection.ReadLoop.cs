@@ -91,6 +91,12 @@ namespace TurboHTTP.Transport.Http2
             {
                 // Expected: connection closed during shutdown
             }
+            catch (OperationCanceledException) when (ct.IsCancellationRequested)
+            {
+                // The read observed the connection token. Only FailAllStreams and Dispose cancel it, and
+                // both fail the active streams themselves with the cause (Dispose: ObjectDisposedException).
+                // Failing them here with the cancellation raced that and replaced the cause (#1296).
+            }
             catch (HpackDecodingException hdex)
             {
                 // RFC 7540 Section 4.3: HPACK decoding error is a connection error

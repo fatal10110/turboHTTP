@@ -27,11 +27,12 @@ namespace TurboHTTP.Tests.Transport.Http2
             CreateInitializedConnectionAsync(
                 CancellationToken ct = default,
                 Http2Options options = null,
-                StreamingOptions streamingOptions = null)
+                StreamingOptions streamingOptions = null,
+                Func<Stream, Stream> wrapClientStream = null)
         {
             var duplex = new TestDuplexStream();
             var conn = new Http2Connection(
-                duplex.ClientStream,
+                wrapClientStream != null ? wrapClientStream(duplex.ClientStream) : duplex.ClientStream,
                 "test.example.com",
                 443,
                 options ?? new Http2Options(),

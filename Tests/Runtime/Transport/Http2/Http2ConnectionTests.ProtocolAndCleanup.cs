@@ -35,20 +35,18 @@ namespace TurboHTTP.Tests.Transport.Http2
 
                 conn.Dispose();
 
+                Exception failure = null;
                 try
                 {
                     await responseTask;
-                    Assert.Fail("Expected exception");
                 }
-                catch (UHttpException ex) when (ex.InnerException is ObjectDisposedException)
+                catch (Exception e)
                 {
+                    failure = e;
                 }
-                catch (ObjectDisposedException)
-                {
-                }
-                catch (OperationCanceledException)
-                {
-                }
+
+                // The read loop's own cancellation no longer races the dispose's failure (#1296).
+                AssertActiveStreamFailedByDispose(failure);
             });
         }
 

@@ -147,7 +147,7 @@ namespace TurboHTTP.Tests
             other.SetSocketOption(SocketOptionLevel.Socket, SocketOptionName.ReuseAddress, false);
 
             var ex = Assert.Throws<SocketException>(() => other.Bind(new IPEndPoint(IPAddress.Loopback, port.Port)));
-            Assert.AreEqual(SocketError.AddressAlreadyInUse, ex.SocketErrorCode);
+            Assert.AreEqual(SocketError.AddressAlreadyInUse, SocketErrorNormalizer.Normalize(ex));
         }
     }
 }

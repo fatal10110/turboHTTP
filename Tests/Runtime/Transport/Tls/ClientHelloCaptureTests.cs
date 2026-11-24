@@ -3,6 +3,7 @@ using System.Collections.Generic;
 using System.IO;
 using System.Net.Sockets;
 using NUnit.Framework;
+using TurboHTTP.Core.Internal;
 
 namespace TurboHTTP.Tests.Transport.Tls
 {
@@ -40,7 +41,7 @@ namespace TurboHTTP.Tests.Transport.Tls
             var ex = Assert.Throws<IOException>(() => ClientHelloCapture.ReadHandshakeMessage(stream));
 
             Assert.IsInstanceOf<SocketException>(ex.InnerException);
-            Assert.AreEqual(SocketError.ConnectionReset, ((SocketException)ex.InnerException).SocketErrorCode);
+            Assert.AreEqual(SocketError.ConnectionReset, SocketErrorNormalizer.Normalize((SocketException)ex.InnerException));
             Assert.AreEqual(1, stream.Failures);
         }
 
