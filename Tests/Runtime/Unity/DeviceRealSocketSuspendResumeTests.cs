@@ -81,12 +81,18 @@ namespace TurboHTTP.Tests.UnityModule
                 PingInterval = KeepAlive,
                 PingTimeout = KeepAliveTimeout,
                 ReuseProbeIdleThreshold = KeepAlive
+            }, new StreamingOptions
+            {
+                // The held body sits unread for about 50 s per cycle on a monotonic clock that runs through the
+                // freeze; the default 60 s stall abort would end it for the wrong reason.
+                Http2StallTimeoutSeconds = 600
             });
             var http = new UHttpClient(new UHttpClientOptions { Transport = transport, DisposeTransport = false });
             WebSocketClient ws = null;
             var receivers = new List<Task>();
             Receiver receiver = null;
             UHttpStreamingResponse held = null;
+            Holder hold = null;
             try
             {
                 var first = new Outcome();
@@ -103,7 +109,7 @@ namespace TurboHTTP.Tests.UnityModule
                 receivers.Add(Task.Run(() => ReceiveLoopAsync(firstWs, firstReceiver)));
                 yield return Echo(ws, "before-suspend");
 
-                var hold = new Holder();
+                hold = new Holder();
                 yield return WaitForTask(Task.Run(() => OpenHeldAsync(http, hold)), (float)RequestBound.TotalSeconds + 5f, "held download");
                 held = hold.Response;
                 Assert.IsTrue(transport.HasHttp2Connection(HeldHost, 443),
@@ -139,9 +145,11 @@ namespace TurboHTTP.Tests.UnityModule
 
                     held.Dispose();
                     held = null;
+                    hold = null;
 
                     // HTTP/2 reuse: the first request on the idle pooled connection sends the reuse PING first; it
                     // succeeds, or fails fast and the retry succeeds.
+                    bool pooled = transport.HasHttp2Connection(HttpHost, 443);
                     var get = new Outcome();
                     yield return WaitForTask(Task.Run(() => GetAsync(http, get)), (float)RequestBound.TotalSeconds + 5f,
                         "GET after resume " + resumes);
@@ -198,7 +206,7 @@ namespace TurboHTTP.Tests.UnityModule
                     }
 
                     Debug.Log("TURBOHTTP_SUSPEND_RESUMED n=" + resumes + " h2-held=" + heldResult + " held-ms=" + drain.Milliseconds
-                        + " http=" + httpResult + " http-ms=" + get.Milliseconds + " wss-state=" + wsState + " wss=" + wsResult);
+                        + " h2-pooled=" + pooled + " http=" + httpResult + " http-ms=" + get.Milliseconds + " wss-state=" + wsState + " wss=" + wsResult);
 
                     if (resumes < Cycles)
                     {
@@ -236,7 +244,10 @@ namespace TurboHTTP.Tests.UnityModule
             {
                 // An iterator cannot yield in finally: UnityTearDown awaits the cleanup.
                 _stop = true;
+                // A held download whose open failed after the response arrived has no other owner.
                 held?.Dispose();
+                if (hold?.Response != null && !ReferenceEquals(hold.Response, held))
+                    hold.Response.Dispose();
                 _cleanup = CleanupAsync(http, transport, pool, ws, receivers);
             }
         }
