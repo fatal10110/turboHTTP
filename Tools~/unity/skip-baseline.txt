@@ -117,10 +117,10 @@ Player-iOS-2021.3 35
 # run's record), and lower it only with the removed tests and the reason in the PR.
 #   EditMode 87        periodic host-editor run after waves run w1122 (main b842808 and the release commit
 #                        69ad7b4, 2026-11-22, Unity 2021.3.45f2, Mono)
-#   PlayMode 3625      periodic host-editor run after waves run w1123 (main 628c1b2, 2026-11-23)
-#   Player-Android 3625  API 23 and API 33 x86_64 emulators, Stripping High, main 628c1b2, 2026-11-23
+#   PlayMode 3798      periodic host-editor run after waves run w1127 (main 00bff45, 2026-11-24)
+#   Player-Android 3798  API 23 and API 33 x86_64 emulators, Stripping High, main 00bff45, 2026-11-24
 #   Player-StandaloneOSX 3654  macOS Mono and IL2CPP players, main 86bf65f + #1279, 2026-11-23, Unity 2021.3.45f2
-#   Player-StandaloneWindows64 3625  Win64 IL2CPP player (Stripping High), main 628c1b2, 2026-11-23, Unity
+#   Player-StandaloneWindows64 3798  Win64 IL2CPP player (Stripping High), main 00bff45, 2026-11-24, Unity
 #                        2021.3.45f2 (the Mono player's 3603 on 2026-11-16 predates the tests added since)
 #   Player-iOS-2021.3 3612  run-ios-player.sh (#99), main 0065546, iPhone 17 Pro simulator (iOS 26.4, x86_64
 #                        under Rosetta) and an iPhone 13 Pro Max (iOS 27.0.1, arm64; 3615 there), IL2CPP High,
@@ -129,8 +129,8 @@ Player-iOS-2021.3 35
 # fails until its total is recorded here.
 # min-total <run target> <min cases>
 min-total EditMode 87
-min-total PlayMode 3625
-min-total Player-Android 3625
-min-total Player-StandaloneWindows64 3625
+min-total PlayMode 3798
+min-total Player-Android 3798
+min-total Player-StandaloneWindows64 3798
 min-total Player-StandaloneOSX 3654
 min-total Player-iOS-2021.3 3612

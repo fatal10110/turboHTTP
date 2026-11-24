@@ -13,6 +13,7 @@ repeats the word forever) and writes the log the real player writes to its -logF
 """
 import os
 import pathlib
+import shutil
 import subprocess
 import tempfile
 import unittest
@@ -59,6 +60,10 @@ esac
 """
 
 
+# The script runs the Linux player under GNU coreutils timeout (exit 124 marks a hang). A macOS host has no
+# timeout on PATH unless coreutils is installed with its unprefixed names, and it cannot run the Linux player (#1278).
+@unittest.skipUnless(shutil.which("timeout"), "run-linux-player-tests.sh needs GNU coreutils timeout on PATH "
+                     "(a Linux host); not found on this host")
 class LinuxPlayerRunTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()

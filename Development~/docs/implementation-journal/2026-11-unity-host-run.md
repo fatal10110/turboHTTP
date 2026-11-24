@@ -112,3 +112,47 @@ main-thread probe waits, available pool threads). Nothing else ran on the host.
 
 The 20-55 minute form did not recur in these three runs. If a stall comes back, the run prints
 `STALL SUSPECTED (<kind>)` and keeps a dump as `stall-Android-<tag>-<ts>-<n>.txt` in the cache.
+
+## 2026-11-23/24: after waves runs w1124-w1127 (main b5caa65, 35043fe, 00bff45)
+
+Waves runs w1124 (#1274, #1275, #1276, #1277), w1125 (#1282, #1285), w1126 (#1292, #1293, #1295) and w1127
+(#1298, #1299). Emulators: x86_64 IL2CPP, Managed Stripping High, one at a time. Nothing else ran on the host.
+
+- `--suspend` player smoke (#1132), API 33 emulator:
+  - main 13fb048 (before #1282/#1285), 2 runs: row PASS, but `max-ping-gap=2.0s` over 34-46 s in the background
+    (the process kept running) and `resume-signal=no`: TurboHTTP.Unity.WebSocket.dll was missing from
+    `ManagedStripped`. Filed #1281 and #1280.
+  - main b5caa65, 2 runs: `freeze=root frozen=10s; background=11.4s max-ping-gap=11.5s`,
+    `ping-in-flight-at-pause=yes`, `resume-signal=yes`, `grace-waits=0`, connection Open with a working echo.
+    #1280 and #1281 closed; Android half of #1132 recorded on the issue.
+- main b5caa65:
+  - API 33, 2 runs: 3632 and 3633 of 3656 passed. `RefusingLoopbackPortTests.Connect_IsRefused` failed 2/2
+    (`SocketErrorCode` 111, raw errno: #1290); `SocketChannelLifecycleTests.Saea_Dispose_CompletionNeverFires...`
+    failed once (#1291).
+  - EditMode 87/87. PlayMode: run 1 lost to a WSL interop outage (exit 5); run 2 3648/3656 with
+    `SaeaShutdownOrderTests.Dispose_ReceiveNeverEnds...` failing once (#1291); run 3 3649/3656, 0 failed.
+  - Win64 IL2CPP player: 3646/3656, `ProxyConnectionFailure_ThrowsProxyConnectionFailed` timed out again at 15 s
+    (3 of 3 full runs). Cause found in w1126: libil2cpp's Windows `select()` holds 64 sockets, so a refused
+    connect past the 64th registered socket is never reported (#1295; reads: #1294, v1.1).
+- main 35043fe:
+  - EditMode 87/87. PlayMode, three consecutive runs: 3786/3794 passed, **0 failed**, 8 skipped each (#1259 closed).
+  - Win64 IL2CPP player: 3784/3794 passed, **0 failed**.
+  - API 33, run 1: 40 failed in a 55 min stall that began at 00:44:54 UTC (SETTINGS ACK, TCP connect and TLS
+    handshake timeouts across fixtures; 3543 s against 223 s). Filed #1297, found and fixed in w1127 (see the
+    stall diagnosis section above). Run 2: 3769/3794, 2 failed (#1296: a raw-errno assertion in
+    `ConnectFailureWatchTests`, and `Http2ConnectionTests.Dispose_FailsAllActiveStreams`, a product race fixed by
+    #1298).
+  - #1290 probe (API 33): refused connect `SocketErrorCode=111 ErrorCode=111 NativeErrorCode=111`, normalized
+    `ConnectionRefused`; DNS failure `HostNotFound (11001)`; unreachable connect: no result within 5 s.
+- main 00bff45 (final set):
+  - API 33, run 1: 3798 total, 3775 passed, **0 failed**, 23 skipped, 190 s; heartbeat: pool probe max 104 ms,
+    no stall.
+  - API 33, run 2: 3775 passed, **0 failed**, 185 s; pool probe max 53 ms, no stall.
+  - API 23: 3775 passed, **0 failed**, 219 s; heartbeat: none logged (#1300).
+  - EditMode 87/87. PlayMode 3790/3798 passed, **0 failed**, 8 skipped, 165 s.
+  - Win64 IL2CPP player: 3788/3798 passed, **0 failed**, 10 skipped, 252 s.
+
+`skip-baseline.txt` min-totals raised from the 00bff45 runs: PlayMode, Player-Android and
+Player-StandaloneWindows64 3625 -> 3798.
+
+Not run: the Win64 Mono player, the API 26/29/36 emulators, the phone, and the iOS rows (owner's Mac session).
