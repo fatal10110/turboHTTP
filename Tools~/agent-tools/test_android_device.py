@@ -211,6 +211,33 @@ class DeviceRunLivenessTests(unittest.TestCase):
         self.assertEqual(result.returncode, 2, result.stdout + result.stderr)
         self.assertIn("is not running (gone on 3 checks in a row)", result.stdout)
 
+    # --- the editor layout: a macOS bundle is recognized by its path on every host (#1278) ---
+
+    def run_mac_layout(self, version_dir, unity_path):
+        # A macOS editor install: <version>/Unity.app/Contents/MacOS/Unity, the SDK's adb in <version>/PlaybackEngines.
+        self.write_exe(version_dir / "Unity.app" / "Contents" / "MacOS" / "Unity", "#!/usr/bin/env bash\nexit 99\n")
+        self.write_exe(version_dir / "PlaybackEngines" / "AndroidPlayer" / "SDK" / "platform-tools" / "adb", ADB)
+        # No adb on PATH: the script cannot fall back to the host's adb, so only the bundle layout finds the fake.
+        path = os.pathsep.join(d for d in os.environ["PATH"].split(os.pathsep)
+                               if d and not os.access(os.path.join(d, "adb"), os.X_OK))
+        self.plan("gone live live finish live*")
+        return self.run_device(UNITY_PATH=str(unity_path), PATH=path)
+
+    def test_mac_editor_bundle_finds_the_adb_beside_unity_app(self):
+        version_dir = self.root / "2021.3.45f2"
+        result = self.run_mac_layout(version_dir, version_dir / "Unity.app" / "Contents" / "MacOS" / "Unity")
+        self.assert_pulled(result)
+
+    def test_symlinked_mac_editor_bundle_resolves_its_real_version_folder(self):
+        # /Applications/Unity.app -> Hub/Editor/<version>/Unity.app: PlaybackEngines is beside the real bundle.
+        version_dir = self.root / "Hub" / "Editor" / "2021.3.45f2"
+        link = self.root / "Applications" / "Unity.app"
+        link.parent.mkdir(parents=True)
+        (version_dir / "Unity.app").mkdir(parents=True)
+        link.symlink_to(version_dir / "Unity.app", target_is_directory=True)
+        result = self.run_mac_layout(version_dir, link / "Contents" / "MacOS" / "Unity")
+        self.assert_pulled(result)
+
     # --- the launch: a blocked launch is told apart from a player that started ---
 
     def test_blocked_launch_names_the_focused_window(self):
