@@ -68,7 +68,10 @@ emu="$sdk/emulator/emulator.exe"
 # adb version per daemon), so an empty one is enough.
 mkdir -p "$sdk/platform-tools"
 engines="$(dirname "$unity")/Data/PlaybackEngines"
-case "$(uname -s)" in Darwin) engines="$(cd "$(dirname "$unity")/../../.." && pwd)/PlaybackEngines" ;; esac
+# A macOS editor binary sits in <version>/Unity.app/Contents/MacOS, with PlaybackEngines beside Unity.app. The
+# path shape decides, not the host, so the test fakes' Data/PlaybackEngines layout works on a Mac too (#1278).
+# cd -P: a symlinked Unity.app (/Applications/Unity.app -> <version>/Unity.app) resolves to <version>.
+case "$unity" in *.app/Contents/MacOS/*) engines="$(cd -P "$(dirname "$unity")/../../.." && pwd)/PlaybackEngines" ;; esac
 adb_exe="$engines/AndroidPlayer/SDK/platform-tools/adb.exe"
 [ -x "$adb_exe" ] || adb_exe="$engines/AndroidPlayer/SDK/platform-tools/adb"
 [ -x "$adb_exe" ] || adb_exe="$(command -v adb || true)"

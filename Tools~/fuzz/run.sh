@@ -67,7 +67,12 @@ fi
 
 harness=(dotnet "$bin/TurboHTTP.Fuzz.dll")
 if [ ${#targets[@]} -eq 0 ]; then
-  mapfile -t targets < <("${harness[@]}" list)
+  # A read loop, not mapfile: macOS ships bash 3.2, which has no mapfile (#1278).
+  while IFS= read -r t; do
+    [ -z "$t" ] || targets+=("$t")
+  done < <("${harness[@]}" list)
+  # bash 3.2 under set -u also reads "${targets[@]}" of an empty array as unbound.
+  [ ${#targets[@]} -gt 0 ] || { echo "run.sh: the harness listed no targets" >&2; exit 1; }
 fi
 
 status=0

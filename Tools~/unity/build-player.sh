@@ -149,7 +149,10 @@ if [ -z "$unity" ] || [ ! -x "$unity" ]; then
   exit 3
 fi
 engines="$(dirname "$unity")/Data/PlaybackEngines"
-case "$(uname -s)" in Darwin) engines="$(cd "$(dirname "$unity")/../../.." && pwd)/PlaybackEngines" ;; esac
+# A macOS editor binary sits in <version>/Unity.app/Contents/MacOS, with PlaybackEngines beside Unity.app. The
+# path shape decides, not the host, so the test fakes' Data/PlaybackEngines layout works on a Mac too (#1278).
+# cd -P: a symlinked Unity.app (/Applications/Unity.app -> <version>/Unity.app) resolves to <version>.
+case "$unity" in *.app/Contents/MacOS/*) engines="$(cd -P "$(dirname "$unity")/../../.." && pwd)/PlaybackEngines" ;; esac
 case "$target" in
   win64-mono) module="$engines/windowsstandalonesupport/Variations/win64_player_nondevelopment_mono" ;;
   win64-il2cpp) module="$engines/windowsstandalonesupport/Variations/win64_player_nondevelopment_il2cpp" ;;
