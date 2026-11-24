@@ -1,4 +1,5 @@
 using System;
+using System.Diagnostics;
 using System.IO;
 using System.Net;
 using System.Net.Sockets;
@@ -104,20 +105,26 @@ namespace TurboHTTP.Tests.Transport
         [Test]
         public void AbandonedOperationNeverEnds_EntryExpiresAtTheSettleBound()
         {
-            AbandonedSocketIo.SettleTimeout = TimeSpan.FromMilliseconds(100);
+            var bound = TimeSpan.FromMilliseconds(100);
+            AbandonedSocketIo.SettleTimeout = bound;
             var operation = new TaskCompletionSource<int>();
             try
             {
                 AssertAsync.Run(async () =>
                 {
+                    long expired = AbandonedSocketIo.ExpiredCount;
+                    var sinceTrack = Stopwatch.StartNew();
                     AbandonedSocketIo.Track(operation.Task);
-                    Assert.AreEqual(1, AbandonedSocketIo.PendingCount);
 
-                    // The platform never ends the operation (#293): the gate opens at the bound.
-                    await AssertCompletesAsync(
-                        AbandonedSocketIo.WaitForSettledAsync(CancellationToken.None),
-                        "the gate never opened for an operation that never ends");
+                    // The platform never ends the operation (#293): the gate opens at the bound, not
+                    // before it, however late this thread runs (#1291).
+                    var settled = AbandonedSocketIo.WaitForSettledAsync(CancellationToken.None);
+                    await HoldBoundAssert.ReleasedNotBeforeTheBoundAsync(
+                        sinceTrack, bound, () => settled.IsCompleted, "the settle gate of an operation that never ends");
+                    await settled;
                     await WaitUntilAsync(() => AbandonedSocketIo.PendingCount == 0, "the entry never expired");
+                    // Greater, not +1: an entry another fixture left pending may expire in the same window.
+                    Assert.Greater(AbandonedSocketIo.ExpiredCount, expired, "the entry was recorded and expired at the bound");
                 }, Guard);
             }
             finally
