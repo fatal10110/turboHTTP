@@ -57,19 +57,19 @@ Unity 2021.3.45f2 unless noted.
 - Android ARM64: High PASS on the phone (And-H). Stripping Low has not run on the phone yet: OPEN (#1284).
 
 ## Certification matrix (#105)
-`platform_matrix.py`, run on the full-suite results of 2026-11-23 (main 86bf65f + #1279):
+`platform_matrix.py`, run on the full-suite results of 2026-11-24 (main 00bff45 with #1288, plus the #1289 branch):
 
 | Cell | Row | Result |
 | --- | --- | --- |
-| ios-il2cpp | iPhone 13 Pro Max, iOS 27.0.1, arm64, High | 3654 tests: 3616 passed, 1 failed, 32 skipped (baseline 35); certification suites and budgets pass |
-| standalone-macos | macOS IL2CPP player, arm64, High | 3654 tests: 3633 passed, 1 failed, 15 skipped (new `Player-StandaloneOSX` baseline) |
-| standalone-macos | macOS Mono player, arm64, Stripping Disabled | 3654 tests: 3640 passed, 1 failed, 8 skipped |
+| ios-il2cpp | iPhone 13 Pro Max, iOS 27.0.1, arm64, IL2CPP, Stripping High | **pass**: 3798 tests, 3761 passed, 0 failed, 37 skipped (32 counted against baseline 35; 5 not-selected `[Explicit]`); certification suites and budgets pass |
+| standalone-macos | macOS IL2CPP player, Apple M2, macOS 26.7.1, arm64, Stripping High | **pass**: 3798 tests, 3778 passed, 0 failed, 20 skipped (15 counted, baseline 15) |
+| standalone-macos | macOS Mono player, same host, Stripping Disabled | **pass**: 3798 tests, 3785 passed, 0 failed, 13 skipped (8 counted) |
 
-- **Why the cells read "fail":** the one failure in each row is `RefusingLoopbackPortTests.Connect_IsRefused`, a test-helper defect on Darwin (#1286). Its fix, PR #1288, passes that test and the WebSocket proxy-failure test on all three targets. So apart from #1286, the iOS and macOS cells pass. A full rerun after #1288 merges would turn them green.
-- **Earlier full runs:** the 2026-11-22 iPhone rows (High and Low, main 0065546) failed only on #1251, a test later replaced by #1264.
+- **History:** the 2026-11-23 runs (main 86bf65f) had one failure in each row, `RefusingLoopbackPortTests.Connect_IsRefused` (#1286, a test-helper defect on Darwin, fixed by #1288). The 2026-11-22 iPhone rows (High and Low, main 0065546) failed only on #1251, a test later replaced by #1264.
+- Stripping Low on the iPhone ran on 2026-11-22 (main 0065546) and was not rerun here.
 
 ## Failures and their issues
-Every FAIL above has an issue: #323 / #416 (arm64 allocation budgets, documented for GA) and #1286 (test helper,
-fixed by #1288). Runtime finding from the same runs: IL2CPP on Darwin reports raw errno values in
+Every FAIL above has an issue: #323 / #416 (arm64 allocation budgets, documented for GA). #1286 (test helper) was
+fixed by #1288; the 2026-11-24 reruns pass. Runtime finding from the same runs: IL2CPP on Darwin reports raw errno values in
 `SocketException.SocketErrorCode` (#1287, v1.1, together with NAT64 #1283). The slow HTTP/2 recovery
 after a network change is a PASS with a known limitation, #717.
