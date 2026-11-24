@@ -89,3 +89,26 @@ Player-StandaloneWindows64 3612 -> 3625.
 
 Not run: the Win64 Mono player, the API 26/29/36 emulators, the phone, the iOS simulator and device (#99), and
 a suspend/resume run (#1132 needs a harness that backgrounds the player).
+
+## 2026-11-24: API 33 emulator stall diagnosis (#1297, branch wf/emulator-stall-diagnosis)
+
+Android emulator, x86_64 IL2CPP, Managed Stripping High (`run-emulator-tests.sh --api 33 --jobs 1`), with the
+new `TURBOHTTP_DEVICE_HEARTBEAT` probe (15 s lines: longest 1 s wait of a dedicated thread, thread-pool and
+main-thread probe waits, available pool threads). Nothing else ran on the host.
+
+- Run 1 (65d07ff, probe only): 3795 total, 3772 passed, 0 failed, 241 s. The probe flagged thread-pool
+  starvation from 02:49:42 to 02:50:28 UTC: pool work items waited up to 30.6 s while the 1 s wait stayed at
+  1003 ms, so the guest was running on time. Pool minimum 4 workers. Windows host CPU 56 %. The native dump
+  (`debuggerd -b`, symbolized with the build's `libil2cpp.sym.so`) showed 24 pool workers idle and 9 blocked in
+  `SemaphoreSlim.Wait` <- `BlockingCollection.TryTake` <- `BlockingStream.ReadAsyncCore` (the HTTP/2 and
+  WebSocket tests' in-memory duplex stream, `Task.Run` around an infinite `TryTake`). Each connection a test
+  left reading held one pool thread, and the IL2CPP pool adds threads slowly. The cause is ours (test helper);
+  it explains the SETTINGS ACK, WebSocket and loopback timeouts of the earlier long stalls.
+- Fix: `BlockingStream` awaits a `SemaphoreSlim` and holds no thread while a read is pending.
+- Run 2 (fix): 3798 total, 3775 passed, 0 failed, 194 s; pool probe max 14 ms, no stall.
+- Run 3 (fix): 3798 total, 3775 passed, 0 failed, 190 s; pool probe max 70 ms, no stall.
+- One earlier attempt of run 2 did not boot: a WSL interop outage (`UtilAcceptVsock ... accept4 failed 110`)
+  kept `emulator.exe` from starting. It is not counted.
+
+The 20-55 minute form did not recur in these three runs. If a stall comes back, the run prints
+`STALL SUSPECTED (<kind>)` and keeps a dump as `stall-Android-<tag>-<ts>-<n>.txt` in the cache.
