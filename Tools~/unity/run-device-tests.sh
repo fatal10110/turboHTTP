@@ -26,6 +26,10 @@
 # process runs but logs no TURBOHTTP_DEVICE_RUN within about a minute while another app holds the focus is
 # relaunched once, then exits 2; a player that dies is reported about a minute after its process is gone (three
 # complete process listings without it, device_poll_s apart).
+# The player logs a TURBOHTTP_DEVICE_HEARTBEAT line every 15 s (#1297); after the wait the script prints their summary and
+# a "run-device-tests: STALL SUSPECTED (<kind>) ..." line per stalled episode (summarize_heartbeats.py), and during a
+# stall it saves a native thread dump and the host load next to the device log. A stall does not change the exit code:
+# rerun the run instead of counting it.
 # Exit codes as run-tests.sh: 0 pass, 1 failures, 2 setup error, 3 Unity unavailable, 4 skip or total gate (an unfiltered
 # run is held to the Player-Android entries of Tools~/unity/skip-baseline.txt, #341, #903), 5 WSL interop unavailable
 # (from WSL: cmd.exe, adb.exe or Unity.exe did not start through about two minutes of retries, wsl-interop.sh, #355).
@@ -257,6 +261,7 @@ cat > "$proj/Assets/DeviceResults/TurboHttpDeviceResults.cs" <<'CS'
 using System;
 using System.Globalization;
 using System.IO;
+using System.Threading;
 using NUnit.Framework.Interfaces;
 using UnityEngine;
 using UnityEngine.TestRunner;
@@ -276,11 +281,15 @@ public class TurboHttpDeviceResults : ITestRunCallback
 
     public const string FileName = "turbohttp-results.xml";
     DateTime _start;
+    TurboHttpHeartbeat _heartbeat;
+    // The running test case, for the heartbeat lines (written on the main thread, read by the heartbeat thread).
+    internal static string s_Current = "";
 
     public void RunStarted(ITest testsToRun)
     {
         _start = DateTime.UtcNow;
         Debug.Log("TURBOHTTP_DEVICE_RUN started tests=" + testsToRun.TestCaseCount);
+        _heartbeat = TurboHttpHeartbeat.Start(SynchronizationContext.Current);
     }
 
     public void RunFinished(ITestResult result)
@@ -298,14 +307,127 @@ public class TurboHttpDeviceResults : ITestRunCallback
         File.Move(path + ".tmp", path);
         Debug.Log("TURBOHTTP_DEVICE_RUN finished total=" + total + " passed=" + result.PassCount + " failed="
             + result.FailCount + " path=" + path);
+        if (_heartbeat != null) _heartbeat.Stop();
+        _heartbeat = null;
     }
 
-    public void TestStarted(ITest test) { }
+    public void TestStarted(ITest test)
+    {
+        if (!test.HasChildren) Volatile.Write(ref s_Current, test.FullName);
+    }
 
     public void TestFinished(ITestResult result)
     {
         if (!result.HasChildren && result.ResultState.Status == TestStatus.Failed)
             Debug.Log("TURBOHTTP_DEVICE_FAIL " + result.FullName);
+    }
+}
+
+// Stall probe (#1297): every 15 s a TURBOHTTP_DEVICE_HEARTBEAT line that tells a guest stall from starvation.
+// tick_max_ms is the longest 1 s wait of this dedicated thread (about 1000 while the guest runs on time; seconds
+// more when the whole player was paused). pool_ms is how long the slowest work item it queued on the thread pool
+// waited to start (a still-waiting one counts its age), main_ms the same for a post to the main thread's
+// synchronization context (-1 without one). A dedicated thread and not a System.Threading.Timer: timers run on
+// the pool, which a starved player starves. Tools~/unity/summarize_heartbeats.py reads these lines.
+sealed class TurboHttpHeartbeat
+{
+    const int TickMs = 1000;
+    const int ReportTicks = 15;
+    readonly System.Diagnostics.Stopwatch _clock = System.Diagnostics.Stopwatch.StartNew();
+    readonly ManualResetEvent _stop = new ManualResetEvent(false);
+    readonly SynchronizationContext _main;
+    readonly WaitCallback _poolProbe;
+    readonly SendOrPostCallback _mainProbe;
+    // When the pending probe was queued (ms on _clock; -1 when none waits), and the interval's longest wait.
+    long _poolQueued = -1, _poolMax, _mainQueued = -1, _mainMax;
+
+    TurboHttpHeartbeat(SynchronizationContext main)
+    {
+        _main = main;
+        _poolProbe = _ => Done(ref _poolQueued, ref _poolMax);
+        _mainProbe = _ => Done(ref _mainQueued, ref _mainMax);
+    }
+
+    public static TurboHttpHeartbeat Start(SynchronizationContext main)
+    {
+        var heartbeat = new TurboHttpHeartbeat(main);
+        new Thread(heartbeat.Run) { IsBackground = true, Name = "TurboHttpHeartbeat" }.Start();
+        return heartbeat;
+    }
+
+    public void Stop() => _stop.Set();
+
+    long Now => _clock.ElapsedMilliseconds;
+
+    void Done(ref long queued, ref long max)
+    {
+        long at = Interlocked.Exchange(ref queued, -1);
+        if (at >= 0) Raise(ref max, Now - at);
+    }
+
+    static void Raise(ref long max, long value)
+    {
+        long seen;
+        while (value > (seen = Interlocked.Read(ref max)) && Interlocked.CompareExchange(ref max, value, seen) != seen) { }
+    }
+
+    // The interval's longest wait of a probe: the completed ones, or the age of the one still waiting.
+    long Take(ref long queued, ref long max, long now)
+    {
+        long longest = Interlocked.Exchange(ref max, 0);
+        long at = Interlocked.Read(ref queued);
+        return at >= 0 && now - at > longest ? now - at : longest;
+    }
+
+    void Run()
+    {
+        try
+        {
+            long tickMax = 0;
+            int ticks = 0, n = 0;
+            while (true)
+            {
+                long before = Now;
+                if (_stop.WaitOne(TickMs)) return;
+                long waited = Now - before;
+                if (waited > tickMax) tickMax = waited;
+                if (Interlocked.CompareExchange(ref _poolQueued, Now, -1) == -1) ThreadPool.QueueUserWorkItem(_poolProbe);
+                if (_main != null && Interlocked.CompareExchange(ref _mainQueued, Now, -1) == -1) _main.Post(_mainProbe, null);
+                if (++ticks < ReportTicks) continue;
+                long now = Now;
+                long pool = Take(ref _poolQueued, ref _poolMax, now);
+                long main = _main != null ? Take(ref _mainQueued, ref _mainMax, now) : -1;
+                ThreadPool.GetAvailableThreads(out int workers, out int io);
+                ThreadPool.GetMaxThreads(out int maxWorkers, out int maxIo);
+                ThreadPool.GetMinThreads(out int minWorkers, out int minIo);
+                // ThreadPool.PendingWorkItemCount is not in .NET Standard 2.1: pending=n/a.
+                Debug.Log(string.Format(CultureInfo.InvariantCulture,
+                    "TURBOHTTP_DEVICE_HEARTBEAT n={0} up_s={1} tick_max_ms={2} pool_ms={3} main_ms={4} workers={5}/{6} "
+                    + "io={7}/{8} min={9}/{10} pending=n/a threads={11} gc={12} mem_mb={13} test={14}",
+                    ++n, now / 1000, tickMax, pool, main, workers, maxWorkers, io, maxIo, minWorkers, minIo,
+                    Threads(), GC.CollectionCount(0), GC.GetTotalMemory(false) / (1024 * 1024),
+                    Volatile.Read(ref TurboHttpDeviceResults.s_Current)));
+                ticks = 0;
+                tickMax = 0;
+            }
+        }
+        catch (Exception e)
+        {
+            Debug.Log("TURBOHTTP_DEVICE_HEARTBEAT error=" + e.GetType().Name + " " + e.Message);
+        }
+    }
+
+    // The process's thread count from /proc/self/status (Linux, Android); -1 where that file is absent.
+    static int Threads()
+    {
+        try
+        {
+            foreach (var line in File.ReadAllLines("/proc/self/status"))
+                if (line.StartsWith("Threads:", StringComparison.Ordinal))
+                    return int.Parse(line.Substring(8).Trim(), CultureInfo.InvariantCulture);
+        }
+        catch (Exception) { }
+        return -1;
     }
 }
 CS
@@ -546,6 +668,42 @@ poll_devlog() {
   case "$res" in *$'\n'*) devlog_edge="${res#*$'\n'}" ;; esac
 }
 
+# Stall evidence (#1297): while the player's newest TURBOHTTP_DEVICE_HEARTBEAT is flagged (summarize_heartbeats.py
+# --live: guest stall, thread-pool starvation, blocked main thread, or heartbeats gone silent), take the host load,
+# a per-thread top of the player and a native thread dump (debuggerd -b; through su on emulator and userdebug
+# images, which let the shell user dump another app) into $cache/stall-Android-<tag>-<ts>-<n>.txt. At most
+# stall_dumps_max (2) per run, stall_gap_s (300) apart, so one long stall costs two dumps.
+stall_dumps=0; stall_last=0; stall_dumps_max="${stall_dumps_max:-2}"; stall_gap_s="${stall_gap_s:-300}"
+check_stall() {
+  local flag now pid f
+  [ "$stall_dumps" -lt "$stall_dumps_max" ] || return 0
+  flag="$(python3 "$repo/Tools~/unity/summarize_heartbeats.py" --live "$devlog" 2>/dev/null)" && return 0
+  [ -n "$flag" ] || return 0
+  now="$(date +%s)"
+  [ "$stall_last" = 0 ] || [ $(( now - stall_last )) -ge "$stall_gap_s" ] || return 0
+  stall_dumps=$(( stall_dumps + 1 )); stall_last="$now"
+  f="$cache/stall-Android-$tag-$ts-$stall_dumps.txt"
+  pid="$(adbr shell pidof "$pkg_id" || true)"
+  {
+    echo "# stall suspected ($flag) at $(date -u +%Y-%m-%dT%H:%M:%SZ) host time; player pid ${pid:-unknown}"
+    echo "## host load (/proc/loadavg; from WSL this is the WSL view)"
+    cat /proc/loadavg 2>/dev/null || true
+    if [ "$win" = 1 ]; then
+      echo "## Windows host CPU % and emulator processes"
+      ${adb_timeout[@]+"${adb_timeout[@]}"} powershell.exe -NoProfile -NonInteractive -Command \
+        "(Get-CimInstance Win32_Processor | Measure-Object -Property LoadPercentage -Average).Average; Get-Process qemu-system*,emulator* -ErrorAction SilentlyContinue | Format-Table Id,ProcessName,CPU,WorkingSet64 -AutoSize" \
+        2>/dev/null | tr -d '\r' || true
+    fi
+    if [ -n "$pid" ]; then
+      echo "## top -H -p $pid (guest)"
+      adbr shell top -b -n 1 -H -p "$pid" | head -80 || true
+      echo "## debuggerd -b $pid"
+      adbr shell su 0 debuggerd -b "$pid" || adbr shell debuggerd -b "$pid" || true
+    fi
+  } > "$f" 2>&1
+  echo "run-device-tests: stall suspected ($flag); host load, threads and native dump in $f"
+}
+
 # The player keeps running when the editor gives up on the player connection: wait for the device-side
 # result file and pull it. The wait ends early when the player process is gone (never installed after a
 # compile or build error, or crashed); TURBOHTTP_DEVICE_TEST_WAIT_MIN (default 120 minutes, the full suite
@@ -575,6 +733,7 @@ if [ ! -f "$xml" ]; then
     left=0
     poll_devlog
     if results_on_device; then found=1; break; fi
+    check_stall
     # Only complete answers without the process mean the player is gone, three in a row; an unknown answer
     # (adb failed, empty or truncated output) neither counts nor resets, and keeps waiting.
     case "$(player_running)" in
@@ -614,6 +773,8 @@ if [ ! -f "$xml" ]; then
   # adb still leaves what the polls took before it went.
   if [ "$left" -lt 2 ] || [ -s "$devlog" ]; then
     echo "run-device-tests: device log $devlog"
+    # Reporting only (#1297): a stalled run keeps its exit code, but its STALL SUSPECTED line says to rerun it.
+    python3 "$repo/Tools~/unity/summarize_heartbeats.py" --prefix "run-device-tests: " "$devlog" || true
     if [ ! -s "$xml" ]; then
       grep -E "Fatal signal|FATAL EXCEPTION|DEBUG +: |lowmemorykiller|lmkd|am_proc_died|am_kill|Process $pkg_id .*died" "$devlog" | head -20 || true
     fi

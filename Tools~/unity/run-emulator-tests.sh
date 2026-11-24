@@ -16,6 +16,8 @@
 # by its AVD name and stopped with taskkill when its console does not stop it, after the level and on exit
 # (emulator-windows.sh, #353). Before a boot, a leftover turbohttp-api<N> from an earlier run is stopped; another
 # emulator holding the console port fails the level (exit 2) naming its PID.
+# Each level's summary repeats run-device-tests.sh's heartbeat line and any "STALL SUSPECTED" line (#1297): a stall
+# (the emulator paused, or the player's thread pool starved) keeps the exit code but the run must be rerun, not counted.
 # Exit: the highest run-device-tests.sh exit code over the levels (0 pass, 1 failures, 2 setup, 4 skip gate,
 # 5 WSL interop unavailable), 3 when Unity is unavailable. Exit 5 also when, from WSL, the %LOCALAPPDATA% lookup or
 # a level's boot failed while Windows programs did not start (wsl-interop.sh, #355): an outage, not a result.
@@ -241,6 +243,9 @@ for api in "${levels[@]}"; do
   summary="$(grep -E '^run-tests: total=' "$out/api$api.log" 2>/dev/null | tail -1 || true)"
   [ -n "$summary" ] || summary="$(grep -E '^run-device-tests: ' "$out/api$api.log" 2>/dev/null | tail -1 || true)"
   echo "  API $api: exit $code ${summary:-(no log)}"
+  # A stalled run (#1297) keeps its exit code; its heartbeat verdict says not to count it.
+  grep -E '^run-device-tests: (STALL SUSPECTED|stall suspected|heartbeat: )' "$out/api$api.log" 2>/dev/null \
+    | sed 's/^run-device-tests: /    /' | head -12 || true
   if [ "$code" -gt "$worst" ]; then worst="$code"; fi
 done
 echo "run-emulator-tests: logs and per-level output in $out"

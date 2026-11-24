@@ -232,7 +232,16 @@ A release candidate adds the certification matrix (item 8): the Win64 standalone
    bounded foreground adb call, so no log process outlives the script. Without `--serial`, Unity deploys the
    player and holds the run: polling starts only after Unity returns, so the log keeps only what the ring
    buffer still holds then, or nothing when the results came over the player connection (#1220). A logcat without `-v epoch` (before Android 7) falls back to
-   one dump at the end, which keeps only the last 16M. A
+   one dump at the end, which keeps only the last 16M. Stall detection (#1297): the player logs a
+   `TURBOHTTP_DEVICE_HEARTBEAT` line every 15 s from a dedicated thread (the longest of its 1 s waits
+   `tick_max_ms`, the wait of a thread-pool work item `pool_ms` and of a main-thread post `main_ms`, available
+   pool threads, thread count, the running test). After the wait, `summarize_heartbeats.py` prints a
+   `heartbeat:` summary and a `STALL SUSPECTED (<kind>)` line per stalled episode: a late 1 s wait is a guest
+   stall (the emulator or host paused the player), an on-time wait with a late pool probe is thread-pool
+   starvation (ours: find the blocked frames). While the newest heartbeat is flagged the script saves the host
+   load, `top -H` of the player and a native dump (`su 0 debuggerd -b`) as `stall-Android-<tag>-<ts>-<n>.txt`
+   (at most two per run). A stall keeps the exit code; `run-emulator-tests.sh` repeats the lines per level, and
+   a stalled run is rerun, not counted toward the certification gate. A
    run refuses (exit 2) to start while the player of an earlier run is still running its tests on the device
    (no result file yet), so a queued run never kills it; with `--serial`, a launch that starts no process (a
    lock screen, or a parental-control screen holding the focus) exits 2 naming the focused window, and a

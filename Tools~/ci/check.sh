@@ -70,6 +70,7 @@ if [ "$full" = 1 ]; then
   python3 "Tools~/ci/test_unity_modules.py" -q || fail "package.json built-in module check test"
   python3 "Tools~/ci/test_unitask_pin.py" -q || fail "UniTask pin gate test"
   python3 "Tools~/unity/test_platform_matrix.py" -q || fail "Unity platform matrix tool test"
+  python3 "Tools~/unity/test_summarize_heartbeats.py" -q || fail "device heartbeat stall summarizer test"
   python3 .github/issue-seed/create_issues.py --dry-run >/dev/null || fail "issue seed validation"
   step "waves orchestration simulation"
   if command -v node >/dev/null; then node .claude/skills/turbohttp-waves/waves_sim.mjs >/dev/null || fail "waves_sim"

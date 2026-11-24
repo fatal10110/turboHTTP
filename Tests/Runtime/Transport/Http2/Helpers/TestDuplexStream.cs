@@ -8,7 +8,7 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
 {
     /// <summary>
     /// A bidirectional in-memory stream pair for testing Http2Connection without real TCP.
-    /// Writes on one side are readable on the other. Uses blocking collections for async handoff.
+    /// Writes on one side are readable on the other; a pending async read holds no thread.
     /// </summary>
     internal class TestDuplexStream
     {
@@ -90,11 +90,18 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
 
     /// <summary>
     /// A thread-safe byte queue that supports async Read/Write.
-    /// Write enqueues bytes; Read dequeues them, blocking if empty.
+    /// Write enqueues bytes; Read dequeues them, waiting while empty. A pending <see cref="ReadAsync"/>
+    /// awaits a semaphore and holds no thread: the earlier Task.Run around BlockingCollection.TryTake parked
+    /// a thread-pool thread per pending read, so every HTTP/2 connection the tests left reading held one,
+    /// and on the IL2CPP player (4 minimum workers, slow injection) they starved the pool for minutes (#1297).
     /// </summary>
     internal class BlockingStream
     {
-        private readonly BlockingCollection<byte[]> _chunks = new BlockingCollection<byte[]>();
+        // The written chunks, then a null end marker after CompleteWriting; _available counts the queued entries.
+        private readonly ConcurrentQueue<byte[]> _chunks = new ConcurrentQueue<byte[]>();
+        private readonly SemaphoreSlim _available = new SemaphoreSlim(0);
+        private readonly object _gate = new object();
+        private bool _completed;
         private byte[] _currentChunk;
         private int _currentOffset;
 
@@ -103,7 +110,14 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
             if (count <= 0) return;
             var copy = new byte[count];
             Array.Copy(buffer, offset, copy, 0, count);
-            _chunks.Add(copy);
+            lock (_gate)
+            {
+                // As BlockingCollection.Add after CompleteAdding.
+                if (_completed)
+                    throw new InvalidOperationException("The stream was completed for writing.");
+                _chunks.Enqueue(copy);
+            }
+            _available.Release();
         }
 
         public Task WriteAsync(byte[] buffer, int offset, int count,
@@ -118,11 +132,8 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
             if (_currentChunk != null && _currentOffset < _currentChunk.Length)
                 return ConsumeCurrentChunk(buffer, offset, count);
 
-            if (!_chunks.TryTake(out _currentChunk, Timeout.Infinite))
-                return 0; // completed
-
-            _currentOffset = 0;
-            return ConsumeCurrentChunk(buffer, offset, count);
+            _available.Wait();
+            return TakeChunk(buffer, offset, count);
         }
 
         public Task<int> ReadAsync(byte[] buffer, int offset, int count,
@@ -137,24 +148,24 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
         private async Task<int> ReadAsyncCore(byte[] buffer, int offset, int count,
             CancellationToken cancellationToken)
         {
-            // Use Task.Run to avoid blocking the caller
-            _currentChunk = await Task.Run(() =>
+            await _available.WaitAsync(cancellationToken).ConfigureAwait(false);
+            return TakeChunk(buffer, offset, count);
+        }
+
+        // Called after the semaphore granted one queued entry, so the dequeue always finds it.
+        private int TakeChunk(byte[] buffer, int offset, int count)
+        {
+            _chunks.TryDequeue(out var chunk);
+            if (chunk == null)
             {
-                try
-                {
-                    if (_chunks.TryTake(out var chunk, Timeout.Infinite, cancellationToken))
-                        return chunk;
-                    return null;
-                }
-                catch (OperationCanceledException)
-                {
-                    throw;
-                }
-            }, cancellationToken);
-
-            if (_currentChunk == null)
+                // The end marker: put it back so every later read ends too.
+                _chunks.Enqueue(null);
+                _available.Release();
+                _currentChunk = null;
                 return 0;
+            }
 
+            _currentChunk = chunk;
             _currentOffset = 0;
             return ConsumeCurrentChunk(buffer, offset, count);
         }
@@ -170,7 +181,13 @@ namespace TurboHTTP.Tests.Transport.Http2.Helpers
 
         public void CompleteWriting()
         {
-            _chunks.CompleteAdding();
+            lock (_gate)
+            {
+                if (_completed) return;
+                _completed = true;
+                _chunks.Enqueue(null);
+            }
+            _available.Release();
         }
     }
 }
