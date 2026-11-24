@@ -89,7 +89,9 @@ mkdir -p "$cache"
 # adb from the editor's Android SDK (macOS keeps PlaybackEngines beside Unity.app, as in build-player.sh),
 # else the one on PATH. A Windows adb.exe from WSL can fail to start, so adbr retries.
 engines="$(dirname "$unity")/Data/PlaybackEngines"
-case "$(uname -s)" in Darwin) engines="$(cd "$(dirname "$unity")/../../.." && pwd)/PlaybackEngines" ;; esac
+# A macOS editor binary sits in <version>/Unity.app/Contents/MacOS, with PlaybackEngines beside Unity.app. The
+# path shape decides, not the host, so the test fakes' Data/PlaybackEngines layout works on a Mac too (#1278).
+case "$unity" in *.app/Contents/MacOS/*) engines="$(cd "$(dirname "$unity")/../../.." && pwd)/PlaybackEngines" ;; esac
 adb_exe="$engines/AndroidPlayer/SDK/platform-tools/adb.exe"
 [ -x "$adb_exe" ] || adb_exe="$engines/AndroidPlayer/SDK/platform-tools/adb"
 [ -x "$adb_exe" ] || adb_exe="$(command -v adb || true)"

@@ -98,7 +98,7 @@ XML
   'shell rm -f '*) if [ "${FAKE_CLEAR_ON_RM:-0}" = 1 ]; then rm -f "$FAKE_WSL.finished"; fi ;;
   'shell monkey '*)
     echo x >> "$FAKE_WSL.launches"
-    n="$(wc -l < "$FAKE_WSL.launches")"
+    n=$(($(wc -l < "$FAKE_WSL.launches")))  # arithmetic drops the padding BSD wc prints (macOS, #1278)
     if [ "$n" -gt "${FAKE_STUCK_LAUNCHES:-0}" ]; then touch "$FAKE_WSL.foreground"; fi
     if [ "$n" = "${FAKE_DOWN_ON_LAUNCH:-1}" ] && [ "${FAKE_DOWN_AFTER_LAUNCH:-0}" -gt 0 ]; then
       echo "$FAKE_DOWN_AFTER_LAUNCH" > "$FAKE_WSL.down"
