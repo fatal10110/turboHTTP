@@ -11,7 +11,8 @@ Unity 2021.3.45f2 unless noted.
 | iOS-H | iOS arm64 | iPhone 13 Pro Max (iPhone14,3) | iOS 27.0.1 | IL2CPP | High | `2026-11-ios-device-run.md` (2026-11-22/23) |
 | iOS-L | iOS arm64 | same | same | IL2CPP | Low | same |
 | iOS-sim | iOS simulator x86_64 (Rosetta) | iPhone 17 Pro sim | iOS 26.4 | IL2CPP | High | same; earlier 2021.3 and Unity 6 sim rows on #99 |
-| And-H | Android arm64 | OnePlus 7 (GM1903) | Android 12 / API 31 | IL2CPP | High | `2026-11-android-device-run.md`, #99 comments 2026-11-08/09 |
+| And-H | Android arm64 | OnePlus 7 (GM1903) | Android 12 / API 31 | IL2CPP | High | `2026-11-android-device-run.md`, #99 comments 2026-11-08/09; full-suite rerun 2026-11-28 (`2026-11-unity-host-run.md`) |
+| And-L | Android arm64 | same | same | IL2CPP | Low | `2026-11-unity-host-run.md` (2026-11-28, main da42982) |
 | And-emu | Android x86_64 emulator | AVD `default;x86_64` images on a Ryzen 7 5800X host | Android 6.0 / API 23, Android 13 / API 33 | IL2CPP | High | `2026-11-android-emulator-matrix.md`, #99 comments |
 | mac | macOS arm64 standalone + Editor | Apple M2 | macOS 26.7.1 | Mono, IL2CPP | Disabled (Mono), High (IL2CPP; Mono High in #450) | `2026-11-macos-sectrust-validation.md`, `2026-11-ios-device-run.md` |
 | win | Windows x86_64 standalone | Windows host editor driven from WSL2 | Windows version not recorded in the run record | Mono (IL2CPP: #1225) | Disabled | `2026-11-host-run-win64-standalone.md` |
@@ -30,7 +31,7 @@ Unity 2021.3.45f2 unless noted.
 | iOS ATS / Android cleartext and network security config | PASS for the cleartext policy (`CleartextTrafficPolicyTests` 17/17, `RawSocketTransportCleartextTests`, `WebSocketCleartextPolicyTests`). ATS itself does not apply to raw sockets (PlatformNotes). | PASS (`AndroidCleartextPolicyRootTests`, NetworkSecurityPolicy JNI) | N/A |
 | IPv6-only network (NAT64) | OPEN: not verified in v1.0, owner decision 2026-11-23; #1283 (v1.1), test ready | OPEN: #1283 | N/A (Editor cannot prove it) |
 | Network switch Wi-Fi to LTE, airplane mode | PASS: `DeviceNetworkChangeTests` (iOS-H). HTTP/2 recovery is slow (18.5 s / 26.3 s), tracked as #717 | OPEN: not run on the phone (#1284) | N/A |
-| App suspend/resume: WebSocket keep-alive deadlines | PASS: `DeviceSuspendResumeTests` 5/5 launches, real process freezes (#1132). The connection is in memory (`InMemoryWebSocketPeer`): no socket, TLS or HTTP/2 | OPEN: the emulator smoke does not freeze the process (#1281); phone run #1284 | N/A: the iOS simulator does not freeze a backgrounded app |
+| App suspend/resume: WebSocket keep-alive deadlines | PASS: `DeviceSuspendResumeTests` 5/5 launches, real process freezes (#1132). The connection is in memory (`InMemoryWebSocketPeer`): no socket, TLS or HTTP/2 | PASS on the API 33 emulator: `--suspend` smoke with a root freeze (10 s frozen, `max-ping-gap=11.5s`, `resume-signal=yes`; 2026-11-23 and 2026-11-28). Phone OPEN (#1284): the smoke has no freeze method on the OnePlus 7 (no root, smoke APK not debuggable, cached-apps freezer off: `use_freezer=false`, debounce 600 s) | N/A: the iOS simulator does not freeze a backgrounded app |
 | App suspend/resume with real sockets: HTTP/2 PING liveness, pooled reuse, wss | PASS: `DeviceRealSocketSuspendResumeTests` (iOS-H, 2026-11-24): 4 suspensions of 30 s, each freezing the process past the 1 s / 2 s keep-alive deadlines (longest 28.8 s). Each cycle held an h2 download (BouncyCastle, dl.google.com) open across the freeze, so its liveness PINGs were armed; after every resume it delivered 4 MiB more (about 3.6 s). The first GET on the idle pooled h2 connection to www.google.com (still pooled at every resume), sent after its reuse PING, returned 200 in 194-257 ms. The wss connection (echo.websocket.org) echoed. 0 failures, retries or reconnects (#1289) | OPEN: #1284 | N/A |
 | WebSocket (ws/wss, permessage-deflate), background/foreground | PASS: WebSocket suites incl. `WebSocketBouncyCastleTlsTests`, deflate suites. Background/foreground: keep-alive deadlines in memory (#1132) and a real wss socket across four 30 s freezes (#1289). permessage-deflate IL2CPP rows beyond the suite: v1.1 (#104) | PASS (full suite) | PASS |
 | SAEA and PollSelect socket modes | PASS: channel suites, `SaeaShutdownOrderTests` 6/6; SAEA Loop384 200×3 on the sim (#1184) | PASS: 34/34 socket-mode filter (#410, #415) | PASS |
@@ -54,7 +55,7 @@ Unity 2021.3.45f2 unless noted.
 ## Minimum devices
 - iOS ARM64 at Stripping Low and High: PASS (iOS-L, iOS-H). The only full-suite failure in both, #1251, was a test defect, since replaced by #1264.
 - Oldest supported iOS: OPEN, not verified in v1.0 (owner decision 2026-11-24; #1302, v1.1). Only current iOS ran (iOS 27.0.1 device, iOS 26.4 simulator). Xcode 26.4 offers no older simulator runtime for download.
-- Android ARM64: High PASS on the phone (And-H). Stripping Low has not run on the phone yet: OPEN (#1284).
+- Android ARM64 at Stripping Low and High: PASS (And-L, And-H; 2026-11-28 full suites on main da42982, 3775/3798 passed, 0 failed each).
 
 ## Certification matrix (#105)
 `platform_matrix.py`, run on the full-suite results of 2026-11-24 (main 00bff45 with #1288, plus the #1289 branch):
@@ -67,6 +68,14 @@ Unity 2021.3.45f2 unless noted.
 
 - **History:** the 2026-11-23 runs (main 86bf65f) had one failure in each row, `RefusingLoopbackPortTests.Connect_IsRefused` (#1286, a test-helper defect on Darwin, fixed by #1288). The 2026-11-22 iPhone rows (High and Low, main 0065546) failed only on #1251, a test later replaced by #1264.
 - Stripping Low on the iPhone ran on 2026-11-22 (main 0065546) and was not rerun here.
+
+Android cells from the 2026-11-28 runs (main da42982, `2026-11-unity-host-run.md`):
+
+| Cell | Row | Result |
+| --- | --- | --- |
+| android-il2cpp-arm64 | OnePlus 7, Android 12 / API 31, IL2CPP, Stripping High | **pass**: 3798 tests, 3775 passed, 0 failed, 23 skipped (18 counted, baseline 18) |
+| android-il2cpp-arm64 | same, Stripping Low | **pass**: 3798 tests, 3775 passed, 0 failed, 23 skipped (18 counted) |
+| android-il2cpp-x86_64-emulator | API 23, 26, 29, 33, 36, Stripping High (second round) | **pass**: 3775/3798 each, 0 failed. The first round that day failed 2 tests each on API 29 and 36 (#1305-#1308) |
 
 ## Failures and their issues
 Every FAIL above has an issue: #323 / #416 (arm64 allocation budgets, documented for GA). #1286 (test helper) was
