@@ -65,6 +65,13 @@ shutil.rmtree(os.path.dirname(imp), ignore_errors=True)
 os.makedirs(imp)
 shutil.copy(os.path.join(repo, "Tools~", "unity", "samples-import", "ImportSamples.cs"), imp)
 shutil.rmtree(os.path.join(proj, "Assets", "SamplesRun"), ignore_errors=True)
+# A folder .meta left behind makes Unity recreate the empty folder during the import, and the cp -r
+# below would then nest the driver one level down (Assets/SamplesRun/samples-run).
+for meta in ("SamplesRun.meta", "SamplesImport.meta"):
+    try:
+        os.remove(os.path.join(proj, "Assets", meta))
+    except FileNotFoundError:
+        pass
 shutil.rmtree(os.path.join(proj, "SamplesRun"), ignore_errors=True)
 PY
 
@@ -78,6 +85,7 @@ icode="$unity_code"
 grep -E "SAMPLES_IMPORT|error CS[0-9]+" "$cache/samples-import-$ts.log" | head -20 || true
 if [ "$icode" != 0 ]; then echo "run-samples: sample import failed (Unity exit $icode), see $cache/samples-import-$ts.log"; exit 2; fi
 rm -rf "$proj/Assets/SamplesImport" "$proj/Assets/SamplesImport.meta"
+rm -rf "$proj/Assets/SamplesRun"
 cp -r "$repo/Tools~/unity/samples-run" "$proj/Assets/SamplesRun"
 # committed as .asmdef.json so the repo asmdef rules (it references the sample assemblies) do not scan it
 mv "$proj/Assets/SamplesRun/SamplesRun.asmdef.json" "$proj/Assets/SamplesRun/SamplesRun.asmdef"

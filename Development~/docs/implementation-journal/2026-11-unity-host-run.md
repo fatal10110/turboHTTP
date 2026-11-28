@@ -156,3 +156,86 @@ Waves runs w1124 (#1274, #1275, #1276, #1277), w1125 (#1282, #1285), w1126 (#129
 Player-StandaloneWindows64 3625 -> 3798.
 
 Not run: the Win64 Mono player, the API 26/29/36 emulators, the phone, and the iOS rows (owner's Mac session).
+
+## 2026-11-28: v1.0 GA release-candidate matrix on the Windows host (main da42982)
+
+Unity 2021.3.45f2, one Unity process at a time, nothing else on the host. Emulators: x86_64 IL2CPP, Managed
+Stripping High, `run-emulator-tests.sh --api 23,26,29,33,36 --jobs 1`.
+
+- EditMode 87/87. PlayMode 3790/3798 passed, **0 failed**, 3 skipped (baseline 3).
+- ExternalNetwork: 39 passed, 0 failed, 16 skipped (`[env]`). UniTask adapters (`--with-unitask=local`) 6/6.
+  Integration loopback (`ExceedsMaxBodySize|FreshConnection_IOException_NoRetry`) 5/5.
+- Win64 Mono player suite: 3788/3798, **0 failed**, 10 skipped.
+- Win64 IL2CPP player suite, run 1: no results. The player stopped about 4 min 22 s in, after the last
+  WebSocket fixture's output. The editor gave up after 600 s with no activity, and the player was still alive
+  with all threads waiting (#1309). Run 2: 3788/3798, **0 failed**, 10 skipped.
+- Android emulators:
+  - API 23: 3775/3798, 0 failed, no heartbeat logged (#1300).
+  - API 26 and API 33: 3775/3798, 0 failed, no stall.
+  - API 29: 2 failed. `DataReceiving_SendsWindowUpdate` (#1305, a test-order race), and
+    `UnityWebSocketClientLifecycleTests.DisableThenDestroy...`, failed by the heartbeat's `Debug.Log` under
+    `LogAssert.NoUnexpectedReceived` (#1306).
+  - API 36: 2 failed. `PoolLeak_GoAwayRefusesInFlightStreams_DrainedStreamReturnsToPool` (#1307, refcounts
+    read before the pool-thread releases), and `SendStreamingRequest_DrainAsync_AbortsStreamWithCancel` (#1308).
+    #1308 is a product race: an off-loop reset removes the stream before tracking it as reset, so a racing DATA
+    frame draws RST_STREAM(STREAM_CLOSED).
+  - Certification metrics pass on every level.
+- Player smoke, all PASS:
+  - win64-mono.
+  - win64-mono `--stripping High --network` (#450).
+  - win64-il2cpp.
+  - win64-il2cpp `--bouncycastle --network`: the four `h2-*-bouncycastle` rows PASS over h2. Download 2 MiB in
+    1592 ms, upload 1 MiB in 845 ms, 100 streams in 114 ms, stream cancel in 1584 ms.
+  - android-il2cpp builds, with and without `--bouncycastle`.
+- Android smoke on the API 33 emulator, all PASS:
+  - `--network`: `tls-sslstream` 200.
+  - `--bouncycastle --network`: `tls-bouncycastle` 200 with `alpn=h2`, and the four h2 rows over h2. Download in
+    2116 ms, upload in 1299 ms, 100 streams in 340 ms, cancel in 2290 ms.
+  - `--suspend`: `freeze=root frozen=10s; background=11.4s max-ping-gap=11.5s`, `resume-signal=yes`,
+    `grace-waits=0`, state Open with a working echo.
+- `run-samples.sh` 5/5, after fixing the script: a stale `Assets/SamplesRun.meta` made Unity recreate the folder,
+  so the driver copy nested and the `mv` failed. `check.sh --full` OK, after an SC2015 fix in `run-ios-player.sh`
+  that local shellcheck 0.10.0 flags.
+
+`platform_matrix.py --fresh --gate` over the full-suite files exits 1:
+- editor-editmode, editor-playmode and standalone-windows: **pass**.
+- android-il2cpp-x86_64-emulator: **fail** (API 29 and 36, above).
+- standalone-macos, ios-il2cpp and android-il2cpp-arm64: needs-device-validation (not on this host). The Mac
+  and iPhone cells passed on 00bff45, 2026-11-24.
+- standalone-linux: not-run.
+- webgl: policy-disabled.
+
+The phone was not on adb for this first batch.
+
+### Second batch, same day: phone and emulator rerun (main da42982)
+
+Phone: OnePlus 7 (GM1903), Android 12 / API 31, arm64, unlocked with Stay awake on. One phone run and one Unity process at a
+time. Emulators started once the phone APK was installed. The session's container restarted twice mid-batch. Results were
+pulled from the device and gated with `summarize_results.py Player-Android`, so no run is missing.
+
+- Phone, Stripping High, full suite: 3775/3798, **0 failed**, 23 skipped (18 counted, baseline 18). Heartbeat: pool probe
+  max 283 ms, no stall.
+- Phone, Stripping Low, full suite: 3775/3798, **0 failed**, 23 skipped (18 counted). The results file was complete
+  (no `partial`) and was pulled with `adb exec-out` after the runner was killed by the container restart.
+- Emulators, second round, Stripping High:
+  - API 23, 29, 33, 36: 3775/3798 each, **0 failed**, no stall. API 23 again logged no heartbeat (#1300).
+  - API 26 hit a System UI "Application Error" dialog that held the screen; the runner exited 2 (setup, not a result).
+    The rerun was 3775/3798, **0 failed**.
+  - The first round's failures (#1305-#1308) did not recur. They are intermittent and stay open.
+- Phone player smokes:
+  - `--network`: `tls-sslstream` 200, PASS.
+  - `--bouncycastle --network`: `tls-bouncycastle` 200 with `alpn=h2`. The four `h2-*-bouncycastle` rows PASS over
+    h2: download 2 MiB in 3007 ms, upload 1 MiB in 1604 ms, 100 streams in 368 ms, cancel in 3042 ms (#1210 phone row;
+    #258 AC2 on Android at Stripping High).
+  - `--suspend`: exit 2, no freeze method. The phone has no root, the smoke APK is not debuggable, and the cached-apps
+    freezer is off (`use_freezer=false`, `freeze_debounce_timeout=600000`). #1284's suspend row stays OPEN on the phone.
+
+`platform_matrix.py --fresh --gate` over the latest full-suite file of each row exits **0**:
+- **pass:** editor-editmode, editor-playmode, standalone-windows, android-il2cpp-arm64 (High and Low) and
+  android-il2cpp-x86_64-emulator (second round).
+- standalone-macos and ios-il2cpp: needs-device-validation here (they passed on 2026-11-24).
+- standalone-linux: not-run.
+- webgl: policy-disabled.
+
+Not run: the phone network-change row (`DeviceNetworkChangeTests.SameClients`, needs someone to switch networks on the
+phone), the phone suspend row (above), the Linux player, and the Mac and iOS rows.

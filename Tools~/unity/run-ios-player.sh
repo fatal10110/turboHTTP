@@ -145,7 +145,7 @@ for i in $(seq 1 "$launches"); do
     rm -f "$data/Documents/results.xml"
     bounded xcrun simctl launch --console-pty --terminate-running-process "$udid" "$bundle" >"$console" 2>&1 || rc=$?
     stop_driver
-    [ "$rc" = 124 ] && xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true
+    if [ "$rc" = 124 ]; then xcrun simctl terminate "$udid" "$bundle" 2>/dev/null || true; fi
     cp "$data/Documents/results.xml" "$out" 2>/dev/null || true
   else
     started=$SECONDS
